@@ -25,13 +25,7 @@ import 'douban_models.dart';
 /// 榜单 6 小时、详情 24 小时、按标题找条目 24 小时。
 /// 命中缓存不发网络请求 —— 断网时排行榜与详情补充也还能用。
 final class DoubanClient {
-  DoubanClient({
-    required DoubanHttp http,
-    DoubanCache? cache,
-    DoubanLogger logger = silentDoubanLogger,
-  })  : _http = http,
-        _cache = cache,
-        _logger = logger;
+  DoubanClient({required this.http, this.cache, this.logger = silentDoubanLogger});
 
   /// rexxar 接口基址（**只到域名**）。
   ///
@@ -63,9 +57,9 @@ final class DoubanClient {
     'User-Agent': kUserAgent,
   };
 
-  final DoubanHttp _http;
-  final DoubanCache? _cache;
-  final DoubanLogger _logger;
+  final DoubanHttp http;
+  final DoubanCache? cache;
+  final DoubanLogger logger;
 
   /// 榜单缓存有效期（上游本身一天更新几次，6 小时足够新鲜）。
   static const _rankingTtl = Duration(hours: 6);
@@ -119,10 +113,10 @@ final class DoubanClient {
     int count = 25,
   }) async {
     final key = 'rank:$collection:$start:$count';
-    final cached = await _cache?.get(key);
+    final cached = await cache?.get(key);
     if (cached != null) return _decodeRankings(cached, startOffset: start);
 
-    final response = await _http.get(
+    final response = await http.get(
       '/rexxar/api/v2/subject_collection/$collection/items',
       query: <String, Object?>{'start': '$start', 'count': '$count'},
       headers: _headers,
@@ -132,7 +126,7 @@ final class DoubanClient {
     }
     final raw = response.asText;
     final entries = _decodeRankings(raw, startOffset: start);
-    if (entries.isNotEmpty) await _cache?.put(key, raw, ttl: _rankingTtl);
+    if (entries.isNotEmpty) await cache?.put(key, raw, ttl: _rankingTtl);
     return entries;
   }
 
@@ -148,10 +142,10 @@ final class DoubanClient {
     int count = 25,
   }) async {
     final key = 'rec:$tags:$sort:$start:$count';
-    final cached = await _cache?.get(key);
+    final cached = await cache?.get(key);
     if (cached != null) return _decodeRankings(cached, startOffset: start);
 
-    final response = await _http.get(
+    final response = await http.get(
       '/rexxar/api/v2/tv/recommend',
       query: <String, Object?>{
         'refresh': '0',
@@ -167,7 +161,7 @@ final class DoubanClient {
     }
     final raw = response.asText;
     final entries = _decodeRankings(raw, startOffset: start);
-    if (entries.isNotEmpty) await _cache?.put(key, raw, ttl: _rankingTtl);
+    if (entries.isNotEmpty) await cache?.put(key, raw, ttl: _rankingTtl);
     return entries;
   }
 
@@ -223,10 +217,10 @@ final class DoubanClient {
   /// 按关键词搜索影视条目（豆瓣移动版搜索的 subjects 结果）。
   Future<List<DoubanSearchHit>> searchSubjects(String query, {int count = 8}) async {
     final key = 'search:$query:$count';
-    final cached = await _cache?.get(key);
+    final cached = await cache?.get(key);
     if (cached != null) return _decodeSearch(cached);
 
-    final response = await _http.get(
+    final response = await http.get(
       '/rexxar/api/v2/search/subjects',
       query: <String, Object?>{'q': query, 'count': '$count'},
       headers: _headers,
@@ -236,7 +230,7 @@ final class DoubanClient {
     }
     final raw = response.asText;
     final hits = _decodeSearch(raw);
-    await _cache?.put(key, raw, ttl: _detailTtl);
+    await cache?.put(key, raw, ttl: _detailTtl);
     return hits;
   }
 
@@ -303,21 +297,21 @@ final class DoubanClient {
     if (id.isEmpty) return null;
     final kind = isTv ? 'tv' : 'movie';
     final key = 'subject:$kind:$id';
-    final cached = await _cache?.get(key);
+    final cached = await cache?.get(key);
     if (cached != null) return _decodeDetail(cached);
 
-    final response = await _http.get(
+    final response = await http.get(
       '/rexxar/api/v2/$kind/$id',
       headers: _headers,
     );
     if (!response.isOk) {
-      _logger('豆瓣详情 $kind/$id 失败：HTTP ${response.statusCode}');
+      logger('豆瓣详情 $kind/$id 失败：HTTP ${response.statusCode}');
       return null;
     }
     final raw = response.asText;
     final detail = _decodeDetail(raw);
     if (detail != null && (detail.intro != null || detail.rate != null)) {
-      await _cache?.put(key, raw, ttl: _detailTtl);
+      await cache?.put(key, raw, ttl: _detailTtl);
     }
     return detail;
   }
@@ -372,7 +366,7 @@ final class DoubanClient {
     if (cleaned.isEmpty) return null;
 
     final key = 'find:$cleaned:${year ?? 0}:${preferTv ? 1 : 0}';
-    final cached = await _cache?.get(key);
+    final cached = await cache?.get(key);
     if (cached != null) {
       final id = cached;
       return subjectDetail(id, isTv: preferTv);
@@ -380,7 +374,7 @@ final class DoubanClient {
 
     final hits = await searchSubjects(cleaned);
     if (hits.isEmpty) {
-      await _cache?.put(key, '', ttl: _detailTtl);
+      await cache?.put(key, '', ttl: _detailTtl);
       return null;
     }
 
@@ -388,7 +382,7 @@ final class DoubanClient {
     best ??= hits.first;
 
     // 缓存"标题 → subject id"的映射；详情本体有自己的缓存。
-    if (best.id.isNotEmpty) await _cache?.put(key, best.id, ttl: _detailTtl);
+    if (best.id.isNotEmpty) await cache?.put(key, best.id, ttl: _detailTtl);
     final detail = await subjectDetail(best.id, isTv: best.isTv);
     // rexxar 详情响应不带类型，这里把搜索拿到的类型补上。
     if (detail == null) return null;
