@@ -1,0 +1,30 @@
+CineFlow（影流）
+Copyright 2026 CineFlow contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+---
+
+## 第三方依赖声明
+
+除下方「直接依赖」一节的软件包外，本项目未合并（copy）任何第三方项目的源代码。
+
+### 直接依赖（通过包管理器使用，未修改其源码）
+
+完整清单见 pubspec.lock 与 go.mod。主要项：
+
+- Flutter / Dart — BSD-3-Clause — https://flutter.dev
+- media_kit 及 media_kit_video / media_kit_libs_* — MIT — https://github.com/media-kit/media-kit
+  （底层捆绑 libmpv：mpv-player/mpv，GPL-2.0/LGPL，以动态链接方式随 media_kit 分发）
+- flutter_riverpod — MIT — https://github.com/rrousselGit/riverpod
+- dio — MIT — https://github.com/cfug/dio
+- flutter_secure_storage — BSD-3-Clause
+- screen_brightness / url_launcher / go_router / drift 等 — 见 pubspec.lock
+- go/internal/pan115/m115 内含自 115driver（MIT）移植的算法，其许可文件原样保留于同目录
+
+### 数据来源
+
+- 豆瓣排行榜 / 搜索 / 条目详情来自豆瓣公开页面接口（m.douban.com rexxar v2），
+  仅供学习与个人使用；本项目未持久化转储其数据，也未将其用于商业用途。
+- Emby 是 Emby Corp. 的商标；本项目为第三方客户端，与 Emby Corp. 及豆瓣均无关联
+  （no affiliation），亦未获其背书。

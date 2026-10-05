@@ -1,0 +1,86 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Widget Preview related
+.widget_preview/
+
+# 图标生成临时产物（tool/icon/gen_icons.sh 的 Edge headless 截图与浏览器 profile，
+# 全部可重新生成；含数百个 Edge 缓存文件，不应入库）
+tool/icon/_gen/
+
+# Gradle 构建产物（根 /.gitignore 的 /build/ 只锚定仓库根，覆盖不到 android/ 下）
+android/build/
+android/.gradle/
+
+# 凭据与环境（真实值永远不入库；仓库只留 *.example 模板）
+# 来源：并入 CineFlow/ 规划仓库时补入——原 .gitignore 只有 android/.gitignore 里
+# 的 key.properties/*.keystore/*.jks，没有覆盖 .env 与 *.local 这类常见凭据文件。
+.env
+.env.*
+*.local
+config.local.yaml
+*.key
+*.p12
+*.p8
+*.jks
+*.keystore
+
+# 临时排查产物（门禁脚本自身产生的报告等）
+scripts/_probe_*
+
+
+# ---- 本地工作流资产（不入库）----
+.github/skills/
+docs/PROMPT-TEMPLATES.md
+docs/TECH-SKILLS.md
+docs/OSS-SOURCES.md
+docs/task-board.md
+docs/review-checklist.md
+docs/UPDATE-WORKFLOW.md
+docs/TECH-NOTES.md
+docs/local/
+tool/_*.txt
+tool/scrub_*.py

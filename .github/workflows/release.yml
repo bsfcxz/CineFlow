@@ -1,0 +1,143 @@
+# 发布：打 v* tag 时构建 arm64 release APK 并创建 GitHub Release。
+#
+# 设计要点：
+#   - APK **不进 git**：30MB 二进制会永久撑大仓库历史（且 .gitignore 已排除 /build/）。
+#     二进制的归宿是 Release 附件，这里是唯一发布通道。
+#   - 走 draft → publish 两段式：先建草稿再上传产物，产物齐全才转正，
+#     避免用户看到「建好了但下不到东西」的半截 Release。
+#   - changelog 优先：若 docs/changelog/vX.Y.Z.md 已存在就用它当 Release 正文；
+#     否则退回自动生成的提交清单（release-notes.yml 之后会自动覆盖同步）。
+#   - 校验 tag 与 VERSION 一致：防止 tag 打错版本。
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag，如 v0.2.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.35.0'
+
+      - name: 装 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 解析 tag 并校验与 VERSION 一致
+        id: v
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VER="${TAG#v}"
+          FILE_VER="$(tr -d '[:space:]' < VERSION)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag 版本: $VER / VERSION 文件: $FILE_VER"
+          if [ "$VER" != "$FILE_VER" ]; then
+            echo "::error::tag($VER) 与 VERSION 文件($FILE_VER) 不一致，拒绝发布"
+            exit 1
+          fi
+          PW_VER="$(grep -o "const String kAppVersion = '[^']*'" lib/core/version.dart | sed "s/.*'\(.*\)'.*/\1/")"
+          if [ "$VER" != "$PW_VER" ]; then
+            echo "::error::tag($VER) 与 lib/core/version.dart($PW_VER) 不一致，拒绝发布"
+            exit 1
+          fi
+
+      - name: 取依赖
+        run: flutter pub get
+
+      - name: 静态分析与测试（发布前门禁）
+        run: |
+          flutter analyze
+          flutter test
+
+      - name: 构建 arm64 release APK（按架构拆分 + 混淆）
+        run: |
+          flutter build apk --release --split-per-abi \
+            --obfuscate --split-debug-info=build/symbols
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+             "dist/CineFlow-${{ steps.v.outputs.ver }}-arm64-v8a.apk"
+
+      - name: 生成校验和
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.apk > checksums.txt
+          cat checksums.txt
+
+      - name: 上传构建产物（供排查）
+        uses: actions/upload-artifact@v4
+        with:
+          name: cineflow-apk-${{ steps.v.outputs.ver }}
+          path: |
+            dist/*.apk
+            dist/checksums.txt
+            build/symbols/*
+          if-no-files-found: error
+
+  publish:
+    needs: build-apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 APK
+        uses: actions/download-artifact@v4
+        with:
+          name: cineflow-apk-${{ github.event.inputs.tag && github.event.inputs.tag || github.ref_name }}
+          path: dist
+
+      - name: 建草稿 Release 并上传 APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VER="${TAG#v}"
+          NOTES="docs/changelog/v${VER}.md"
+          if [ -f "$NOTES" ]; then
+            echo "使用 $NOTES 作为 Release 正文"
+            gh release create "$TAG" --draft --title "CineFlow v${VER}" --notes-file "$NOTES"
+          else
+            echo "::warning::缺少 $NOTES，退回自动生成正文（随后 release-notes.yml 会自动同步）"
+            gh release create "$TAG" --draft --title "CineFlow v${VER}" --generate-notes
+          fi
+          # 只上传 APK 与校验和；符号表留在构建产物里，不进 Release
+          gh release upload "$TAG" dist/*.apk dist/checksums.txt --clobber
+
+      - name: 校验产物齐全后转正
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          N=$(gh release view "$TAG" --json assets --jq '.assets | length')
+          echo "Release 附件数：$N"
+          if [ "$N" -lt 2 ]; then
+            echo "::error::产物不全（期望至少 APK + checksums），Release 保持草稿"
+            exit 1
+          fi
+          gh release edit "$TAG" --draft=false
+          echo "Release $TAG 已发布"

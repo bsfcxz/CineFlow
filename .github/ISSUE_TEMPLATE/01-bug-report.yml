@@ -1,0 +1,108 @@
+# =============================================================================
+# Bug 报告表单（GitHub issue forms）
+#
+# 设计依据（不是拍脑袋定的，改字段前请先看这段）：
+#   - 采用 YAML issue forms 而非 Markdown 模板：官方对「需要结构化信息」的场景
+#     明确指向 forms，提交后按字段生成结构化正文，机器人/AI 分诊才拿得到可靠字段。
+#   - 必填项克制（社区公认反模式是必填过多劝退报告者、逼出满屏 n/a）：
+#     只保留没有就无法分诊的四项——描述、应用版本、Android 版本与机型、日志/截图。
+#     复现步骤设为可选：偶发 bug 本来就写不出稳定步骤。
+#   - 各字段的 id（version / device / area / logs）是给自动分诊解析用的，
+#     改 id 会破坏机器解析，慎动。
+#   - 「已确认不是这类问题」的勾选项与 README 的免责声明呼应：本项目是第三方
+#     Emby 客户端，Emby 服务端自身的问题、豆瓣接口变动导致的榜单异常，
+#     都不属于本项目能修的范围——先分流掉，避免误报占用维护精力。
+# =============================================================================
+name: "🐛 Bug 报告"
+description: 功能不符合预期、报错、闪退、数据显示不对
+labels: ["bug"]
+body:
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索过现有 issue（包括已关闭的），没有找到相同问题
+          required: true
+        - label: 我确认问题出在 App 本身，而不是 Emby 服务端或豆瓣接口变动（见 README 免责声明）
+          required: true
+        - label: 我已确认设备是 arm64 架构（本版仅提供 arm64-v8a 包）
+          required: true
+    - type: textarea
+      id: description
+      attributes:
+        label: 问题描述
+        description: 实际发生了什么？你期望的正确行为是什么？
+        placeholder: |
+          实际发生：……
+          期望行为：……
+      validations:
+        required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 能稳定复现最好；偶发问题就写清出现时正在做什么。
+      placeholder: |
+        1. 打开「媒体库 → ……」
+        2. 点击……
+        3. 出现……
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: CineFlow 版本
+      description: 在「我的」页面底部查看（形如 v0.2.0）。
+      placeholder: "例：v0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 机型与 Android 版本
+      description: 例如「小米 11 / Android 13」。播放器相关问题尤其需要。
+      placeholder: "例：Xiaomi M2012K11AC / Android 13"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题涉及的功能
+      description: 不确定就选最后一项。
+      options:
+        - 登录 / 连接服务器
+        - 首页
+        - 媒体库（列表/筛选/排序/分页）
+        - 详情页
+        - 播放器（含手势、进度、字幕音轨）
+        - 排行榜 / 搜索（豆瓣）
+        - 我的 / 设置
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: |
+        崩溃/报错请贴日志：`adb logcat | findstr -i "flutter cineflow"`；
+        纯界面问题可改为上传截图。文件可直接拖进此输入框。
+        **粘贴前请删掉服务器地址、Token、Cookie 等敏感信息**——这是公开仓库。
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息（可选）
+      description: 网络环境（是否反代/公网）、Emby 服务端版本等。
+
+    validations:
+      required: false

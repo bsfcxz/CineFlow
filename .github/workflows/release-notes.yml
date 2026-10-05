@@ -1,0 +1,43 @@
+# Release 正文同步
+#
+# docs/changelog/vX.Y.Z.md 是各版本发布说明的事实源（进版本管理、可评审）。
+# 该目录有文件合入主干时，这里把每份 changelog 同步为同名 tag 的 GitHub Release 正文。
+#
+# 为什么走「文件 + 同步」而不是手工编辑 Release：
+#   - 发布说明随代码走 PR 评审，不再是发版后补写的口头产物；
+#   - 远程会话（AI / CLI）没有编辑 Release 的 API 权限，但能合 PR，
+#     借这条通道即可完成发布说明的全流程自动化。
+#
+# 对应 Release 尚不存在的文件（例如提前合入下个版本的 changelog）会被跳过，
+# 等 Release 创建后再次触碰该文件即可同步。
+
+name: release-notes
+
+on:
+  push:
+    branches: [master, main]
+    paths: ['docs/changelog/*.md']
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 同步 changelog 到对应 Release 正文
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          for file in docs/changelog/v*.md; do
+            tag="$(basename "$file" .md)"
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              echo "同步 $file → Release $tag"
+              gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file "$file"
+            else
+              echo "跳过 $file：Release $tag 尚不存在"
+            fi
+          done

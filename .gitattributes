@@ -1,0 +1,42 @@
+# 行尾：本机 core.autocrlf=true，而本仓库源码是 LF。
+# 若 .sh 混入 CRLF 会在 bash 下报 "\r: command not found"（AGENTS.md §10.5）。
+
+# 默认按文本处理，仓库内统一存 LF
+* text=auto eol=lf
+
+# 脚本必须 LF，否则 bash 执行失败
+*.sh   text eol=lf
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+
+# Dart / 配置 / 文档：LF
+*.dart text eol=lf
+*.md   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.kts  text eol=lf
+*.gradle text eol=lf
+*.xml  text eol=lf
+
+# 二进制：不要做行尾转换，也不要 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.apk binary
+*.jks binary
+*.keystore binary
+*.frag text eol=lf
+
+# ★ 原生库必须标 binary：上面 `* text=auto eol=lf` 会把 .so 当文本、
+# 改写其中的 0x0A 字节，破坏 ELF 头导致库无法加载。
+# Go 交叉编译产物（jniLibs/*/libcineflow_go.so）会入库，必须匹配这条。
+*.so    binary
+*.dll   binary
+*.dylib binary
+*.a     binary
+# C 头文件（c-shared 生成的 libcineflow_go.h）保持文本，便于查看导出符号
+*.h     text eol=lf
+
+# 锁文件在 GitHub 上折叠显示，避免巨型 diff
+pubspec.lock linguist-generated=true

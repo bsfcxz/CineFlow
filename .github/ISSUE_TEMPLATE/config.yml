@@ -1,0 +1,27 @@
+# 去哪提什么问题
+
+- **App 用着有问题？** → 用「🐛 Bug 报告」表单，别开空白 issue。
+  提交前请确认不是 Emby 服务端或豆瓣接口自身的问题。
+
+- **想加功能？** → 用「✨ 功能建议」表单，先说清楚要解决什么问题。
+
+## 不属于本项目范围
+
+- **Emby 服务端的问题**（转码失败、库扫描异常、权限）——找 Emby 官方或服务端。
+- **豆瓣榜单/搜索异常**——豆瓣公开接口随时可能变动，本项目无法保证。
+- **iOS / 桌面 / TV / 平板**——当前明确只做 Android 手机端（见 README 路线图）。
+
+## 安全相关
+
+**不要**在公开 issue 里贴服务器地址、Token、Cookie、账号密码。
+如确有必要，先脱敏为 `<server>` / `<token>`。
+
+如果是安全问题需要私下反馈，请说明「希望私下沟通」，维护者会另行联系。
+blank_issues_enabled: false
+contact_links:
+  - name: 已知缺陷与未实现功能
+    url: https://github.com/1357980024/CineFlow/blob/master/AGENTS.md
+    about: 先看 AGENTS.md §7 的缺陷台账——你要报的可能已经记录在案。
+  - name: 下载与安装
+    url: https://github.com/1357980024/CineFlow/releases/latest
+    about: 已构建的 APK 在 Releases 页面。

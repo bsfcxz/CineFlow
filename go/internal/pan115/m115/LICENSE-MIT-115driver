@@ -1,0 +1,32 @@
+本目录下的 m115 包移植自 github.com/SheltonZhu/115driver 的 pkg/crypto/m115
+（原作者 SheltonZhu，MIT License）。以下为该项目 LICENSE 中的标准 MIT 许可证正文。
+
+注意：上游仓库 LICENSE 文件在 MIT 正文之前还包含一段作者针对 AlistGo 的立场声明
+（"SPECIAL NOTICE - POLICY STATEMENT"）。该声明不是许可证正文，未随本移植复制；
+它也不影响 MIT 授予的权利。本文件仅保留许可证本体，以满足 MIT 的署名与许可声明保留要求。
+
+来源：https://github.com/SheltonZhu/115driver （pkg/crypto/m115）
+
+---
+
+MIT License
+
+Copyright (c) 2022-2024 SheltonZhu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

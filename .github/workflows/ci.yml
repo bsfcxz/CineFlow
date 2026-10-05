@@ -1,0 +1,62 @@
+# CineFlow 持续集成
+#
+# 职责：每次 push / PR 都跑与本机一致的门禁，尽早发现「本地绿、CI 红」。
+#
+# 与本机的一致性：本机用 PowerShell 门禁脚本（bash 在某些沙箱下不可用），
+# CI 在 ubuntu-latest 上可以正常用 shell，这里直接调同等逻辑的脚本。
+# 版本号一致性由 tool/bump_version.ps1 负责，Linux 上用 pwsh 也能跑。
+#
+# 为什么不跑真机验收：布局、手势、硬解这类只能在真机上看（AGENTS.md §6.4），
+# CI 覆盖不到，靠 §8.2 的人工走查清单兜底——**不要把 CI 绿当成发布就绪**。
+
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          # 与 pubspec 的 environment.sdk / AGENTS.md §2 记录的 Flutter 对齐
+          flutter-version: '3.35.0'
+
+      - name: 取依赖
+        run: flutter pub get
+
+      - name: 静态分析（必须 0 error / 0 warning）
+        run: flutter analyze
+
+      - name: 单元测试
+        run: flutter test
+
+  version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 版本号三处一致（VERSION / pubspec / lib/core/version.dart）
+        run: pwsh -File tool/bump_version.ps1 -Check
+
+  docs-guard:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 敏感信息门禁
+        shell: pwsh
+        run: powershell -File scripts/check-secrets.ps1
+
+      - name: 文档与链接门禁
+        shell: pwsh
+        run: powershell -File scripts/check-docs.ps1
