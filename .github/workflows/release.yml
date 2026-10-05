@@ -101,12 +101,17 @@ jobs:
     needs: build-apk
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: 计算版本号（与构建任务产物名一致：去掉 v 前缀）
+        id: v2
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "ver=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: 下载 APK
         uses: actions/download-artifact@v4
         with:
-          name: cineflow-apk-${{ github.event.inputs.tag && github.event.inputs.tag || github.ref_name }}
+          name: cineflow-apk-${{ steps.v2.outputs.ver }}
           path: dist
 
       - name: 建草稿 Release 并上传 APK

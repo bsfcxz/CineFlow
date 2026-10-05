@@ -308,13 +308,7 @@ scripts/
 docs/
 ├── DEVELOPMENT.md               # 架构决策与踩坑实录（改行为后需同步）
 ├── architecture.md              # ★ 分层与 MediaProvider 契约（按实际代码写）
-├── task-board.md                # ★ 任务看板
-├── review-checklist.md          # ★ 审查清单 §0–§7
-├── UPDATE-WORKFLOW.md           # 文档/契约自身的更新流程
 ├── CHANGELOG-GUIDE.md           # 变更日志写作法
-├── TECH-SKILLS.md               # S1–S10 技能全景与开源借鉴
-├── OSS-SOURCES.md               # 已核实开源仓库注册表（含许可分级）
-├── PROMPT-TEMPLATES.md          # 7 个角色提示词
 ├── changelog/                   # ★ 发布说明（每版一份，Release 正文的事实源）
 ├── decisions/                   # ADR：0001（已废弃）· 0002（纯 Dart MVP，现行）
 └── lessons/                     # 踩坑经验索引与写作规范
@@ -794,13 +788,10 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 | 弹幕为什么自绘、为什么两种源不能统一 | `docs/decisions/0006-danmaku-source-and-rendering.md` |
 | **115 为什么走 webapi 而不是官方开放平台、有什么风险** | **`docs/decisions/0007-pan115-webapi-route.md`** |
 | Emby 与 115 的播放模型差异、能力对照表 | 同上（§"与 Emby 的关系"） |
-| 当前该干什么 | `docs/task-board.md`（可执行任务卡）；路线图总表见本文件 §1 |
 | 审查清单（提交前逐条打勾） | `docs/review-checklist.md`（§0–§7） |
 | 技术技能与开源借鉴（S1–S10） | `docs/TECH-SKILLS.md` + 技能 `cineflow-tech-skills` |
 | 已核实开源仓库注册表（含许可） | `docs/OSS-SOURCES.md` + `scripts/discover_oss.py --verify` |
 | 变更日志怎么写 | `docs/CHANGELOG-GUIDE.md` |
-| 文档/契约自身的更新流程 | `docs/UPDATE-WORKFLOW.md` |
-| 各角色提示词 | `docs/PROMPT-TEMPLATES.md` |
 | 开发工作流与铁律 | `.github/skills/cineflow-workflow/SKILL.md` |
 | Emby 协议实测坑逐条 | `.github/skills/cineflow-tech-skills/references/emby-api.md` |
 | 播放器/手势/生命周期 | `.../references/player-media.md` |
