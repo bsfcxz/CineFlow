@@ -82,5 +82,5 @@ docs/review-checklist.md
 docs/UPDATE-WORKFLOW.md
 docs/TECH-NOTES.md
 docs/local/
-tool/_*.txt
+tool/_*
 tool/scrub_*.py

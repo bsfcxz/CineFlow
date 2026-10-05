@@ -29,7 +29,7 @@ jobs:
         with:
           channel: stable
           # 与 pubspec 的 environment.sdk / AGENTS.md §2 记录的 Flutter 对齐
-          flutter-version: '3.35.0'
+          flutter-version: '3.47.5'
 
       - name: 取依赖
         run: flutter pub get

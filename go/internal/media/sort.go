@@ -61,7 +61,7 @@ type SortSpec struct {
 //
 // 为什么必须加次级键：实测同一天入库的条目主键相同，
 // Emby 对相同主键的返回顺序不稳定，翻页时会**重复或漏出**条目。
-// 追加 SortName 后顺序确定（对照 plezy `browse.dart:2088` 的多字段写法）。
+// 追加 SortName 后顺序确定（多字段排序的通用写法）。
 func (s SortSpec) Normalize() (by string, order string) {
 	dir := s.Direction
 	if dir == "" {
@@ -83,7 +83,7 @@ func (s SortSpec) Normalize() (by string, order string) {
 // Less 供本地排序使用（与 Go 侧查询参数无关的离线场景）。
 //
 // 缺失值一律排到末尾——与 descending 无关。
-// 这条规则来自 plezy `media_item_sort.go` 的注释：
+// 这条规则来自同类实现的通用注释：
 // "Missing values always sort last — including under descending"。
 // 若把缺失当 0 参与降序，它们会冒到最前面，看起来像"数据错乱"。
 func Less(a, b Item, f SortField, d Direction) bool {

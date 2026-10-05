@@ -34,7 +34,7 @@
 
 ## 4. 引用开源前必核（且要连许可一起看）
 
-- 凭记忆写仓库名 = 违规：实测抓到 `go-flutter/go-flutter`(404)、`moonfin/moonfin`(404) 等。
+- 凭记忆写仓库名 = 违规：实测抓到多个 404 的仓库名。
 - **星高 ≠ 能抄**：核查过的多款高星同类播放器实为 **GPL-3.0** 或
   **NOASSERTION**（无明确许可）——都只能借鉴思路，**不能合并源码**。
 - 核实用 `python scripts/discover_oss.py --verify owner/repo`（未设 token 会撞限速，设 `GITHUB_TOKEN` 更稳）。

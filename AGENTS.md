@@ -765,7 +765,7 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 
 **已用此法确认的结论**（可直接引用，无需重复验证）：
 - 排序方向：`title→asc`、`rating→desc`、`addedAt→desc`；"最新添加"用 `DateCreated + Descending`
-  （plezy `browse.dart` 的 `fetchSortOptions` 与 `browse.dart:2088` 的 hub 查询一致）。
+  （与主流实现的 fetchSortOptions / hub 查询语义一致）。
 - `SortBy`/`SortOrder` 支持**逗号分隔多字段**（`'DateCreated,SortName,ProductionYear'` /
   `'Descending,Descending,Descending'`）——本仓库已用次级键避免翻页顺序抖动。
 

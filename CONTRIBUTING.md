@@ -6,7 +6,7 @@
 
 1. **[AGENTS.md](AGENTS.md)** —— 项目红线、硬性约定、已知的坑、**缺陷台账 §7**（你要修的可能已在案）。
 2. **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** —— 架构决策与踩坑实录。
-3. **[docs/review-checklist.md](docs/review-checklist.md)** —— 提交前自查清单。
+3. **docs/review-checklist.md** —— 提交前自查清单。
 
 几条最容易踩的：
 

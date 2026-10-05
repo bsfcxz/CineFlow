@@ -134,15 +134,9 @@ pwsh -File tool/bump_version.ps1 -Check          # 版本号三处一致
 | [AGENTS.md](AGENTS.md) | ★ AI 代理作业手册：安全红线、已知的坑、缺陷台账、验收基线、DoD |
 | [docs/architecture.md](docs/architecture.md) | ★ 分层与 `MediaProvider` 契约（按实际代码写） |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 架构决策与踩坑实录 |
-| [docs/task-board.md](docs/task-board.md) | 当前该干什么（任务卡与已完成归档） |
-| [docs/review-checklist.md](docs/review-checklist.md) | 审查清单（§0 门禁 – §7 发布） |
 | [docs/decisions/](docs/decisions/README.md) | ADR：0002 纯 Dart MVP（现行）、0001（已废弃） |
-| [docs/TECH-SKILLS.md](docs/TECH-SKILLS.md) | 每块能力怎么实现、去哪借鉴开源实现 |
-| [docs/OSS-SOURCES.md](docs/OSS-SOURCES.md) | 已核实开源仓库注册表（含许可分级） |
-| [docs/UPDATE-WORKFLOW.md](docs/UPDATE-WORKFLOW.md) | 文档/契约自身的更新流程 |
 | [docs/CHANGELOG-GUIDE.md](docs/CHANGELOG-GUIDE.md) | 变更日志写作法 |
 | [docs/lessons/](docs/lessons/README.md) | 踩坑经验索引 |
-| [.github/skills/](.github/skills/cineflow-workflow/SKILL.md) | AI 协作技能：工作流 / 审查 / 技术技能包 / 开源发现 |
 
 ## 常用门禁
 
