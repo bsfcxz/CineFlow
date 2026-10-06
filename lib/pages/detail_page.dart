@@ -71,7 +71,7 @@ void openMediaItem(BuildContext context, MediaItem item) {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                  fontSize: 15, fontWeight: FontWeight.w800)),
+                                  fontSize: 16, fontWeight: FontWeight.w800)),
                         ),
                         SizedBox(width: 44),
                       ]),
@@ -183,6 +183,61 @@ class _DetailPageState extends ConsumerState<DetailPage> {
   bool _watched = false;
   bool _toggling = false;
 
+  /// 分集区的定位锚点：剧集的「选集播放」按钮靠它滚过去。
+  final _seriesKey = GlobalKey();
+
+  /// 剧集起播中（下钻分季/分集要发两次请求，需要禁重入 + 显示 loading）
+  bool _resolvingPlay = false;
+
+  /// 剧集续播文案（如「继续播放 第 3 集」）。
+  ///
+  /// 由 `_prefetchSeriesProgress` 在进详情页时预取，
+  /// 这样**首帧就能显示正确文案**，用户不必先点一次才知道看到哪了。
+  String? _seriesResumeLabel;
+
+  /// 预取剧集进度：进详情页时问一次服务端"该看哪一集"。
+  ///
+  /// ## 改造（用户指出的"致命问题"）
+  ///
+  /// 原来是：`getSeasons` → `getEpisodes` → 自己遍历分集 `UserData` 推断
+  /// （`SeriesProgress.resolve`），**2 次请求 + 自己写的推断逻辑**。
+  ///
+  /// 现在是：**1 次请求** `getNextUp(seriesId)`，由服务端直接给出答案。
+  /// 服务端有完整观看历史，比客户端遍历更准（能正确处理
+  /// "跳着看""看完最后一集""看了几分钟就退出"等边界）。
+  Future<void> _prefetchSeriesProgress(MediaItem item) async {
+    if (item.type != 'Series') return;
+    final api = ref.read(embyApiProvider);
+    if (api == null) return;
+    try {
+      final next = await api.getNextUp(item.id, limit: 1);
+      if (!mounted) return;
+      if (next.isEmpty) {
+        // 服务端表示"没有下一集了"。两种情况要区分：
+        //   · **该剧已全部看完** → 用户预期是"重播最后一集"（不是跳回第 1 集！）
+        //   · **一集都没看过** → 从第 1 集开始
+        // 判据：剧集的 `unplayedItemCount`（实测服务端会给，如 16）。
+        // 若它 == 0，说明一集不剩（= 全看完了）。
+        // ⚠️ 早期版本这里写死"重播第 1 集"，对"已看完"的用户是**语义回归**：
+        //    他会莫名其妙跳回开头。（审计发现）
+        final allWatched =
+            item.unplayedItemCount != null && item.unplayedItemCount == 0;
+        setState(() => _seriesResumeLabel =
+            allWatched ? '已看完 · 重播最后一集' : '立即播放');
+        return;
+      }
+      final ep = next.first;
+      final n = ep.indexNumber;
+      setState(() {
+        _seriesResumeLabel =
+            n != null ? '继续播放 第 $n 集' : '继续播放 ${ep.displayTitle}';
+      });
+    } catch (e) {
+      // 预取失败不影响使用：回落到「立即播放」，真正点击时还会重试
+      debugPrint('[Detail] 预取剧集进度失败（非致命）: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final detail = ref.watch(detailProvider(widget.itemId));
@@ -209,6 +264,13 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       _syncedItemId = item.id;
       _fav = item.isFavorite;
       _watched = item.played;
+      // 剧集：详情一到位就预取"看到第几集"，让按钮首帧就是「继续播放 第 N 集」。
+      // 放这里而不是 initState —— 那时 item 还没加载出来，拿不到 id。
+      // 用 Future.microtask 避免在 build 期间直接 setState。
+      if (isSeries) {
+        _seriesResumeLabel = null;
+        Future.microtask(() => _prefetchSeriesProgress(item));
+      }
     }
     final tags = <String>[
       if (item.productionYear != null) '${item.productionYear}',
@@ -240,7 +302,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                         'https://movie.douban.com/  · 《${item.displayTitle}》'));
                 showComingSoon(context, '分享');
               },
-              icon: Icon(Icons.ios_share_rounded, size: 19),
+              icon: Icon(Icons.ios_share_rounded, size: 20),
             ),
             SizedBox(width: 6),
           ],
@@ -286,12 +348,13 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                   SizedBox(height: 16),
                   Text(ov,
                       style: TextStyle(
-                          fontSize: 12.5,
+                          fontSize: 13,
                           color: Cf.text2,
                           height: 1.75)),
                 ],
                 if (isSeries) ...[
-                  _seriesSection(api, item),
+                  // 用 ValueKey 让「选集播放」能滚到这里（见 _scrollToEpisodes）
+                  KeyedSubtree(key: _seriesKey, child: _seriesSection(api, item)),
                 ] else ...[
                   _movieMediaSection(d),
                 ],
@@ -371,7 +434,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       SizedBox(height: 2),
       Text(d.item.displayTitle,
           style: TextStyle(
-              fontSize: 21, fontWeight: FontWeight.w900, letterSpacing: -.5)),
+              fontSize: 20, fontWeight: FontWeight.w900, letterSpacing: -.5)),
       SizedBox(height: 7),
       Wrap(
           spacing: 6,
@@ -388,7 +451,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                 ),
                 child: Text(t,
                     style: TextStyle(
-                        fontSize: 9.5, fontWeight: FontWeight.w600)),
+                        fontSize: 10, fontWeight: FontWeight.w600)),
               ),
           ]),
       if (d.studios.isNotEmpty) ...[
@@ -401,35 +464,188 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     ]);
   }
 
+  /// 把详情页滚到分集区。
+  ///
+  /// 用 `GlobalKey` + `ensureVisible` 而不是算 offset：
+  /// **分集区高度随季数/集数变化**，硬编码 offset 必然错位。
+  void _scrollToEpisodes() {
+    final ctx = _seriesKey.currentContext;
+    if (ctx == null) return;
+    Scrollable.ensureVisible(ctx,
+        duration: Cf.durSlow, curve: Cf.curve, alignment: 0.05);
+  }
+
+  /// 剧集的主动作：**真正起播**，并且**接着上次看到的那一集**继续。
+  ///
+  /// ## 背景（用户三轮反馈）
+  /// 1. "剧集详情页应该是播放/立即播放按钮，而不是选集"
+  /// 2. "剧集是否'看过'，得分析看到第几集了，还是显示继续播放按钮"
+  /// 3. **"这些东西本来你应该能够从 emby 服务端全部拿到"** ← 最关键的一条
+  ///
+  /// ## 改造前 vs 现在
+  ///
+  /// | | 改造前（错） | 现在（对） |
+  /// |---|---|---|
+  /// | 请求数 | 2 次（getSeasons + getEpisodes） | **1 次**（getNextUp） |
+  /// | 判断"看到第几集" | 自己遍历分集 `UserData` 推断 | **服务端直接给** |
+  /// | 边界情况 | 自己处理，容易错 | 服务端有完整观看历史 |
+  ///
+  /// 服务端的 `/Shows/NextUp?SeriesId=` 就是干这个的（实测返回 S1E9/E10/E11）。
+  /// 我自己写的 `SeriesProgress.resolve` 属于**重新发明轮子且更差**。
+  ///
+  /// ## 起播链路
+  ///   1. 问服务端"该看哪一集"（`getNextUp`）；已看完则回退第一集
+  ///   2. 取该集所属季的分集列表（供播放器的「选集」抽屉与自动连播用）
+  ///   3. 起播，**并把整个 episodes 列表一并传给播放器**
+  ///
+  /// 任一步失败 → **回退到滚动分集列表**并提示，不静默失败。
+  Future<void> _playSeries(MediaItem item) async {
+    final api = ref.read(embyApiProvider);
+    if (api == null) return;
+    setState(() => _resolvingPlay = true);
+    try {
+      // ① 服务端给出"该看哪一集"
+      final next = await api.getNextUp(item.id, limit: 1);
+      if (!mounted) return;
+
+      // ② 取分集列表（播放器的选集/自动连播需要完整列表）。
+      //    优先用 nextUp 那一集所属的季；已看完（next 为空）时用第一季。
+      final seasons = await api.getSeasons(item.id);
+      if (!mounted) return;
+      if (seasons.isEmpty) {
+        _fallbackToEpisodes('该剧集暂无可播放的分集');
+        return;
+      }
+      final target = next.isEmpty ? null : next.first;
+      // nextUp 的条目带 SeasonId；用它定位季，找不到则退回第一季
+      final seasonId = target?.seasonId != null &&
+              seasons.any((s) => s.id == target!.seasonId)
+          ? target!.seasonId!
+          : (seasons.any((s) => s.id == _selectedSeasonId)
+              ? _selectedSeasonId!
+              : seasons.first.id);
+      final episodes = await api.getEpisodes(item.id, seasonId);
+      if (!mounted) return;
+      if (episodes.isEmpty) {
+        _fallbackToEpisodes('该季暂无可播放的分集');
+        return;
+      }
+
+      // ③ 定目标集：
+      //    · 服务端推荐了且在本季 → 用它
+      //    · 已全部看完（next 为空）→ **重播最后一集**（不是第 1 集，见下方注释）
+      //    · 推荐集不在本季 → 用本季第一集
+      final allWatched =
+          item.unplayedItemCount != null && item.unplayedItemCount == 0;
+      final MediaItem targetEp;
+      if (target != null && episodes.any((e) => e.id == target.id)) {
+        targetEp = episodes.firstWhere((e) => e.id == target.id);
+      } else if (allWatched) {
+        targetEp = episodes.last;
+      } else {
+        targetEp = episodes.first;
+      }
+
+      setState(() {
+        _resolvingPlay = false;
+        _seriesResumeLabel = next.isEmpty
+            // 已看完 → 重播最后一集；否则是"一集没看"→ 第一集
+            ? (allWatched ? '已看完 · 重播最后一集' : '立即播放')
+            : (targetEp.indexNumber != null
+                ? '继续播放 第 ${targetEp.indexNumber} 集'
+                : '继续播放 ${targetEp.displayTitle}');
+      });
+      // ★ 必须把 episodes + index 一起传给播放器 —— 否则播放器以为
+      //   这是个"没有分集上下文的单条视频"，**「选集」按钮与自动连播都会消失**
+      //   （用户实测反馈："你将播放视频中的选集按钮给删除了"）。
+      openPlayer(context, targetEp,
+          episodes: episodes, index: episodes.indexOf(targetEp));
+    } catch (e) {
+      debugPrint('[Detail] 剧集起播失败: $e');
+      if (!mounted) return;
+      _fallbackToEpisodes('起播失败，已为你打开分集列表');
+    }
+  }
+
+  /// 剧集起播失败时的退路：滚到分集区 + 轻提示（不静默）。
+  void _fallbackToEpisodes(String msg) {
+    if (mounted) {
+      setState(() => _resolvingPlay = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+      );
+    }
+    _scrollToEpisodes();
+  }
+
   Widget _actionButtons(MediaItem item) {
-    final resume = item.progress > 0 && !item.played;
-    final label = resume
-        ? '▶  继续播放 ${(item.progress * 100).round()}%'
-        : '▶  立即播放';
+    final isSeries = item.type == 'Series';
+
+    // ★ 按钮文案规则（用户两轮反馈后的最终口径）：
+    //
+    //   · **电影**：进度来自自身 `UserData` → `progress > 0 && !played` 即续播
+    //   · **剧集**：进度**不在剧集上**（实测 `Series.UserData` 恒为
+    //     `Played=false, PositionTicks=0`），必须从分集反推"看到第几集"。
+    //     反推结果由 `_playSeries` 在拉到分集后写入 `_seriesResumeLabel`。
+    //
+    //   两者共同点：**保持「立即播放 / 继续播放」的语义，绝不显示"选集"**
+    //   （那是上一版的错误做法，用户明确否掉了）。
+    final String label;
+    if (isSeries) {
+      // 分集还没拉到时（首帧）先显示「立即播放」，拉到后自动变「继续播放 第 N 集」
+      label = _resolvingPlay
+          ? '正在准备…'
+          : (_seriesResumeLabel != null
+              ? '▶  $_seriesResumeLabel'
+              : '▶  立即播放');
+    } else {
+      final resume = item.progress > 0 && !item.played;
+      label = resume
+          ? '▶  继续播放 ${(item.progress * 100).round()}%'
+          : '▶  立即播放';
+    }
+
+    void onPrimary() {
+      if (_resolvingPlay) return;
+      if (isSeries) {
+        _playSeries(item);
+      } else {
+        // 把「版本」chips 的当前选择带进播放器，否则多版本切换只改展示不改播放
+        openPlayer(context, item, mediaSourceId: _selectedVersionId);
+      }
+    }
+
     return Row(children: [
       Expanded(
-        child: GestureDetector(
-          // 把「版本」chips 的当前选择带进播放器，否则多版本切换只改展示不改播放
-          onTap: () =>
-              openPlayer(context, item, mediaSourceId: _selectedVersionId),
-          child: Container(
-            height: 42,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              gradient: Cf.primaryGradient,
-              borderRadius: BorderRadius.circular(9),
-              boxShadow: [
-                BoxShadow(
-                    color: Cf.accent.withValues(alpha: .3),
-                    blurRadius: 16,
-                    offset: const Offset(0, 4)),
-              ],
+        // 原为裸 GestureDetector：**没有按压反馈**，而且可点区域随文字宽度变化。
+        // 改用 InkWell（在 Material 上才有涟漪）+ 固定高度，命中区稳定且 ≥44dp。
+        child: SizedBox(
+          height: 44,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onPrimary,
+              borderRadius: BorderRadius.circular(Cf.radiusSm),
+              child: Ink(
+                decoration: BoxDecoration(
+                  gradient: Cf.primaryGradient,
+                  borderRadius: BorderRadius.circular(Cf.radiusSm),
+                  boxShadow: [
+                    BoxShadow(
+                        color: Cf.accent.withValues(alpha: .3),
+                        blurRadius: 16,
+                        offset: const Offset(0, 4)),
+                  ],
+                ),
+                child: Center(
+                  child: Text(label,
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: Cf.ink)),
+                ),
+              ),
             ),
-            child: Text(label,
-                style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w800,
-                    color: Cf.ink)),
           ),
         ),
       ),
@@ -450,9 +666,20 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                   final api = ref.read(embyApiProvider)!;
                   final result = await api.toggleFavorite(item.id, favorite: next);
                   if (result != next) setState(() => _fav = !next);
-                } catch (_) {
+                } catch (e) {
+                  // ★ 原为 `showComingSoon(context, '收藏失败，请稍后重试')` ——
+                  //   用「即将推出」的弹窗去报**失败**，是双重错误：
+                  //   ① 用户看到"即将推出"会以为这功能没做（其实做了，只是这次失败了）
+                  //   ② 失败原因被吞掉（`catch (_)`），无法判断能否自救
+                  //   改为 SnackBar + 真实原因，风格与"操作反馈"语义一致。
+                  debugPrint('[Detail] 收藏切换失败: $e');
                   setState(() => _fav = !_fav);
-                  if (mounted) showComingSoon(context, '收藏失败，请稍后重试');
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text('收藏失败：$e'),
+                      duration: const Duration(seconds: 3),
+                    ));
+                  }
                 } finally {
                   if (mounted) setState(() => _toggling = false);
                 }
@@ -475,9 +702,16 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                   final api = ref.read(embyApiProvider)!;
                   final result = await api.togglePlayed(item.id, played: next);
                   if (result != next) setState(() => _watched = !next);
-                } catch (_) {
+                } catch (e) {
+                  // 同上：失败不该用「即将推出」弹窗报。
+                  debugPrint('[Detail] 看过标记失败: $e');
                   setState(() => _watched = !_watched);
-                  if (mounted) showComingSoon(context, '标记失败，请稍后重试');
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text('标记失败：$e'),
+                      duration: const Duration(seconds: 3),
+                    ));
+                  }
                 } finally {
                   if (mounted) setState(() => _toggling = false);
                 }
@@ -512,7 +746,10 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       }
     }
     if (audio.isNotEmpty) {
-      final t = (audio.first.displayTitle ?? '') + (audio.first.codec ?? '');
+      // 用 `label`（优先服务端 DisplayTitle，缺失才自拼）——
+      // 原来只拼 displayTitle + codec，服务端给的名字里若含 "Atmos"
+      // 但 displayTitle 为空就会漏判。
+      final t = audio.first.label;
       if (t.toUpperCase().contains('ATMOS') || t.contains('全景声')) {
         out.add('杜比全景声');
       }
@@ -535,7 +772,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
           border: Border.all(
               color: onTap == null ? Cf.border : const Color(0x26FFFFFF)),
         ),
-        child: Icon(icon, size: 17, color: color),
+        child: Icon(icon, size: 16, color: color),
       ),
     );
   }
@@ -575,14 +812,14 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(9),
                         color: active
-                            ? const Color(0x1F00D4FF)
+                            ? Cf.accent.withValues(alpha: 0.12)
                             : Cf.surface2,
                         border: Border.all(
                             color: active ? Cf.accent : Cf.border),
                       ),
                       child: Text(s.name,
                           style: TextStyle(
-                              fontSize: 11.5,
+                              fontSize: 12,
                               fontWeight: active
                                   ? FontWeight.w800
                                   : FontWeight.w600,
@@ -684,7 +921,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                   ),
                   child: Text('$minutes 分钟',
                       style: TextStyle(
-                          fontSize: 8.5, color: Cf.text2)),
+                          fontSize: 9, color: Cf.text2)),
                 ),
               ),
             if (ep.progress > 0)
@@ -735,7 +972,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                          fontSize: 10.5,
+                          fontSize: 11,
                           color: Cf.text3,
                           height: 1.55)),
                 ],
@@ -766,10 +1003,10 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       if (selected?.container case final c? when c.isNotEmpty)
         c.toUpperCase(),
       if (selected?.sizeLabel case final sz? when sz.isNotEmpty) sz,
-      if (video case final v? when v.isNotEmpty)
-        v.first.displayTitle ?? '',
-      if (audio case final a? when a.isNotEmpty)
-        a.first.displayTitle ?? '',
+      // 用 `label`（优先服务端 DisplayTitle）——原为 `displayTitle ?? ''`，
+      // 服务端没给 DisplayTitle 时会**渲染出空 chip**（占位但无内容）。
+      if (video case final v? when v.isNotEmpty) v.first.label,
+      if (audio case final a? when a.isNotEmpty) a.first.label,
     ];
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -797,13 +1034,13 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(9),
-                    color: active ? const Color(0x1F00D4FF) : Cf.surface2,
+                    color: active ? Cf.accent.withValues(alpha: 0.12) : Cf.surface2,
                     border:
                         Border.all(color: active ? Cf.accent : Cf.border),
                   ),
                   child: Text(m.versionLabel,
                       style: TextStyle(
-                          fontSize: 11.5,
+                          fontSize: 12,
                           fontWeight: active
                               ? FontWeight.w800
                               : FontWeight.w600,
@@ -889,7 +1126,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                      fontSize: 10.5, fontWeight: FontWeight.w700)),
+                      fontSize: 11, fontWeight: FontWeight.w700)),
               if (p.role case final r? when r.isNotEmpty)
                 Text(r,
                     maxLines: 1,

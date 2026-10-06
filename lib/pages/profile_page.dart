@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/theme.dart';
 import '../core/version.dart';
 import '../danmaku/danmaku_settings_page.dart';
+import 'about_page.dart';
 import 'appearance_page.dart';
 import 'history_page.dart';
 import 'playback_settings_page.dart';
@@ -114,7 +115,8 @@ class ProfilePage extends ConsumerWidget {
               ),
               _SettingItem(
                 icon: Icons.subtitles_rounded,
-                color: const Color(0xFF00D4FF),
+                // 原为硬编码 0xFF00D4FF：外观页切到绿/紫/橙时此处**不变色**（实测 bug）。
+                color: Cf.accent,
                 title: '弹幕设置',
                 sub: '弹幕源 · 外观 · 屏蔽词',
                 onTap: () => Navigator.push(
@@ -133,13 +135,30 @@ class ProfilePage extends ConsumerWidget {
                   MaterialPageRoute(builder: (_) => const AppearancePage()),
                 ),
               ),
+              _SettingItem(
+                icon: Icons.info_outline_rounded,
+                color: const Color(0xFF8BA3CC),
+                title: '关于',
+                sub: '版本 · 技术栈 · 开源致谢 · 免责声明',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AboutPage()),
+                ),
+              ),
             ]),
             SizedBox(height: 14),
             _logoutButton(context, ref),
             SizedBox(height: 20),
+            // 底部版本号也可点进关于页——用户排查问题时习惯从这儿找版本
             Center(
-              child: Text('CineFlow $kAppVersionLabel',
-                  style: TextStyle(fontSize: 9.5, color: Cf.text3)),
+              child: GestureDetector(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AboutPage()),
+                ),
+                child: Text('CineFlow $kAppVersionLabel',
+                    style: TextStyle(fontSize: 10, color: Cf.text3)),
+              ),
             ),
             SizedBox(height: 14),
           ],
@@ -187,7 +206,7 @@ class ProfilePage extends ConsumerWidget {
               children: [
                 Text(session?.user.name ?? '未登录',
                     style: TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w800)),
+                        fontSize: 16, fontWeight: FontWeight.w800)),
                 SizedBox(height: 3),
                 Row(children: [
                   Container(
@@ -213,7 +232,7 @@ class ProfilePage extends ConsumerWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                          fontSize: 10.5, color: Cf.text3),
+                          fontSize: 11, color: Cf.text3),
                     ),
                   ),
                 ]),
@@ -326,7 +345,7 @@ class ProfilePage extends ConsumerWidget {
             title: Text('退出登录',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
             content: Text('确定要退出当前服务器吗？',
-                style: TextStyle(fontSize: 12.5, color: Cf.text2)),
+                style: TextStyle(fontSize: 13, color: Cf.text2)),
             actions: [
               TextButton(
                   onPressed: () => Navigator.pop(ctx, false),
@@ -352,7 +371,7 @@ class ProfilePage extends ConsumerWidget {
         ),
         child: Text('退出登录',
             style: TextStyle(
-                fontSize: 12.5,
+                fontSize: 13,
                 fontWeight: FontWeight.w700,
                 color: Cf.danger)),
       ),
@@ -379,31 +398,25 @@ class _SettingItem extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        padding: const EdgeInsets.symmetric(
+            horizontal: Cf.gap4, vertical: Cf.gap3),
         child: Row(children: [
-          Container(
-            width: 29,
-            height: 29,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              color: color.withValues(alpha: .15),
-            ),
-            child: Icon(icon, size: 16, color: color),
-          ),
-          SizedBox(width: 11),
+          // 用统一徽章组件（30×30 + 描边），替掉原先手写的 29×29 无描边容器：
+          // 内边距从 6.5px 提到 7px，描边让徽章在深色底上更"站得住"，
+          // 且与其它页面的同类型徽章**外观一致**。
+          CfIconBadge(icon: icon, color: color),
+          const SizedBox(width: Cf.gap3),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
               Text(title,
-                  style: TextStyle(
-                      fontSize: 12.5, fontWeight: FontWeight.w600)),
-              SizedBox(height: 1),
-              Text(sub,
-                  style: TextStyle(fontSize: 9.5, color: Cf.text3)),
+                  style: Cf.body.copyWith(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(sub, style: Cf.micro),
             ]),
           ),
-          Icon(Icons.chevron_right_rounded,
-              size: 18, color: Cf.text3),
+          const Icon(Icons.chevron_right_rounded,
+              size: Cf.iconMd, color: Cf.text3),
         ]),
       ),
     );

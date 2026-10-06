@@ -1,12 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/white" />
+<!--
+  CineFlow 启动背景（API < 21）。
 
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
+  ⚠️ 这里原本是 Flutter 模板原封不动的 `@android:color/white`（连
+  "Modify this file to customize your launch splash screen" 注释都在）。
+  实测启动瞬间会闪**一整屏白**（截图像素统计：纯白占 94.6%），
+  与随后的深色 UI 强烈割裂——这就是"打开应用白屏"观感的一半来源。
+
+  现改为品牌深蓝底 + 居中折带标记，与 Dart 侧 `/splash` 页
+  （Cf.bg 背景 + CfLogo）视觉衔接，冷启动不再有白闪。
+
+  改色值必须同步 values/colors.xml 与 lib/core/theme.dart。
+
+  ★ 2026-10 修「冷启动图标跳变」：与 drawable-v21 同样的问题 ——
+    原用的 `@mipmap/ic_launcher_foreground` 是自适应图标前景（88% 透明安全区），
+    启动屏显示的是"又小又偏"的 logo，与 Dart `/splash` 的 `CfLogo` 不一致。
+    改用 `@drawable/launch_logo`（紧密裁切、对齐 CfLogo 几何）。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/cf_bg" />
+
+    <item>
         <bitmap
             android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+            android:src="@drawable/launch_logo" />
+    </item>
 </layer-list>

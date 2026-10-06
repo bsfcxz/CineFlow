@@ -79,6 +79,10 @@ class DanmakuLayoutConfig {
     this.reserveSubtitleLane = true,
     /// 轨道不够时的策略
     this.overflow = DanmakuOverflow.drop,
+    /// 速度倍率（>1 更快）——对照 B 站的"弹幕速度"。
+    this.speed = 1.0,
+    /// 加粗（B 站的"弹幕加粗"）——小屏/弱网下更易读
+    this.bold = false,
   });
 
   final double fontSize;
@@ -92,6 +96,14 @@ class DanmakuLayoutConfig {
   final List<String> blockedWords;
   final bool reserveSubtitleLane;
   final DanmakuOverflow overflow;
+  final double speed;
+  final bool bold;
+
+  /// 实际滚动时长（把用户的速度倍率算进去）。
+  ///
+  /// 夹在 [2, 30] 秒：太快看不清、太慢会让弹幕堆积成墙。
+  double get effectiveScrollDuration =>
+      (scrollDuration / speed.clamp(0.25, 4.0)).clamp(2.0, 30.0);
 
   /// 可用轨道数。
   ///
@@ -289,7 +301,10 @@ class DanmakuTrackPlan {
     required DanmakuLayoutConfig config,
   }) {
     final screen = config.screenWidth;
-    final dur = config.scrollDuration;
+    // ⚠️ 必须用 effectiveScrollDuration（含速度倍率），不能用原始 scrollDuration：
+    // 否则用户改"弹幕速度"只会影响可见性计算、不影响轨道分配，
+    // 两者用不同速度 → 弹幕会互相重叠或凭空消失。
+    final dur = config.effectiveScrollDuration;
     if (screen <= 0 || dur <= 0) return 0;
 
     for (var i = 0; i < laneSince.length; i++) {
@@ -365,7 +380,9 @@ class DanmakuTrackPlan {
         if (lane < 0) continue;
         final w = widthOf(d);
         final travel = config.screenWidth + w;
-        final speed = travel / config.scrollDuration;
+        // 同样必须用 effectiveScrollDuration —— 与轨道分配保持一致
+        // （见 _findScrollLane 里的同名注释）
+        final speed = travel / config.effectiveScrollDuration;
         // 从右边缘进入（x = screenWidth）到完全离开左侧（x = -w）
         final x = config.screenWidth - speed * elapsed;
         if (x > config.screenWidth || x + w < 0) continue;

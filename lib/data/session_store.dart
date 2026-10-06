@@ -219,6 +219,16 @@ class SessionStore {
                 .toList(growable: false) ??
             const [],
         useAsync: m['useAsync'] is bool ? m['useAsync'] as bool : true,
+        // 对照 B 站新增项：**逐字段**取默认，任一坏掉不连累其它
+        modes: DanmakuDisplayModes(
+          scroll: m['modeScroll'] is bool ? m['modeScroll'] as bool : true,
+          top: m['modeTop'] is bool ? m['modeTop'] as bool : true,
+          bottom: m['modeBottom'] is bool ? m['modeBottom'] as bool : true,
+        ),
+        speed: dbl(m['speed'], 1.0),
+        bold: m['bold'] is bool ? m['bold'] as bool : false,
+        avoidSubtitle:
+            m['avoidSubtitle'] is bool ? m['avoidSubtitle'] as bool : true,
       );
     } catch (_) {
       // 走到这里只剩"整个 JSON 都解析不了"（如截断、非 JSON），
@@ -240,6 +250,13 @@ class SessionStore {
           'showArea': c.showArea,
           'blockedWords': c.blockedWords,
           'useAsync': c.useAsync,
+          // 对照 B 站新增的显示项（缺了会导致"设置改了但重启就回去"）
+          'modeScroll': c.modes.scroll,
+          'modeTop': c.modes.top,
+          'modeBottom': c.modes.bottom,
+          'speed': c.speed,
+          'bold': c.bold,
+          'avoidSubtitle': c.avoidSubtitle,
         }),
       );
 }

@@ -139,15 +139,29 @@ class EmbyProvider implements MediaProvider {
 
   @override
   Future<List<MediaItem>> getLatest({int limit = 24}) async {
-    // ⚠️ 实测：/Latest 返回裸数组；IncludeItemTypes 服务端可能无视 → 客户端复筛
+    // ⚠️ 实测：/Latest 返回裸数组；IncludeItemTypes 服务端可能无视 → 客户端复筛。
+    //
+    // ★ 2026-10 修一个真实缺陷（首页只剩 1 条内容）：
+    //   原参数是 `'IncludeItemTypes': 'Movie,Episode'`（只请求电影与单集），
+    //   但下游复筛用的是 `isPlayable`（**Series 也算可播**，见 models.dart）。
+    //   两者口径不一致 → **剧集被服务端滤掉、复筛也无从救回**。
+    //
+    //   实测证据（用户真实库）：`/Latest` 不带到类型时返回 **24 条且全部有背景图**，
+    //   带上 `Movie,Episode` 后该库只剩 **1 条**（因为最近添加的几乎全是 Series）。
+    //   首页因此出现 940px 空白带（占屏 39%）。
+    //
+    //   修法：**不在服务端做类型过滤**，把"哪些能上首页"完全交给客户端的
+    //   `isPlayable` 一处决定。这样也符合 AGENTS §6.1 的既有结论
+    //   （服务端筛选不可信），而不是反过来依赖它。
     final d = _ok(await _dio.get('/Users/${session.user.id}/Items/Latest',
         queryParameters: {
           'Limit': limit,
           'Fields':
               'PrimaryImageAspectRatio,ProductionYear,OfficialRating,CommunityRating,Genres,Overview,DateCreated',
-          'IncludeItemTypes': 'Movie,Episode',
         }));
     final items = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+    // 单一事实源：可播性只在这里判定（Series 保留 —— 它是合法浏览入口，
+    // 真正起播时会下钻到 Episode）
     return items.where((i) => i.isPlayable).toList();
   }
 
@@ -312,7 +326,31 @@ class EmbyProvider implements MediaProvider {
         queryParameters: {
           'userId': session.user.id,
           'seasonId': seasonId,
-          'Fields': 'PrimaryImageAspectRatio,Overview',
+          // UserData 必须带：分集列表要显示"已看/看到多少"
+          'Fields': 'PrimaryImageAspectRatio,Overview,UserData',
+        }));
+    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+  }
+
+  /// 「该看哪几集」—— 直接问服务端（用户指出的"致命问题"的正解）。
+  ///
+  /// 实测（本服务器 Emby 4.10）：
+  ///   · `GET /Shows/NextUp?UserId=&SeriesId=&Limit=3` → S1E9/E10/E11（带 UserData）
+  ///   · **不带 `SeriesId` 时返回 0 条** —— 该端点默认语义是"整个库的下一集"，
+  ///     需要其它参数配合；单剧场景必须带 `SeriesId`。
+  ///   · 该剧全部看完时返回**空列表**（不是错误）→ 调用方据此回退到第一集。
+  ///
+  /// 这替代了此前自己实现的 `SeriesProgress.resolve`（拉全部集 + 逐个推断），
+  /// 省掉 2 次请求，且语义更准（服务端有完整观看历史）。
+  @override
+  Future<List<MediaItem>> getNextUp(String seriesId, {int limit = 1}) async {
+    final d = _ok(await _dio.get('/Shows/NextUp',
+        queryParameters: {
+          'UserId': session.user.id,
+          'SeriesId': seriesId,
+          'Limit': limit,
+          // 与 getEpisodes 保持一致的字段集，保证卡片渲染不差数据
+          'Fields': 'PrimaryImageAspectRatio,Overview,UserData',
         }));
     return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
   }
@@ -420,15 +458,22 @@ class EmbyProvider implements MediaProvider {
       itemId: itemId,
       mediaSourceId: ms.id,
       playSessionId: uuidV4(),
-      videoLabel: video.isNotEmpty
-          ? (video.first.displayTitle ?? video.first.codec)
-          : null,
-      audioLabel: audio.isNotEmpty
-          ? (audio.first.displayTitle ?? audio.first.codec)
-          : null,
+      videoLabel: video.isNotEmpty ? video.first.label : null,
+      audioLabel: audio.isNotEmpty ? audio.first.label : null,
       container: ms.container,
       transcodingUrl: transcode,
       bitrate: ms.bitrate,
+      // ★ 把服务端的完整流列表交给播放器（用户指出的"致命问题"的正解）：
+      //   播放器此前只问 mpv 要轨道，字段更少、名字更差。
+      //   服务端 `DisplayTitle` 已拼好（`Chinese Simplified (PGSSUB)` 等），
+      //   且带 `Index` 可与内核轨道对应、带 `IsDefault` 表明默认轨。
+      streams: ms.streams,
+      defaultAudioIndex: ms.defaultAudioStreamIndex,
+      defaultSubtitleIndex: ms.defaultSubtitleStreamIndex,
+      // 章节随 launch 带来：播放器不必再单独发一次 getChapters 请求
+      chapters: ms.chapters,
+      // 服务端要求的额外头（多数情况为空）必须透传给内核，否则可能 403
+      headers: ms.requiredHttpHeaders,
     );
   }
 

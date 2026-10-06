@@ -47,6 +47,10 @@ class DanmakuConfigNotifier extends AsyncNotifier<DanmakuConfig> {
     double? showArea,
     List<String>? blockedWords,
     bool? useAsync,
+    DanmakuDisplayModes? modes,
+    double? speed,
+    bool? bold,
+    bool? avoidSubtitle,
   }) async {
     final cur = state.value ?? const DanmakuConfig();
     await save(cur.copyWith(
@@ -60,6 +64,10 @@ class DanmakuConfigNotifier extends AsyncNotifier<DanmakuConfig> {
       showArea: showArea,
       blockedWords: blockedWords,
       useAsync: useAsync,
+      modes: modes,
+      speed: speed,
+      bold: bold,
+      avoidSubtitle: avoidSubtitle,
     ));
   }
 }

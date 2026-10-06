@@ -39,6 +39,47 @@ enum DanmakuProviderKind {
       };
 }
 
+/// 弹幕显示模式（对照 B 站的"弹幕类型"）。
+///
+/// B 站播放器的弹幕设置里有「滚动 / 顶部 / 底部」三个开关，
+/// 用户可以关掉某几类（比如只看滚动、不要顶部遮挡）。
+/// 本项目原先只能整体开关，粒度太粗 —— 顶部弹幕常在关键画面出现，
+/// 很多人只想关它。这里按 B 站的做法给出分类开关。
+class DanmakuDisplayModes {
+  const DanmakuDisplayModes({
+    this.scroll = true,
+    this.top = true,
+    this.bottom = true,
+  });
+
+  /// 滚动弹幕（B 站 `p` 字段 mode=1/2/3）
+  final bool scroll;
+
+  /// 顶部固定弹幕（mode=4）
+  final bool top;
+
+  /// 底部固定弹幕（mode=5）
+  final bool bottom;
+
+  static const all = DanmakuDisplayModes();
+
+  bool get anyOff => !scroll || !top || !bottom;
+
+  /// 该模式是否显示（mode 值与 B 站/弹弹play 一致）
+  bool allows(int mode) => switch (mode) {
+        4 => top,
+        5 => bottom,
+        _ => scroll, // 1/2/3 都是滚动（含逆向）
+      };
+
+  DanmakuDisplayModes copyWith({bool? scroll, bool? top, bool? bottom}) =>
+      DanmakuDisplayModes(
+        scroll: scroll ?? this.scroll,
+        top: top ?? this.top,
+        bottom: bottom ?? this.bottom,
+      );
+}
+
 /// 弹幕源配置。
 class DanmakuConfig {
   const DanmakuConfig({
@@ -52,6 +93,10 @@ class DanmakuConfig {
     this.showArea = 1.0,
     this.blockedWords = const [],
     this.useAsync = true,
+    this.modes = DanmakuDisplayModes.all,
+    this.speed = 1.0,
+    this.bold = false,
+    this.avoidSubtitle = true,
   });
 
   final DanmakuProviderKind kind;
@@ -89,6 +134,22 @@ class DanmakuConfig {
   /// 即 misaka_danmu_server 2.7.0+；其他服务会静默忽略该参数）
   final bool useAsync;
 
+  // ---- 以下为「对照 B 站」新增的显示项 ----
+
+  /// 显示模式分类开关（滚动 / 顶部 / 底部）
+  final DanmakuDisplayModes modes;
+
+  /// 弹幕速度倍率（B 站为"弹幕速度"滑条）。
+  /// 1.0 = 默认；越大弹幕飞得越快、同屏越少。
+  final double speed;
+
+  /// 是否加粗（B 站的"弹幕加粗"，弱网/小屏下更易读）
+  final bool bold;
+
+  /// 是否避开字幕区（B 站的"防挡字幕"，默认开）。
+  /// 关闭后弹幕可铺满全屏，可能压住字幕。
+  final bool avoidSubtitle;
+
   bool get isUsable {
     if (!enabled) return false;
     return switch (kind) {
@@ -118,6 +179,10 @@ class DanmakuConfig {
     double? showArea,
     List<String>? blockedWords,
     bool? useAsync,
+    DanmakuDisplayModes? modes,
+    double? speed,
+    bool? bold,
+    bool? avoidSubtitle,
   }) =>
       DanmakuConfig(
         kind: kind ?? this.kind,
@@ -130,6 +195,10 @@ class DanmakuConfig {
         showArea: showArea ?? this.showArea,
         blockedWords: blockedWords ?? this.blockedWords,
         useAsync: useAsync ?? this.useAsync,
+        modes: modes ?? this.modes,
+        speed: speed ?? this.speed,
+        bold: bold ?? this.bold,
+        avoidSubtitle: avoidSubtitle ?? this.avoidSubtitle,
       );
 }
 

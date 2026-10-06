@@ -68,6 +68,25 @@ abstract interface class MediaProvider {
   /// 某季的分集列表
   Future<List<MediaItem>> getEpisodes(String seriesId, String seasonId);
 
+  /// **该剧"接下来该看哪几集"** —— 直接问服务端，不要自己算。
+  ///
+  /// ## 为什么必须有这个方法（用户指出的"致命问题"）
+  ///
+  /// 本项目曾自己实现 `SeriesProgress.resolve`：拉全部集、遍历各自的
+  /// `UserData`、推断"用户停在第几集"。那是**重新发明轮子且更差**：
+  /// Emby 服务端有完整的观看历史与续播语义，`/Shows/NextUp` 直接给出结果。
+  ///
+  /// 实测（本服务器，剧集《法医秦明之龙番往事》）：
+  /// `GET /Shows/NextUp?UserId=…&SeriesId=…&Limit=3` →
+  /// S1E9 / S1E10 / S1E11（带 `UserData`），而自算版本还需额外 2 次请求。
+  ///
+  /// ⚠️ **必须带 `SeriesId`**：不带时本服务器返回 **0 条**
+  /// （实测），因为它语义是"整个媒体库的下一集"，需要配合其他参数/配置。
+  /// 单剧场景一律用 `SeriesId`。
+  ///
+  /// 返回按"该看的先后"排序；**空列表表示该剧已全部看完**。
+  Future<List<MediaItem>> getNextUp(String seriesId, {int limit = 1});
+
   /// 相似推荐
   Future<List<MediaItem>> getSimilar(String itemId);
 
@@ -170,6 +189,36 @@ class PlaybackLaunch {
   final String? transcodingUrl; // HLS 转码兜底（直连失败时的最后手段）
   final int? bitrate; // 原始码率 bps（速度监测判断用）
 
+  /// **服务端给出的完整媒体流列表**（音轨/字幕/视频）。
+  ///
+  /// ## 为什么必须带上它（用户指出的"致命问题"）
+  ///
+  /// 播放器此前只从**播放内核 mpv** 解析轨道名，而 mpv 的 `track-list`
+  /// 字段远少于服务端：没有 `DisplayLanguage`、没有 `IsForced`/`IsExternal`、
+  /// 没有「(默认)」标记、没有 `ChannelLayout`。
+  ///
+  /// 服务端 `MediaStream.DisplayTitle` 已是人类可读名，实测：
+  /// `Chinese Simplified (PGSSUB)`、`Mandarin EAC3 5.1 (默认)`、
+  /// `Chinese TRUEHD 5.1 (默认)` —— 正是用户要的"中字/繁体/多音轨区分"。
+  ///
+  /// 故：**轨道选择 UI 一律以本字段为准**，内核轨道仅用于执行切换。
+  final List<MediaStream> streams;
+
+  /// 服务端指定的默认音轨/字幕轨索引（对应 `MediaStream.index`）
+  final int? defaultAudioIndex;
+  final int? defaultSubtitleIndex;
+
+  /// **章节** —— 服务端把章节放在 `MediaSource.Chapters` 里。
+  ///
+  /// 改造前播放器单独调 `api.getChapters()` 再发一次请求，
+  /// 而 `PlaybackInfo` 的响应里**本来就带**（实测 12 章）。
+  /// 现随 launch 一起带过来，**省掉一次 HTTP 往返**。
+  final List<MediaChapter> chapters;
+
+  /// 播放该源所需的额外 HTTP 头（服务端要求时非空）。
+  /// **必须透传给播放内核**，否则某些源会 403（内核的 `open` 已支持 headers）。
+  final Map<String, String> headers;
+
   const PlaybackLaunch({
     required this.url,
     required this.itemId,
@@ -180,5 +229,18 @@ class PlaybackLaunch {
     this.container,
     this.transcodingUrl,
     this.bitrate,
+    this.streams = const [],
+    this.defaultAudioIndex,
+    this.defaultSubtitleIndex,
+    this.chapters = const [],
+    this.headers = const {},
   });
+
+  /// 音轨（服务端口径，按服务端顺序）
+  List<MediaStream> get audioStreams =>
+      streams.where((s) => s.type == 'Audio').toList();
+
+  /// 字幕轨（服务端口径）
+  List<MediaStream> get subtitleStreams =>
+      streams.where((s) => s.type == 'Subtitle').toList();
 }

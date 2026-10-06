@@ -131,26 +131,37 @@ pwsh -File tool/bump_version.ps1 -Check          # 版本号三处一致
 
 | 文件 | 内容 |
 |---|---|
+| [docs/AI-MEMORY.md](docs/AI-MEMORY.md) | ★ **每轮开发前必读**：进度快照 + 变更台账 + 交接 |
+| [docs/PROJECT-STATUS.md](docs/PROJECT-STATUS.md) | ★ **计划 / 进度 / 实现细节**总览（给人看的快照） |
 | [AGENTS.md](AGENTS.md) | ★ AI 代理作业手册：安全红线、已知的坑、缺陷台账、验收基线、DoD |
-| [docs/architecture.md](docs/architecture.md) | ★ 分层与 `MediaProvider` 契约（按实际代码写） |
+| [docs/AI-DISTRIBUTION.md](docs/AI-DISTRIBUTION.md) | ★ 分发规范：发版须经审批、上传只增不删 |
+| [docs/architecture.md](docs/architecture.md) | 分层与 `MediaProvider` 契约 |
+| [docs/PLAYER-KERNEL.md](docs/PLAYER-KERNEL.md) | 播放内核方案 + 8 个实测坑 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 架构决策与踩坑实录 |
-| [docs/decisions/](docs/decisions/README.md) | ADR：0002 纯 Dart MVP（现行）、0001（已废弃） |
+| [docs/decisions/](docs/decisions/README.md) | ADR：0001–0007、0009（含内核迁移） |
 | [docs/CHANGELOG-GUIDE.md](docs/CHANGELOG-GUIDE.md) | 变更日志写作法 |
 | [docs/lessons/](docs/lessons/README.md) | 踩坑经验索引 |
 
 ## 常用门禁
 
 ```bash
+# ★ 一条命令跑完全部检查（静态分析/单测/门禁/产物/真机冒烟）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-dev.ps1
+
+# 分项（便于单独排查）
 flutter analyze                                   # 0 error / 0 warning
-flutter test                                      # 25 例全绿
-powershell -File scripts/check-secrets.ps1        # 敏感信息（可加 --staged）
-powershell -File scripts/check-docs.ps1           # 必需文档 + Markdown 断链
+flutter test                                      # 286 例全绿
+(cd go && go vet ./... && go test ./...)          # 143 例全绿
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-secrets.ps1  # 敏感信息
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-docs.ps1     # 必需文档 + 断链
 python scripts/discover_oss.py --verify owner/repo # 引用开源前必核
 ```
 
-> ⚠️ 门禁脚本是 **PowerShell 版**（本机 bash 在沙箱下不可执行）。
+> ⚠️ 门禁脚本是 **PowerShell 版**（本机 bash 在沙箱下不可执行），
+> **必须带 `-NoProfile -ExecutionPolicy Bypass`**。
 > `flutter analyze` 在只有 info 级问题时也返回退出码 1——**判定标准是输出里的
 > "0 error / 0 warning"，不是退出码**。
+> 门禁失败时会打印"补救指引"，看着像正常收尾——**判定必须看退出码**。
 
 ## 约定速览
 

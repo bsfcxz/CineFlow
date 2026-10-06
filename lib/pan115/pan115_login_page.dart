@@ -204,7 +204,7 @@ class _Pan115LoginPageState extends ConsumerState<Pan115LoginPage> {
           Center(
             child: TextButton.icon(
               onPressed: _starting ? null : _start,
-              icon: Icon(Icons.refresh_rounded, size: 18),
+              icon: Icon(Icons.refresh_rounded, size: 20),
               label: Text('刷新二维码'),
               style: TextButton.styleFrom(foregroundColor: Cf.accent),
             ),
@@ -235,7 +235,7 @@ class _Pan115LoginPageState extends ConsumerState<Pan115LoginPage> {
         child: const Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.warning_amber_rounded, size: 18, color: Color(0xFFFFB347)),
+            Icon(Icons.warning_amber_rounded, size: 20, color: Color(0xFFFFB347)),
             SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -243,7 +243,7 @@ class _Pan115LoginPageState extends ConsumerState<Pan115LoginPage> {
                 '且频繁访问有账号风控风险。已做限速（2 次/秒、串行请求）以降低风险，'
                 '但仍请自行判断是否使用。\n'
                 '扫码登录不会把你的密码交给本应用——授权在你手机的 115 App 内完成。',
-                style: TextStyle(fontSize: 11.5, color: Cf.text2, height: 1.6),
+                style: TextStyle(fontSize: 12, color: Cf.text2, height: 1.6),
               ),
             ),
           ],

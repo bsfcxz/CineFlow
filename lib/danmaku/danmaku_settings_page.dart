@@ -193,6 +193,61 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
                         .read(danmakuConfigProvider.notifier)
                         .patch(showArea: v)),
 
+                // ---- 以下对照 B 站「弹幕设置」面板补齐 ----
+                //
+                // B 站把这些放在**播放器内的弹幕面板**里（不跳设置页），
+                // 因为"看着看着觉得碍事"是最常见的诉求。
+                // 本项目把它们收在同页，理由：设置页已存在且一致；
+                // 关键是**要有这些开关**，位置次之。
+                SizedBox(height: 20),
+                _group('弹幕类型'),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text('关掉某类可以避免遮挡画面（B 站同款开关）',
+                      style: Cf.micro),
+                ),
+                Wrap(spacing: Cf.gap2, runSpacing: Cf.gap2, children: [
+                  _modeChip('滚动', c.modes.scroll,
+                      (v) => ref
+                          .read(danmakuConfigProvider.notifier)
+                          .patch(modes: c.modes.copyWith(scroll: v))),
+                  _modeChip('顶部', c.modes.top,
+                      (v) => ref
+                          .read(danmakuConfigProvider.notifier)
+                          .patch(modes: c.modes.copyWith(top: v))),
+                  _modeChip('底部', c.modes.bottom,
+                      (v) => ref
+                          .read(danmakuConfigProvider.notifier)
+                          .patch(modes: c.modes.copyWith(bottom: v))),
+                ]),
+
+                SizedBox(height: 16),
+                _slider('弹幕速度', _val('speed', c.speed), 0.5, 2.0,
+                    onChanged: (v) => setState(() => _draft['speed'] = v),
+                    onCommit: (v) => ref
+                        .read(danmakuConfigProvider.notifier)
+                        .patch(speed: v)),
+
+                SizedBox(height: 4),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: c.bold,
+                  onChanged: (v) => ref
+                      .read(danmakuConfigProvider.notifier)
+                      .patch(bold: v),
+                  title: Text('弹幕加粗', style: Cf.body),
+                  subtitle: Text('小屏/弱网下更易读', style: Cf.micro),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: c.avoidSubtitle,
+                  onChanged: (v) => ref
+                      .read(danmakuConfigProvider.notifier)
+                      .patch(avoidSubtitle: v),
+                  title: Text('防挡字幕', style: Cf.body),
+                  subtitle: Text('给字幕留出空间，弹幕不压字幕（建议开）', style: Cf.micro),
+                ),
+
                 SizedBox(height: 20),
                 _group('屏蔽词'),
                 _field(_blocked, '屏蔽词', hint: '空格分隔，如：广告 剧透 刷屏'),
@@ -210,7 +265,7 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
                   onChanged: (v) =>
                       ref.read(danmakuConfigProvider.notifier).patch(enabled: v),
                   title: Text('启用弹幕',
-                      style: TextStyle(fontSize: 13.5, color: Cf.text)),
+                      style: TextStyle(fontSize: 14, color: Cf.text)),
                   subtitle: Text('关闭后不影响播放，只是不显示弹幕',
                       style: TextStyle(fontSize: 11, color: Cf.text3)),
                 ),
@@ -220,7 +275,7 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
                   onChanged: (v) =>
                       ref.read(danmakuConfigProvider.notifier).patch(useAsync: v),
                   title: Text('异步生成（御坂服务 2.7.0+）',
-                      style: TextStyle(fontSize: 13.5, color: Cf.text)),
+                      style: TextStyle(fontSize: 14, color: Cf.text)),
                   subtitle: Text(
                       '服务端没有该集弹幕时，等待其现场生成（最长 5 分钟）。\n'
                       '其他服务会忽略此选项，开启无害',
@@ -240,6 +295,29 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
                 color: Cf.text2)),
       );
 
+  /// 「滚动 / 顶部 / 底部」类型开关（对照 B 站的弹幕类型三连开关）。
+  ///
+  /// 用 FilterChip 而不是 Switch：B 站的做法是**一排可切换的标签**，
+  /// 一眼能看出当前开了哪几类；Switch 竖排占地方且要读文字才知道状态。
+  /// 命中区遵循 48dp（`Cf` 主题已给 chip 设了 minimumSize）。
+  Widget _modeChip(String label, bool selected, ValueChanged<bool> onChanged) {
+    return FilterChip(
+      label: Text(label, style: Cf.caption),
+      selected: selected,
+      onSelected: onChanged,
+      showCheckmark: true,
+      checkmarkColor: Cf.ink,
+      backgroundColor: Cf.surface2,
+      selectedColor: Cf.accent,
+      labelStyle: Cf.caption.copyWith(
+        color: selected ? Cf.ink : Cf.text2,
+        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+      ),
+      side: BorderSide(color: selected ? Cf.accent : Cf.border),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+
   Widget _hint(String text) => Padding(
         padding: const EdgeInsets.only(bottom: 10),
         child: Text(text,
@@ -254,7 +332,7 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
     value: kind,
     activeColor: Cf.accent,
     title: Text(kind.label,
-        style: TextStyle(fontSize: 13.5, color: Cf.text)),
+        style: TextStyle(fontSize: 14, color: Cf.text)),
   );
 
   Widget _field(TextEditingController ctl, String label,
@@ -264,12 +342,12 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
         child: TextField(
           controller: ctl,
           obscureText: obscure,
-          style: TextStyle(fontSize: 13.5, color: Cf.text),
+          style: TextStyle(fontSize: 14, color: Cf.text),
           decoration: InputDecoration(
             labelText: label,
             hintText: hint,
-            labelStyle: TextStyle(fontSize: 12.5, color: Cf.text3),
-            hintStyle: TextStyle(fontSize: 12.5, color: Cf.text3),
+            labelStyle: TextStyle(fontSize: 13, color: Cf.text3),
+            hintStyle: TextStyle(fontSize: 13, color: Cf.text3),
             filled: true,
             fillColor: Cf.surface,
             border: OutlineInputBorder(
@@ -298,7 +376,7 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
           SizedBox(
             width: 64,
             child: Text(label,
-                style: TextStyle(fontSize: 12.5, color: Cf.text2)),
+                style: TextStyle(fontSize: 13, color: Cf.text2)),
           ),
           Expanded(
             child: Slider(
@@ -314,7 +392,7 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
             width: 40,
             child: Text(value.toStringAsFixed(2),
                 textAlign: TextAlign.right,
-                style: TextStyle(fontSize: 11.5, color: Cf.text3)),
+                style: TextStyle(fontSize: 12, color: Cf.text3)),
           ),
         ]),
       );

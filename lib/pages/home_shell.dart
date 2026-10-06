@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/providers.dart';
 
 import '../core/theme.dart';
+import '../keys.dart';
 import 'home_page.dart';
 import 'profile_page.dart';
 import 'rank_page.dart';
@@ -82,6 +83,7 @@ class _TabBar extends StatelessWidget {
               for (var i = 0; i < _tabItems.length; i++)
                 Expanded(
                   child: InkWell(
+                    key: keys.shell.tab(i),
                     onTap: () => onTap(i),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -90,7 +92,9 @@ class _TabBar extends StatelessWidget {
                           i == index
                               ? _tabItems[i].activeIcon
                               : _tabItems[i].icon,
-                          size: 21,
+                          // 用刻度而不是 21：底部导航与 theme 的 navigationBarTheme
+                          // （iconLg=24）保持一致，避免两个层级差 3px 的"抖动感"
+                          size: Cf.iconLg,
                           color: i == index ? Cf.accent : Cf.text3,
                         ),
                         SizedBox(height: 2),

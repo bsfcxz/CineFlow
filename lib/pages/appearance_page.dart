@@ -61,10 +61,10 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
                 children: [
               const Text('主题色',
                   style: TextStyle(
-                      fontSize: 13.5, fontWeight: FontWeight.w800)),
+                      fontSize: 14, fontWeight: FontWeight.w800)),
               const SizedBox(height: 3),
               const Text('强调色与主按钮渐变 · 立即生效',
-                  style: TextStyle(fontSize: 10.5, color: Cf.text3)),
+                  style: TextStyle(fontSize: 11, color: Cf.text3)),
               const SizedBox(height: 14),
               Row(mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
@@ -104,7 +104,7 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
                       const SizedBox(height: 7),
                       Text(Cf.themePresets[i].$1,
                           style: TextStyle(
-                              fontSize: 10.5,
+                              fontSize: 11,
                               fontWeight: _selected == i
                                   ? FontWeight.w800
                                   : FontWeight.w500,
@@ -132,10 +132,10 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
                     children: [
                   Text('深色模式',
                       style: TextStyle(
-                          fontSize: 13.5, fontWeight: FontWeight.w800)),
+                          fontSize: 14, fontWeight: FontWeight.w800)),
                   SizedBox(height: 3),
                   Text('CineFlow 为沉浸观影而生，始终使用深色主题',
-                      style: TextStyle(fontSize: 10.5, color: Cf.text3)),
+                      style: TextStyle(fontSize: 11, color: Cf.text3)),
                 ]),
               ),
               Text('始终开启',

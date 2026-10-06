@@ -58,10 +58,30 @@ jobs:
             echo "::error::tag($VER) 与 VERSION 文件($FILE_VER) 不一致，拒绝发布"
             exit 1
           fi
-        PW_VER="$(grep -o "const String kAppVersion = '[^']*'" lib/core/version.dart | sed "s/.*\'(.*\')'.*/\1/" | tr -d "\r")"
+          PW_VER="$(grep -o "const String kAppVersion = '[^']*'" lib/core/version.dart | sed "s/.*'\(.*\)'.*/\1/" | tr -d "\r")"
+          echo "lib/core/version.dart: $PW_VER"
           if [ "$VER" != "$PW_VER" ]; then
             echo "::error::tag($VER) 与 lib/core/version.dart($PW_VER) 不一致，拒绝发布"
             exit 1
+          fi
+          PS_VER="$(sed -n 's/^version: *\([0-9.]*\)+.*/\1/p' pubspec.yaml | tr -d '[:space:]')"
+          echo "pubspec.yaml: $PS_VER"
+          if [ "$VER" != "$PS_VER" ]; then
+            echo "::error::tag($VER) 与 pubspec.yaml($PS_VER) 不一致，拒绝发布"
+            exit 1
+          fi
+          # ★ 版本号必须**递增**：GitHub Release 按 tag 区分，降级会让用户装回旧包
+          LATEST="$(git tag -l 'v*' --sort=-v:refname | grep -v "^${TAG}$" | head -n1 || true)"
+          if [ -n "$LATEST" ]; then
+            echo "上一个 tag: $LATEST"
+            if [ "$(printf '%s\n%s\n' "${LATEST#v}" "$VER" | sort -V | tail -n1)" != "$VER" ]; then
+              echo "::error::$VER 不大于已有 tag ${LATEST#v}，拒绝发布（版本号必须递增）"
+              exit 1
+            fi
+            if [ "${LATEST#v}" = "$VER" ]; then
+              echo "::error::版本 $VER 已存在，拒绝重复发布"
+              exit 1
+            fi
           fi
 
       - name: 取依赖
@@ -100,6 +120,18 @@ jobs:
   publish:
     needs: build-apk
     runs-on: ubuntu-latest
+    # ★★ 审批门（机械强制）★★
+    #
+    # GitHub 的 Environment protection rule：`release` 环境配了 Required reviewers 后，
+    # 这个 job 会**挂起等待人工批准**，不批就一直不动。
+    # 这与 docs/AI-DISTRIBUTION.md §3 的审批单是同一道门的两半：
+    #   · 文档那一半管"AI 必须先问、必须拿审批单"
+    #   · 这一半管"就算 AI 擅自 push 了 tag，也过不去"
+    #
+    # ⚠️ 需要在仓库设置里启用一次（Settings → Environments → release →
+    #    Required reviewers 选上你自己）。**没配置时此 job 不会挂起**，
+    #    所以务必确认它已开启——否则这道门形同虚设。
+    environment: release
     steps:
       - name: 计算版本号（与构建任务产物名一致：去掉 v 前缀）
         id: v2
@@ -114,6 +146,28 @@ jobs:
           name: cineflow-apk-${{ steps.v2.outputs.ver }}
           path: dist
 
+      # ★ 红线守卫：本工作流**只增不删**。任何情况下都不许动已有 Release。
+      #   见 docs/AI-DISTRIBUTION.md §4（用户明确要求）。
+      - name: 守卫 · 确认目标 Release 尚不存在（只增不删）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "现有 Release 列表（本次操作绝不会删除其中任何一个）："
+          gh release list --limit 30 || true
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' > /tmp/exists 2>/dev/null; then
+            IS_DRAFT="$(cat /tmp/exists)"
+            if [ "$IS_DRAFT" = "false" ]; then
+              echo "::error::Release $TAG 已发布（非草稿）。按 AI-DISTRIBUTION.md §4，"
+              echo "::error::不得覆盖已发布版本 —— 请递增版本号后重新发布。"
+              exit 1
+            fi
+            echo "已存在同名**草稿**，允许重跑（草稿对用户不可见，§4 例外条款）"
+          else
+            echo "Release $TAG 不存在，将新建（不影响任何旧版本）"
+          fi
+
       - name: 建草稿 Release 并上传 APK
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,12 +178,20 @@ jobs:
           NOTES="docs/changelog/v${VER}.md"
           if [ -f "$NOTES" ]; then
             echo "使用 $NOTES 作为 Release 正文"
-            gh release create "$TAG" --draft --title "CineFlow v${VER}" --notes-file "$NOTES"
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              # 草稿重跑：只改正文，不重建
+              gh release edit "$TAG" --title "CineFlow v${VER}" --notes-file "$NOTES"
+            else
+              gh release create "$TAG" --draft --title "CineFlow v${VER}" --notes-file "$NOTES"
+            fi
           else
             echo "::warning::缺少 $NOTES，退回自动生成正文（随后 release-notes.yml 会自动同步）"
-            gh release create "$TAG" --draft --title "CineFlow v${VER}" --generate-notes
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              gh release create "$TAG" --draft --title "CineFlow v${VER}" --generate-notes
+            fi
           fi
-          # 只上传 APK 与校验和；符号表留在构建产物里，不进 Release
+          # 只上传 APK 与校验和；符号表留在构建产物里，不进 Release。
+          # --clobber 仅用于**草稿重跑**覆盖自己的同名附件，绝不对已发布 Release 使用。
           gh release upload "$TAG" dist/*.apk dist/checksums.txt --clobber
 
       - name: 校验产物齐全后转正
