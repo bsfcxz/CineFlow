@@ -33,15 +33,35 @@ plugins {
 // 读 key.properties。
 // ⚠️ 用 `Properties` + 显式 `load(InputStream)`，并在文件顶部 import
 //    （Gradle Kotlin DSL 隐式 import 没有 java.util，实测踩过）。
+//
+// ⚠️⚠️ CI 上**必须**用 `providers.environmentVariable`：
+//    `System.getenv()` 读的是 **Gradle daemon 进程**的环境变量，
+//    而 daemon 是长驻的 —— 它的环境在**启动那一刻**就固定了。
+//    `flutter build apk` 之后再 export 的变量，daemon **看不到**。
+//    实测踩过：CI 里 CF_KEY_PROPERTIES 明明已写进 $GITHUB_ENV，
+//    构建出的 APK 却仍是 debug 签名（守卫步骤拦下了）。
+//    `providers.environmentVariable()` 是 Gradle 的**惰性 provider**，
+//    会被正确追踪与失效，不受 daemon 影响。
 val cfKeyPropsFile: File? = run {
-    val env = System.getenv("CF_KEY_PROPERTIES")
+    val fromProvider = providers.environmentVariable("CF_KEY_PROPERTIES")
+        .orNull?.takeIf { it.isNotBlank() }
+    val fromEnv = System.getenv("CF_KEY_PROPERTIES")?.takeIf { it.isNotBlank() }
     val candidates = listOfNotNull(
-        env?.takeIf { it.isNotBlank() }?.let { File(it) },
-        File(System.getProperty("user.home"), "cineflow-keystore/key.properties"),
+        fromProvider?.let { File(it) },
+        fromEnv?.let { File(it) },
+        // 仓库内 android/key.properties（Flutter 官方推荐位置，已被 gitignore）
         rootProject.file("key.properties"),
+        // 仓库外默认位置（本机开发）
+        File(System.getProperty("user.home"), "cineflow-keystore/key.properties"),
     )
     candidates.firstOrNull { it.exists() }
 }
+
+// 打印实际用到的位置 —— 否则"配了却没生效"极难排查（本次 CI 就栽在这）
+logger.lifecycle(
+    if (cfKeyPropsFile != null) "cineflow signing: 使用 $cfKeyPropsFile"
+    else "cineflow signing: 未找到 key.properties（将回退 debug 签名）"
+)
 
 val cfKeyProps = Properties()
 if (cfKeyPropsFile != null) {
