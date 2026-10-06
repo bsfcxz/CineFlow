@@ -100,11 +100,73 @@ class WidgetKeys {
   final loadingIndicator = const _WidgetKey('loadingIndicator');
 }
 
+/// 播放页的键。
+///
+/// ## 为什么需要这些（这是全项目最大的验证缺口）
+///
+/// 集成测试（`integration_test/player_kernel_test.dart`）只驱动**内核**：
+/// 它建纹理、起播、seek、改倍速，但**从不碰 UI 层** ——
+/// 也就是说"控制层长什么样、按钮点了有没有反应、弹幕有没有盖在按钮上"
+/// 从来没有被任何自动化验证过，只能靠人肉点。
+///
+/// 这一组键让 Patrol 能真正走一遍播放页：
+/// 点中央显隐控制层 → 找到各功能钮 → 打开弹层 → 断言弹层出现。
+class _PlayerKey extends ValueKey<String> {
+  const _PlayerKey(String value) : super('player_$value');
+}
+
+class PlayerKeys {
+  const PlayerKeys();
+
+  /// 音轨按钮（控制条）
+  final audioButton = const _PlayerKey('audioButton');
+
+  /// 底部控制层根节点（断言"控制层已显示"用）
+  final controls = const _PlayerKey('controls');
+
+  /// 弹幕开关按钮
+  final danmakuButton = const _PlayerKey('danmakuButton');
+
+  /// 弹幕浮层（断言"弹幕叠加在视频上"用）
+  final danmakuOverlay = const _PlayerKey('danmakuOverlay');
+
+  /// 画幅比例按钮（左侧中部）
+  final fitButton = const _PlayerKey('fitButton');
+
+  /// 锁定按钮（右侧中部）
+  final lockButton = const _PlayerKey('lockButton');
+
+  /// 播放下一个 / 快进 10s（中央右侧）
+  final seekForwardButton = const _PlayerKey('seekForwardButton');
+
+  /// 快退 10s（中央左侧）
+  final seekBackButton = const _PlayerKey('seekBackButton');
+
+  /// 选集按钮（固定在控制条左侧）
+  final episodeButton = const _PlayerKey('episodeButton');
+
+  /// 倍速按钮
+  final rateButton = const _PlayerKey('rateButton');
+
+  /// 字幕按钮
+  final subtitleButton = const _PlayerKey('subtitleButton');
+
+  /// 播放/暂停（中央）
+  final togglePlayButton = const _PlayerKey('togglePlayButton');
+
+  /// 视频层手势区（点一下显隐控制层）
+  final videoGestureArea = const _PlayerKey('videoGestureArea');
+
+  /// 页面根节点（断言"已进入播放页"用）
+  final page = const _PlayerKey('page');
+}
+
 /// 全局键聚合入口——测试与应用的唯一引用点。
 final keys = Keys();
 
 class Keys {
   final login = const LoginKeys();
+  final player = const PlayerKeys();
   final shell = const ShellKeys();
   final widgets = const WidgetKeys();
 }
