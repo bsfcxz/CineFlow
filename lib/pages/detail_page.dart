@@ -171,6 +171,63 @@ class DetailPage extends ConsumerStatefulWidget {
   const DetailPage({super.key, required this.itemId});
   final String itemId;
 
+  /// 头部海报宽度（高度按 2:3 比例推出）。
+  ///
+  /// ## 为什么要按断点（审计 U7）
+  /// 原为写死的 `96×142`：Compact 上合适，但 Medium/Expanded 下
+  /// 96dp 的海报躺在一片空白里显得可怜 —— 大屏有空间就该给足主视觉。
+  ///
+  /// 抽成 `public static` 纯函数便于单测边界（与 `PlayerPage` 的
+  /// `drawerWidthFor` 同一约定）。
+  static double posterWidthFor(int windowClass) => switch (windowClass) {
+        CfBreakpoints.expanded => 132.0,
+        CfBreakpoints.medium => 112.0,
+        _ => 96.0, // Compact（原值，保持不变）
+      };
+
+  /// 多版本缩略图宽度（高度按 16:9 推出）。
+  ///
+  /// 原为写死的 `128×72`。同样按断点放大，理由同上。
+  static double versionThumbWidthFor(int windowClass) => switch (windowClass) {
+        CfBreakpoints.expanded => 172.0,
+        CfBreakpoints.medium => 148.0,
+        _ => 128.0, // Compact（原值）
+      };
+
+  /// 演职员横向行的**固定高度**。
+  ///
+  /// ## 这个 110 为什么不改大，而是改"钳制里面的字"
+  ///
+  /// 实测内容高（Roboto 行高系数 1.171875）：
+  ///   1.0x 字缩 → 62 + 7 + 12.89 + 10.55 = **92.44**（富余 17.6）
+  ///   1.5x      → **104.16**（仍未溢出）
+  ///   2.0x      → **115.88 → 溢出 5.9dp**
+  ///
+  /// 所以默认字号下行高是**合适的**，把 110 改大会在默认场景留下多余空白。
+  /// 真正的问题是"2.0x 时文字撑破固定高容器" → 正确解法是
+  /// **钳制那两行文字**（`CfText(clamp: true)`，已在 `_cast` 里落地）。
+  ///
+  /// 保留常量只是为了让测试能断言"钳制后不会再溢出"。
+  static const double castRowHeight = 110;
+
+  /// 演职员行在给定字缩下的内容高度（供测试断言"钳制后不再溢出"）。
+  ///
+  /// 与 `_cast` 的实际布局一一对应：
+  /// 头像 62 + 间距 7 + 姓名行 + 角色行。
+  static double castContentHeight({
+    double headerSize = 62,
+    double gap = 7,
+    double nameFontSize = 11,
+    double roleFontSize = 9,
+    double textScale = 1.0,
+  }) {
+    const lineHeight = 1.171875; // Roboto 默认行高系数（Flutter 未指定 height 时）
+    return headerSize +
+        gap +
+        nameFontSize * lineHeight * textScale +
+        roleFontSize * lineHeight * textScale;
+  }
+
   @override
   ConsumerState<DetailPage> createState() => _DetailPageState();
 }
@@ -395,21 +452,25 @@ class _DetailPageState extends ConsumerState<DetailPage> {
 
   Widget _poster(MediaProvider api, MediaItem item) {
     final url = item.posterUrl(api, maxWidth: 300);
+    final posterW = DetailPage.posterWidthFor(
+        CfBreakpoints.of(MediaQuery.sizeOf(context).width));
     // Container 不支持负 margin，悬浮效果用 Transform.translate 实现
     return Transform.translate(
       offset: const Offset(0, -46),
       child: Container(
-      width: 96,
-      height: 142,
+      // 海报尺寸按断点：大屏给大一点，否则在 Medium/Expanded 的
+      // 一片空白里 96dp 显得可怜（审计 U7 点名 142/128 写死）。
+      width: posterW,
+      height: posterW * 1.48, // 保持 2:3 海报比例
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(Cf.radiusMd),
         border: Border.all(color: Cf.border),
         boxShadow: const [
           BoxShadow(blurRadius: 36, offset: Offset(0, 12), color: Colors.black54)
         ],
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(Cf.radiusSm),
         child: url != null
             ? Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => _ph())
             : _ph(),
@@ -875,14 +936,18 @@ class _DetailPageState extends ConsumerState<DetailPage> {
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Stack(children: [
             Container(
-              width: 128,
-              height: 72,
+              // 版本缩略图同样按断点（原写死 128×72）
+              width: DetailPage.versionThumbWidthFor(
+                  CfBreakpoints.of(MediaQuery.sizeOf(context).width)),
+              height: DetailPage.versionThumbWidthFor(
+                      CfBreakpoints.of(MediaQuery.sizeOf(context).width)) *
+                  0.5625, // 16:9
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(Cf.radiusSm),
                 color: Cf.surface2,
               ),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(Cf.radiusSm),
                 child: url != null
                     ? Image.network(url,
                         fit: BoxFit.cover,
@@ -1122,17 +1187,23 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                 ),
               ),
               SizedBox(height: 7),
-              Text(p.name,
+              // ⚠️ 必须钳制：本行高固定 110dp，实测 2.0x 字缩下
+              //    内容总高 62+7+25.78+21.09 = 115.88 → **溢出 5.9dp**
+              //    （1.0x 时 92.44，富余 17.6）。
+              //    两行都在**固定高容器**里 → 钳制，而不是把行高改大
+              //    （改大行高会在默认字号下留多余空白）。
+              CfText(p.name,
+                  clamp: true,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: const TextStyle(
                       fontSize: 11, fontWeight: FontWeight.w700)),
               if (p.role case final r? when r.isNotEmpty)
-                Text(r,
+                CfText(r,
+                    clamp: true,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style:
-                        TextStyle(fontSize: 9, color: Cf.text3)),
+                    style: const TextStyle(fontSize: 9, color: Cf.text3)),
             ]),
           );
         },
