@@ -113,7 +113,7 @@ Flutter 实现的 **Emby 第三方播放器**（当前**仅 Android 手机端**�
 | 四 | UI/UX 与媒体库 | **~80%**（排序 ✅ / default_rate ✅ / 加载失败不伪装空库 ✅ / 首页降级 ✅ / 演职员含导演 ✅ / 服务端筛选数据层 ✅。**媒体库页已移除（ADR 0003），列表页 UI 待全量重构 → CF-P4-UI-019**） |
 | 五 | 弹幕系统 | **~70%**（协议/渲染/设置全部落地：官方签名 + 自建 URL-token 双形态、两种 `p` 布局、异步 1.5s×5min 轮询、追尾判据轨道分配、设置页与持久化。**未做**：弹幕发送、手动匹配面板、密度折线图；**未联调**：官方 API 本机不可达） |
 | 六 | 多平台适配 | **搁置**（用户明确只做手机端） |
-| 七 | 测试与发布 | ~70%（**286 例 Flutter 单测 + 143 例 Go 单测**全绿，另有 **1 个真机集成测试**；CI 有；debug 签名待换） |
+| 七 | 测试与发布 | ~85%（**469 例 Flutter 单测 + 143 例 Go 单测**全绿，另有 **1 个真机集成测试**；CI 有；**release 签名已配好并产出 v0.3.1 三 ABI**，见 §7.16） |
 | 八 | 115 网盘扩展 | **~55%**（协议层 + 扫码登录 UI + 文件浏览 + 播放页全部落地，见 ADR 0007。**真机已验证到"能拿到二维码"**；**未联调**：无真实账号，列文件/取直链/真实播放未验证。走的是**非公开 webapi 接口**，有风控风险） |
 
 ### 技术栈现状（用户要求"严格按照 Go + Flutter"）
@@ -547,7 +547,7 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 | 7.13 | **UI 层仍有文件直接 import `emby_provider.dart`**（主要为 `MediaException`），违反约定 §5.1。注：边界**类型**已中立化（§7.19），但 `EmbyException` 本身仍来自实现文件 | detail/player/login/profile/search/home/providers | 接入第二个走 `MediaProvider` 的源时会被这处挡住（115 不受影响，它走独立页面） |
 | ~~7.14~~ | ~~演职员只渲染 `Actor`~~ | **已修复**：`models.dart` 新增 `EmbyPeople` 扩展（`actors/directors/writers/crewLine`），详情页在演员横滑上方显示「导演 A / B」摘要行。**实测依据**：本服务器 `People[].Type` 只有 `Actor`(107) 与 `Director`(14) 两种，旧实现把 **14 条导演数据全部静默丢弃**。真机验证：详情页显示「导演 石头熊 / Ma Hua / 王子悦」 | — |
 | ~~7.15~~ | ~~类型/年份筛选仅客户端~~ | **数据层已修复**：`getItems` 新增 `genres`/`years` 参数；`getGenres`（`/Genres?ParentId=` → 200 + `{Items:[{Name}]}`，空名需滤）与 `getYearRange`（`ProductionYear` 升/降序 + `Limit=1` 双探针，本服务器实测 **1931–2026**）落地。实测 `Genres=动作` 使总数 2035→**823**、`Years=2024`→**67**、组合→**19**（交集语义），且返回条目确实都含该类型。**页面部分随 ADR 0003 作废**（媒体库页已删除）；参数拼装由 `test/server_filter_test.dart` 6 例守住，重构时直接复用 | — |
-| 7.16 | **release 用 debug 签名** | `android/app/build.gradle.kts:38` + TODO | 不能上任何商店 |
+| ~~7.16~~ | ~~release 用 debug 签名~~ | **已修复**：RSA-4096 / PKCS12 / 30 年有效期，keystore 存**仓库外**（`%USERPROFILE%\cineflow-keystore\`），CI 从 5 个 Secrets 还原（`KEYSTORE_BASE64` 等）并写 `android/key.properties`，发布前有**签名守卫**（grep `Android Debug` + `keytool -printcert` 指纹比对）。**已产出并发布 v0.3.1 三个 ABI 的正式签名包**；工具 `tool/verify_signing.ps1`。⚠️ 注意 `apksigner verify` **必须带 `--verbose`** 才会打印 v2/v3 签名方案行 | — |
 | ~~7.17~~ | ~~`clientVersion = '0.1.0'` 与 pubspec `1.0.0+1` 不一致~~ | **已修复**：新增 `lib/core/version.dart` 作为 Dart 侧唯一来源（`kAppVersion` / `kClientVersion` / `kAppVersionLabel`），`VERSION` 为全仓唯一权威，`pubspec.yaml` 对齐为 `0.2.0+1`，「我的」页不再硬编码。一致性由 `tool/bump_version.ps1 -Check` 强制校验（收工前与 CI 必跑）；改版本用 `tool/bump_version.ps1 -Version X.Y.Z` 一次改齐三处 | — |
 | 7.18 | **仓库卫生**：`tool/icon/_gen/profile/` 混入 256 个 Edge 浏览器配置文件（已在 `.gitignore` 忽略）；`build/` 占 3.4GB（已忽略）；仓库历史里无垃圾文件 | — | 见 §9 |
 | ~~7.19~~ | ~~`MediaProvider` 抽象实际未解耦（ADR 0002 的"UI 零改动"承诺不成立）~~ | **已修复**：抽象层 12 个签名原本直接返回 `Emby*` 类型，全仓 **21 文件 / 243 处**引用。已把**跨越抽象边界的类型**中立化为 `Media*`（EmbyItem→MediaItem 等 12 个），刻意保留 `EmbyProvider`/`embyApiProvider`（那是具体实现，名字里带 Emby 是对的）。做法：词边界正则 + **最长优先**排序（避免 `EmbyItem` 吃掉 `EmbyItemDetail` 前缀），动手前先确认 `media_kit` 未导出同名符号。**验收：analyze 0 error/warning 一次通过，263 例测试全绿（改名不改行为）** | — |
@@ -564,12 +564,12 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 > 下面保留分项说明，便于单独排查。
 
 1. `flutter analyze` → **0 error / 0 warning**（仅允许 §5.7 的 3 条 douban info）。
-2. `flutter test` → **全绿**（当前 **286 例**）。
-   > 实测依据：`flutter test` 输出 `+286: All tests passed!`。
+2. `flutter test` → **全绿**（当前 **469 例**）。
+   > 实测依据：`flutter test` 输出 `+469: All tests passed!`。
    > 分布：登录冒烟 1 / 偏好 5 / 首页降级 6 / 演职员 10 / 服务端筛选+EventName 16 /
    > 路由 15 / drift 17 / 豆瓣缓存 12 / Go 核心 13 / **弹幕 161**
    > （签名 12 · 匹配 30 · 布局 34 · 客户端 42 · 异步 24 · 配置 25 · 持久化 14）。
-   > （本文件此前多次写错测试数。**改测试数量时请以 `flutter test` 的实际输出为准**，别照抄本行。）
+   > （本文件此前**多次**写错测试数 —— 286/377/408 都当过"当前值"。**改测试数量时请以 `flutter test` 的实际输出为准**，别照抄本行。）
 2c. **真机集成测试**（改了播放内核必跑）：
    `flutter test integration_test/player_kernel_test.dart -d <device-id>` → **1 passed**。
    > 这是**唯一**能验证「Dart → MethodChannel → Kotlin → JNI → libmpv」整条链路的测试：
