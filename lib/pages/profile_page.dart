@@ -176,7 +176,7 @@ class ProfilePage extends ConsumerWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -323,7 +323,7 @@ class ProfilePage extends ConsumerWidget {
   Widget _settingsGroup(List<_SettingItem> items) {
     return Container(
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(13),
+        borderRadius: BorderRadius.circular(12),
         color: Cf.surface,
         border: Border.all(color: Cf.border),
       ),
@@ -348,7 +348,7 @@ class ProfilePage extends ConsumerWidget {
           builder: (ctx) => AlertDialog(
             backgroundColor: Cf.surface,
             shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14)),
+                borderRadius: BorderRadius.circular(16)),
             title: Text('退出登录',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
             content: Text('确定要退出当前服务器吗？',

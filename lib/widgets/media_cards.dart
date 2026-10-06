@@ -15,7 +15,7 @@ void showComingSoon(BuildContext context, String feature) {
     behavior: SnackBarBehavior.floating,
     backgroundColor: Cf.surface,
     shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: Cf.border)),
   ));
 }
@@ -48,7 +48,7 @@ class CfSection extends StatelessWidget {
               width: 4,
               height: 17,
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(4),
                 gradient: Cf.primaryGradient,
               ),
             ),
@@ -94,11 +94,11 @@ class PosterCard extends StatelessWidget {
         Expanded(
           child: Container(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Cf.border),
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(9),
+              borderRadius: BorderRadius.circular(8),
               child: Stack(fit: StackFit.expand, children: [
                 if (url != null)
                   Image.network(url,
@@ -124,7 +124,7 @@ class PosterCard extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 7, vertical: 2),
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(5),
+                        borderRadius: BorderRadius.circular(4),
                         color: const Color(0xBF000000),
                       ),
                       child: Text('⭐ ${r.toStringAsFixed(1)}',
@@ -263,11 +263,11 @@ class ContinueCard extends StatelessWidget {
           Container(
             width: 200,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Cf.border),
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(9),
+              borderRadius: BorderRadius.circular(8),
               child: AspectRatio(
                 aspectRatio: 16 / 9,
                 child: Stack(fit: StackFit.expand, children: [
@@ -295,7 +295,7 @@ class ContinueCard extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(5),
+                          borderRadius: BorderRadius.circular(4),
                           color: const Color(0xB3000000),
                           border:
                               // 原为硬编码 0x4D00D4FF：外观页切主题时此描边不变色（实测 bug）。

@@ -778,6 +778,7 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 | Emby 与 115 的播放模型差异、能力对照表 | 同上（§"与 Emby 的关系"） |
 | 审查清单（提交前逐条打勾） | `docs/review-checklist.md`（§0–§7） |
 | **按键/交互元素是否可用** | **`python tool/audit_buttons.py out.txt`**（查空实现/死按钮/命中区过小/失败被吞；清单见 `docs/UI-DESIGN.md` §3.3.2） |
+| **设计令牌采用率（字号/间距/断点/圆角）** | **`python tool/audit_tokens.py`**（人读报告）；**`--check`** 只看圆角是否收敛（退出码 0/1，可进 CI）。⚠️ **"定义了令牌" ≠ "用了令牌"** —— U1 实测：排版令牌只用了 24 处而裸 `fontSize` 有 232 处、`clampTextScale`/`CfBreakpoints` **真代码采用 0 处** |
 | 技术技能与开源借鉴（S1–S10） | `docs/TECH-SKILLS.md` + 技能 `cineflow-tech-skills` |
 | 已核实开源仓库注册表（含许可） | `docs/OSS-SOURCES.md` + `scripts/discover_oss.py --verify` |
 | 变更日志怎么写 | `docs/CHANGELOG-GUIDE.md` |

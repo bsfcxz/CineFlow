@@ -1233,7 +1233,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                         horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
                       color: const Color(0x88000000),
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(16),
                     ),
                     child: Text(_flashText!,
                         style: TextStyle(
@@ -1256,7 +1256,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                 padding: const EdgeInsets.symmetric(
                     horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(11),
+                  borderRadius: BorderRadius.circular(12),
                   color: const Color(0xF20D1328),
                   border: Border.all(color: Cf.warn),
                 ),
@@ -1279,7 +1279,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(6),
+                        borderRadius: BorderRadius.circular(8),
                         // ⚠️ 原先是硬编码 0x2100D4FF（青色 13%）。紧邻的边框用的是
                         // Cf.accent（随主题切换），两者在外观页切到绿/紫/橙时会**不同色**。
                         // 实测确认的 bug，改用 accent 的透明度派生。
@@ -1326,7 +1326,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   padding: const EdgeInsets.symmetric(
                       horizontal: 16, vertical: 8),
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: BorderRadius.circular(8),
                     color: const Color(0x24FFFFFF),
                     border: Border.all(color: const Color(0x47FFFFFF)),
                   ),
@@ -1349,7 +1349,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(11),
+                  borderRadius: BorderRadius.circular(12),
                   color: const Color(0xF20D1328),
                   border: Border.all(color: Cf.accent),
                 ),
@@ -1364,7 +1364,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 9, vertical: 3),
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(6),
+                        borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Cf.border),
                       ),
                       child: Text('取消',
@@ -1533,7 +1533,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   const EdgeInsets.symmetric(horizontal: 7, vertical: 9),
               decoration: BoxDecoration(
                 color: const Color(0x59000000),
-                borderRadius: BorderRadius.circular(7),
+                borderRadius: BorderRadius.circular(8),
               ),
               child: Text(text,
                   style: TextStyle(
@@ -1616,7 +1616,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     required Widget child,
     EdgeInsets padding = EdgeInsets.zero,
     BorderRadius borderRadius = const BorderRadius.vertical(
-        bottom: Radius.circular(18)),
+        bottom: Radius.circular(16)),
   }) {
     return ClipRRect(
       borderRadius: borderRadius,
@@ -1713,7 +1713,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     final remaining = total - _pos;
     return _glassPanel(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         // 进度条（缓冲 + 章节刻度）
         _ProgressBar(
@@ -1989,7 +1989,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       child: Center(
         child: Material(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
@@ -1997,7 +1997,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
               height: 32,
               padding: const EdgeInsets.symmetric(horizontal: 11),
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(12),
                 // 原为硬编码 0x2100D4FF：切主题时会与 Cf.accent 边框不同色（实测 bug）
                 color: active
                     ? Cf.accent.withValues(alpha: 0.16)
@@ -2333,7 +2333,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(7),
+          borderRadius: BorderRadius.circular(8),
           // 同上：硬编码 0x2100D4FF → 改用 accent 派生，保证切主题一致。
           color: selected
               ? Cf.accent.withValues(alpha: 0.13)
@@ -2385,7 +2385,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
           width: 32,
           height: 18,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(9),
+            borderRadius: BorderRadius.circular(8),
             color: value ? Cf.accent : Cf.border,
           ),
           alignment: value ? Alignment.centerRight : Alignment.centerLeft,
@@ -2682,7 +2682,7 @@ class _ProgressBarState extends State<_ProgressBar> {
             Container(
               height: 4,
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(4),
                 color: const Color(0x2EFFFFFF),
               ),
             ),
@@ -2692,7 +2692,7 @@ class _ProgressBarState extends State<_ProgressBar> {
               child: Container(
                 height: 4,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(2),
+                  borderRadius: BorderRadius.circular(4),
                   color: const Color(0x52FFFFFF),
                 ),
               ),
@@ -2704,7 +2704,7 @@ class _ProgressBarState extends State<_ProgressBar> {
                 height: 4,
                 decoration: BoxDecoration(
                   gradient: Cf.primaryGradient,
-                  borderRadius: BorderRadius.circular(2),
+                  borderRadius: BorderRadius.circular(4),
                 ),
               ),
             ),
@@ -2716,7 +2716,7 @@ class _ProgressBarState extends State<_ProgressBar> {
                   width: 2,
                   height: 10,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(1),
+                    borderRadius: BorderRadius.circular(4),
                     color: const Color(0x80FFFFFF),
                   ),
                 ),

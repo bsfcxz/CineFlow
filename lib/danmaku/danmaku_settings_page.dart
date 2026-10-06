@@ -351,7 +351,7 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
             filled: true,
             fillColor: Cf.surface,
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(9),
+              borderRadius: BorderRadius.circular(8),
               borderSide: BorderSide(color: Cf.border),
             ),
           ),

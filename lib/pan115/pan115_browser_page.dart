@@ -194,7 +194,7 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
             color: on
                 ? Cf.accent.withValues(alpha: 0.08)
                 : Cf.warn.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
                 color: on
                     ? Cf.accent.withValues(alpha: 0.20)
