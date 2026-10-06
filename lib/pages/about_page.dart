@@ -19,7 +19,7 @@ import '../core/theme.dart';
 import '../core/version.dart';
 
 /// 项目主页（Releases 与 Issue 都从这里进）
-const _repoUrl = 'https://github.com/1357980024/CineFlow';
+const _repoUrl = 'https://github.com/bsfcxz/CineFlow';
 
 class AboutPage extends StatelessWidget {
   const AboutPage({super.key});

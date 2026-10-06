@@ -9,7 +9,7 @@
 
 ## 下载安装
 
-已构建的 release APK 见 [**Releases**](https://github.com/1357980024/CineFlow/releases/latest) 页面（arm64-v8a，约 30MB）。
+已构建的 release APK 见 [**Releases**](https://github.com/bsfcxz/CineFlow/releases/latest) 页面（arm64-v8a，约 30MB）。
 
 - 支持 **Android 7.0+（API 24+）**，仅 arm64 设备；装前请确认机型架构
 - APK 使用 **debug 签名**（见 [AGENTS.md](AGENTS.md) §7.16），仅供自用与体验，**不要用于正式分发**
