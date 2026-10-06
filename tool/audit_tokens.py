@@ -62,6 +62,7 @@ def scan():
         'files': len(files),
         'bare_fontsize': {},      # 值 -> 次数
         'token_font': 0,
+        'cf_text': 0,
         'gap_token': 0,
         'breakpoints': 0,
         'clamp_text': 0,
@@ -82,7 +83,10 @@ def scan():
             r'\bCf\.(pageTitle|section|title|body|label|caption|micro|numeric)\b', t))
         r['gap_token'] += len(re.findall(r'\bCf\.gap[1-6]\b', t))
         r['breakpoints'] += len(re.findall(r'CfBreakpoints\.', t))
-        r['clamp_text'] += len(re.findall(r'clampTextScale\(', t))
+        # `clampTextScale(` 是**底层调用**，`CfText(` 是**推荐入口**（它内部自动钳制）。
+        # 两个都算采用 —— 否则用 CfText 的正确写法反而统计不到（假阴性）。
+        r['clamp_text'] += len(re.findall(r'clampTextScale\(|\bCfText\(', t))
+        r['cf_text'] += len(re.findall(r'\bCfText\(', t))
 
         n_sem = len(re.findall(r'Semantics\(', t))
         if n_sem:
@@ -109,9 +113,11 @@ def main():
     print('  [typography]')
     print('    裸 fontSize        : %d 处（%d 种字号）' % (bare, len(r['bare_fontsize'])))
     print('    Cf 排版令牌        : %d 处' % r['token_font'])
+    print('    CfText 组件        : %d 处（自动带字号钳制）' % r['cf_text'])
     total_fs = bare + r['token_font']
     if total_fs:
-        print('    采用率             : %.1f%%' % (100.0 * r['token_font'] / total_fs))
+        print('    令牌采用率         : %.1f%%（%d / %d）'
+              % (100.0 * r['token_font'] / total_fs, r['token_font'], total_fs))
     print()
 
     print('  [space]      Cf.gap*        : %d 处' % r['gap_token'])
