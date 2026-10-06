@@ -1,0 +1,362 @@
+/// 顶栏（规格 §7.2）。
+///
+/// 左：返回按钮；中：文件名（单行、省略号）；**右：不放锁按钮**
+/// （锁按钮已浮动到中部右侧，见 §7.5 —— 放两处会让用户困惑哪个是真的）。
+library;
+
+import 'package:flutter/material.dart';
+
+import '../player_ui_tokens.dart';
+import 'glass.dart';
+
+class PlayerTopBar extends StatelessWidget {
+  const PlayerTopBar({
+    super.key,
+    required this.title,
+    required this.onBack,
+    this.subtitle,
+    this.onBackKey,
+  });
+
+  final String title;
+  final VoidCallback onBack;
+
+  /// 可选副标题（如"第 3 集 · 1080p"）。
+  final String? subtitle;
+  final Key? onBackKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        const SizedBox(width: 4),
+        IconButton(
+          key: onBackKey,
+          onPressed: onBack,
+          icon: const Icon(Icons.arrow_back),
+          color: Colors.white,
+          iconSize: 22,
+          tooltip: '返回',
+        ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                title,
+                // 规格 §7.2：单行 + 省略号（长文件名不能撑破顶栏）
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+                ),
+              ),
+              if (subtitle case final s? when s.isNotEmpty)
+                Text(
+                  s,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+      ],
+    );
+  }
+}
+
+/// 中部三键（规格 §7.3）：快退 10s / 播放暂停(72) / 快进 10s。
+class PlayerCenterControls extends StatelessWidget {
+  const PlayerCenterControls({
+    super.key,
+    required this.isPlaying,
+    required this.onTogglePlay,
+    required this.onSeekBack,
+    required this.onSeekForward,
+    this.stepSeconds = 10,
+    this.playKey,
+    this.backKey,
+    this.forwardKey,
+  });
+
+  final bool isPlaying;
+  final VoidCallback onTogglePlay;
+  final VoidCallback onSeekBack;
+  final VoidCallback onSeekForward;
+  final int stepSeconds;
+  final Key? playKey;
+  final Key? backKey;
+  final Key? forwardKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        GlassButton(
+          key: backKey,
+          icon: Icons.replay_10,
+          onTap: onSeekBack,
+          semanticLabel: '快退 $stepSeconds 秒',
+        ),
+        const SizedBox(width: 28),
+        // 中央播放/暂停更大（72 vs 56）—— 它是最高频的操作
+        GlassButton(
+          key: playKey,
+          icon: isPlaying ? Icons.pause : Icons.play_arrow,
+          onTap: onTogglePlay,
+          size: PlayerUi.playButtonSize,
+          iconSize: 36,
+          semanticLabel: isPlaying ? '暂停' : '播放',
+        ),
+        const SizedBox(width: 28),
+        GlassButton(
+          key: forwardKey,
+          icon: Icons.forward_10,
+          onTap: onSeekForward,
+          semanticLabel: '快进 $stepSeconds 秒',
+        ),
+      ],
+    );
+  }
+}
+
+/// 底部栏（规格 §7.4）：两行 —— 进度条 + 操作按钮。
+class PlayerBottomBar extends StatelessWidget {
+  const PlayerBottomBar({
+    super.key,
+    required this.progress,
+    required this.position,
+    required this.duration,
+    required this.onSeek,
+    required this.actions,
+    this.buffered,
+    this.showRemaining = false,
+    this.onToggleTimeDisplay,
+    this.progressKey,
+  });
+
+  /// 0.0–1.0。
+  final double progress;
+  final Duration position;
+  final Duration duration;
+
+  /// 缓冲进度 0.0–1.0（可选）。
+  final double? buffered;
+
+  final ValueChanged<double> onSeek;
+
+  /// 第二行的按钮组（由 PlayerPage 组装，避免本组件依赖各 Controller）。
+  final Widget actions;
+
+  /// 时间显示是否切到"剩余"（原型：点时间可切换）。
+  final bool showRemaining;
+  final VoidCallback? onToggleTimeDisplay;
+  final Key? progressKey;
+
+  /// `mm:ss` / `h:mm:ss`。
+  static String format(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final remaining = duration - position;
+    final remainText = remaining.isNegative ? Duration.zero : remaining;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        PlayerProgressBar(
+          key: progressKey,
+          progress: progress,
+          buffered: buffered,
+          onSeek: onSeek,
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              // 等宽数字：否则秒数变化时整行会左右抖动
+              GestureDetector(
+                onTap: onToggleTimeDisplay,
+                child: Text(
+                  showRemaining
+                      ? '-${format(remainText)}'
+                      : format(position),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                    shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+                  ),
+                ),
+              ),
+              const Spacer(),
+              Text(
+                format(duration),
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                  shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        actions,
+        const SizedBox(height: 6),
+      ],
+    );
+  }
+}
+
+/// 自绘进度条（规格 §7.4：拖动时轨道变粗 + 出现滑块）。
+///
+/// ## 为什么自绘而不用 `Slider`
+/// `Slider` 难以实现"拖动时轨道从 3dp 长到 6dp + 拇指淡入"这种细节，
+/// 且它的命中区与视觉绑定（要额外包 Padding 才达标）。
+/// 自绘能同时给足**48dp 命中区**与 3dp 视觉细线。
+class PlayerProgressBar extends StatefulWidget {
+  const PlayerProgressBar({
+    super.key,
+    required this.progress,
+    required this.onSeek,
+    this.buffered,
+  });
+
+  final double progress;
+  final double? buffered;
+  final ValueChanged<double> onSeek;
+
+  @override
+  State<PlayerProgressBar> createState() => _PlayerProgressBarState();
+}
+
+class _PlayerProgressBarState extends State<PlayerProgressBar> {
+  /// 拖动中的临时值（null = 未拖动，用外部 progress）。
+  double? _dragValue;
+
+  bool get _dragging => _dragValue != null;
+
+  void _updateFromLocal(double dx, double width) {
+    if (width <= 0) return;
+    setState(() => _dragValue = (dx / width).clamp(0.0, 1.0));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = _dragValue ?? widget.progress.clamp(0.0, 1.0);
+    return LayoutBuilder(
+      builder: (context, box) {
+        final width = box.maxWidth;
+        return Semantics(
+          slider: true,
+          label: '播放进度',
+          value: '${(value * 100).round()}%',
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (d) {
+              _updateFromLocal(d.localPosition.dx, width);
+            },
+            onTapUp: (d) {
+              widget.onSeek(_dragValue ?? value);
+              setState(() => _dragValue = null);
+            },
+            onHorizontalDragStart: (d) {
+              _updateFromLocal(d.localPosition.dx, width);
+            },
+            onHorizontalDragUpdate: (d) {
+              _updateFromLocal(d.localPosition.dx, width);
+            },
+            onHorizontalDragEnd: (_) {
+              widget.onSeek(_dragValue ?? value);
+              setState(() => _dragValue = null);
+            },
+            onHorizontalDragCancel: () => setState(() => _dragValue = null),
+            child: SizedBox(
+              // 命中区 48dp（视觉只有 3–6dp）
+              height: PlayerUi.progressHitHeight,
+              child: Center(
+                child: SizedBox(
+                  height: _dragging
+                      ? PlayerUi.progressTrackHeightDragging
+                      : PlayerUi.progressTrackHeight,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      // 底轨
+                      Container(
+                        decoration: BoxDecoration(
+                          color: PlayerUi.progressTrack,
+                          borderRadius: BorderRadius.circular(PlayerUi.progressRadius),
+                        ),
+                      ),
+                      // 缓冲段
+                      if (widget.buffered case final b?)
+                        FractionallySizedBox(
+                          widthFactor: b.clamp(0.0, 1.0),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: PlayerUi.progressBuffer,
+                              borderRadius: BorderRadius.circular(PlayerUi.progressRadius),
+                            ),
+                          ),
+                        ),
+                      // 已播段
+                      FractionallySizedBox(
+                        widthFactor: value,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: PlayerUi.progressFilled,
+                            borderRadius: BorderRadius.circular(PlayerUi.progressRadius),
+                          ),
+                        ),
+                      ),
+                      // 拖动时的拇指
+                      if (_dragging)
+                        Positioned(
+                          left: (width * value) - PlayerUi.progressThumbSize / 2,
+                          top: -(PlayerUi.progressThumbSize -
+                                  PlayerUi.progressTrackHeightDragging) /
+                              2,
+                          child: Container(
+                            width: PlayerUi.progressThumbSize,
+                            height: PlayerUi.progressThumbSize,
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  blurRadius: 6,
+                                  color: Colors.black38,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
