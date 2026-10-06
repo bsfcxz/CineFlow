@@ -297,14 +297,43 @@ class ContinueCard extends StatelessWidget {
   /// ⚠️ 原是写死的 `200`（审计 §2.1 点名）：在 Compact(360dp) 上占 55% 宽、
   /// 在 Medium/Expanded 上却只有 25% —— 大屏上显得稀疏零落。
   /// 改为**按断点给宽度**：大屏给更大卡片，保持"一眼能看清缩略图"的密度。
-  static double widthFor(BuildContext context) {
-    final wc = CfBreakpoints.of(MediaQuery.sizeOf(context).width);
-    return switch (wc) {
-      CfBreakpoints.expanded => 260.0,
-      CfBreakpoints.medium => 230.0,
-      _ => 200.0, // Compact
-    };
-  }
+  static double widthFor(BuildContext context) =>
+      widthForClass(CfBreakpoints.of(MediaQuery.sizeOf(context).width));
+
+  /// 纯函数版（供单测直接断言断点行为）。
+  static double widthForClass(int windowClass) => switch (windowClass) {
+        CfBreakpoints.expanded => 260.0,
+        CfBreakpoints.medium => 230.0,
+        _ => 200.0, // Compact
+      };
+
+  /// 容器应给的高度。
+  ///
+  /// ## ⚠️ 为什么必须跟着宽度一起变（U9 测试抓到的真 bug）
+  ///
+  /// U4 把宽度改成断点相关后，`home_page` 里的容器高度**仍是写死的 165**。
+  /// 而缩略图是 16:9 —— **高度随宽度一起涨**。实测：
+  ///
+  /// | 窗口类 | 卡片宽 | 1.3x 字缩下的需求 | 165 够吗 |
+  /// |---|---|---|---|
+  /// | Compact | 200 | 159.5 | 够 |
+  /// | Medium | 230 | 176.4 | **溢出 11.4** |
+  /// | Expanded | 260 | 193.3 | **溢出 28.3** |
+  ///
+  /// 横屏（Expanded）时 Flutter 直接报
+  /// `A RenderFlex overflowed by 27 pixels on the bottom`
+  /// —— 黄色条纹 + 底部文字被裁。
+  ///
+  /// 公式 `max(165, 宽 × 9/16 + 52)`：
+  ///   · **165 是下限** —— Compact 保持原值，竖屏观感不变
+  ///   · `宽 × 9/16` 是 16:9 缩略图高度
+  ///   · `+52` 是标题行 + 间距 + 副标题行（1.3x 钳制后的实测需求 + 约 5dp 余量）
+  static double heightForClass(int windowClass) =>
+      (widthForClass(windowClass) * 9 / 16 + 52).clamp(165.0, 400.0);
+
+  /// 依据 BuildContext 给容器高度。
+  static double heightFor(BuildContext context) =>
+      heightForClass(CfBreakpoints.of(MediaQuery.sizeOf(context).width));
 
   @override
   Widget build(BuildContext context) {
@@ -407,16 +436,18 @@ class ContinueCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 9),
-              // 卡片标题：13sp < 14 → 属"正文语义"，跟随系统缩放。
-              // （标题在缩略图**下方**，不是固定高容器，跟随系统不会溢出）
-              Text(item.displayTitle,
+              // 卡片标题：13sp < 14 → 属"正文语义"，但**它在固定高的卡片里**，
+              // 所以必须显式钳制（否则 200% 下标题变两行、把副标题挤出卡片）
+              CfText(item.displayTitle,
+                  clamp: true,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
                       fontSize: 13, fontWeight: FontWeight.w700)),
               const SizedBox(height: 3),
-              Text(
+              CfText(
                 remain != null ? '剩余 $remain 分钟' : '继续播放',
+                clamp: true,
                 style: const TextStyle(fontSize: 10, color: Cf.text3),
               ),
             ]),

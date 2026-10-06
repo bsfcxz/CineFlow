@@ -56,7 +56,11 @@ class HomePage extends ConsumerWidget {
                     //   用户以为这功能不存在。实测发现于 2026-10 的按钮审查。
                     onTrailing: () => context.push(Routes.history),
                     child: SizedBox(
-                      height: 165,
+                      // ⚠️ 必须跟着卡片宽度变（U9 测试抓到：写死 165 时
+                      //    Medium 溢出 11.4、Expanded 溢出 28.3 —— 横屏直接报
+                      //    `RenderFlex overflowed by 27 pixels`，
+                      //    底部文字被裁 + 黄色溢出条纹）。
+                      height: ContinueCard.heightFor(context),
                       child: ListView.separated(
                         scrollDirection: Axis.horizontal,
                         padding: const EdgeInsets.symmetric(horizontal: 16),
