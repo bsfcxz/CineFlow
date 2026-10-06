@@ -219,19 +219,83 @@ class _CarouselState extends State<_Carousel> {
     // 上限避免大屏上主视觉占掉整屏、把下方内容全推出视野。
     final screenH = MediaQuery.sizeOf(context).height;
     final heroH = (screenH * 0.34).clamp(230.0, 420.0);
+    // 断点类：Medium/Expanded 下主视觉给得更大方（屏宽富裕，标题与简介更从容）
+    final wc = CfBreakpoints.of(MediaQuery.sizeOf(context).width);
+    final heroH2 = wc == CfBreakpoints.compact
+        ? heroH
+        : (heroH * 1.15).clamp(230.0, 480.0);
     return SizedBox(
-      height: heroH,
+      height: heroH2,
       width: double.infinity,
-      child: PageView.builder(
-        controller: _controller,
-        itemCount: widget.items.length,
-        onPageChanged: (i) {
-          setState(() => _page = i);
-          _armTimer(); // 手动滑动后重新计时
-        },
-        itemBuilder: (context, i) =>
-            _Slide(item: widget.items[i], active: i == _page),
-      ),
+      child: Stack(children: [
+        Positioned.fill(
+          child: PageView.builder(
+            controller: _controller,
+            itemCount: widget.items.length,
+            onPageChanged: (i) {
+              setState(() => _page = i);
+              _armTimer(); // 手动滑动后重新计时
+            },
+            itemBuilder: (context, i) =>
+                _Slide(item: widget.items[i], active: i == _page),
+          ),
+        ),
+
+        // ---- 页码指示器（右下角）----
+        //
+        // ## 为什么必须加（此前**完全没有**）
+        //
+        // 轮播每 5 秒自动翻页，但界面上没有任何"共几张、现在第几张"的反馈 ——
+        // 用户看到画面变了却不知道是自动播放还是自己碰到了什么，
+        // 也判断不出"还有没有下一张"。
+        //
+        // 圆点**可点**：直接跳那一张（比等 5 秒或反复滑动都快）。
+        // 每个点包 `CfTapTarget` —— 6px 的圆点裸放是点不中的
+        // （审计实测本仓库最小可点元素仅 16×16，正是这类写法造成的）。
+        if (widget.items.length > 1)
+          Positioned(
+            right: 18,
+            bottom: 22,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < widget.items.length; i++)
+                  CfTapTarget(
+                    // 视觉仍是 6px 的圆点，命中区 32dp —— 视觉与命中分离
+                    size: 32,
+                    semanticLabel: '第 ${i + 1} 张，共 ${widget.items.length} 张',
+                    onTap: () {
+                      _controller.animateToPage(i,
+                          duration: Cf.durBase, curve: Cf.curve);
+                      setState(() => _page = i);
+                      _armTimer();
+                    },
+                    child: AnimatedContainer(
+                      duration: Cf.durBase,
+                      curve: Cf.curve,
+                      // 当前页拉长为短横条：比"只变色"更容易一眼定位
+                      width: i == _page ? 16 : 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color:
+                            i == _page ? Cf.accent : const Color(0x59FFFFFF),
+                        // ⚠️ 用 `Cf.radiusXs`(4) 而不是裸 3。
+                        //
+                        //   本元素高只有 6px，Flutter 会把半径**收敛到 高度/2 = 3**
+                        //   → 渲染结果与写 3 完全一致（都是胶囊头），但守住了
+                        //   U1 的"圆角只用 4 档"纪律。
+                        //
+                        //   这条纪律不是形式主义：`test/design_tokens_test.dart`
+                        //   正是靠它抓到了我在这里随手写的 3（**U3 开发中被 U1 的
+                        //   测试拦下**，证明那批断言是真的在工作）。
+                        borderRadius: BorderRadius.circular(Cf.radiusXs),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ]),
     );
   }
 }
@@ -294,10 +358,17 @@ class _Slide extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(item.displayTitle,
+              // ⚠️ 标题用 `CfText`（带字缩钳制）。
+              //
+              //   原先是裸 `fontSize: 24`：200% 系统字号下 → 48sp 单行，
+              //   而轮播高度是屏高的 34%（夹 230–420）—— 48sp 会把简介与标签
+              //   整段挤出可视区，且 `maxLines: 1 + ellipsis` 会**静默截断**标题
+              //   （用户看到的是"片名被吃掉了"，而不是"字太大"）。
+              //   24sp ≥ 14sp 属标题 → CfText 默认就会钳，无需显式传参。
+              CfText(item.displayTitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: const TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.w900,
                       letterSpacing: -1,
