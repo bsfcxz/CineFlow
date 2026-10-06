@@ -84,13 +84,21 @@ dist/
 
 
 # ---- 本地工作流资产（不入库）----
+#   `.github/skills/` 是**有意的**：AGENTS.md §4 明说它是本地工作流资产。
 .github/skills/
-docs/PROMPT-TEMPLATES.md
-docs/TECH-SKILLS.md
-docs/OSS-SOURCES.md
-docs/task-board.md
-docs/review-checklist.md
-docs/UPDATE-WORKFLOW.md
+
+# ⚠️ 以下 6 个文档**曾经被误列入忽略名单**，导致 CI 必红（实测踩过）：
+#   `scripts/check-docs.ps1` 把它们列为**必需文档**，而 `.gitignore` 又忽略它们
+#   → 本地 `check-docs` 通过（文件在磁盘上），**但干净克隆里没有** →
+#     CI 的 docs-guard 一直失败，而本地全绿，极难察觉。
+#
+#   判定依据（2026-10-06 复核）：这 6 个都是**面向开发者的公开文档**
+#   （开源注册表 / 提示词模板 / 技能清单 / 更新流程 / 审查清单 / 任务看板），
+#   且实测**不含任何凭据、真实 IP 或个人路径**。
+#   `AGENTS.md` §12 也直接把 `review-checklist.md` 等列为"该读的资料"。
+#   → 故正确做法是**入库**，而不是从 check-docs 的必需清单里删掉。
+#
+#   保留在忽略名单里的（确实不该入库）：
 docs/TECH-NOTES.md
 docs/local/
 tool/_*
