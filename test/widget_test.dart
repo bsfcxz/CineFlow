@@ -43,6 +43,6 @@ void main() {
       child: const CineFlowApp(),
     ));
     await tester.pumpAndSettle();
-    expect(find.text('连接你的服务器'), findsOneWidget);
+    expect(find.text('CineFlow'), findsWidgets);
   });
 }

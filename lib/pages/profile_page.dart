@@ -300,13 +300,20 @@ class ProfilePage extends ConsumerWidget {
           border: Border.all(color: Cf.border),
         ),
         child: Column(children: [
-          Text(value,
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w900,
-                  color: Cf.accent)),
-          SizedBox(height: 2),
+          // 200% 字号下数字（如 5289）会拆行——等比缩放保持单行
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(value,
+                maxLines: 1,
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
+                    color: Cf.accent)),
+          ),
+          const SizedBox(height: 2),
           Text(label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 9, color: Cf.text3)),
         ]),
       ),
