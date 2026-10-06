@@ -72,6 +72,13 @@ dev_dependencies:
   integration_test:
     sdk: flutter
 
+  # 虚假时钟：验证播放器的**定时行为**（UI 3 秒自动隐藏、长按 500ms 计时）。
+  #
+  # 为什么必须显式声明：它本来就是 `flutter_test` 的传递依赖（用的到，
+  # 不声明也能编译），但 `depend_on_referenced_packages` 这条 lint 要求
+  # **直接依赖必须显式列出** —— 靠传递依赖是脆的（上游改依赖树就断）。
+  fake_async: ^1.3.1
+
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
