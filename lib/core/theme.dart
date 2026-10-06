@@ -584,6 +584,56 @@ abstract final class CfBreakpoints {
   static bool isCompact(double widthDp) => of(widthDp) == compact;
 }
 
+/// 播放器浮层的**堆叠槽位**（防止浮层互相压住）。
+///
+/// ## 为什么需要它（审计 U5 实测的竞争）
+///
+/// 播放器有多个"临时浮出"的提示层，各自用 `Positioned(bottom: N)` 手工定位。
+/// 收敛前实测：
+///
+/// | 浮层 | 原 bottom | 高度约 |
+/// |---|---|---|
+/// | 网络较慢提示卡 | 110 | 38 |
+/// | 跳过片头浮钮 | **110** | 32 |
+/// | 自动连播倒计时卡 | **96** | 36 |
+///
+/// 问题不是"值不一样"，而是**它们可以同时出现**：
+///   · 降档卡横贯全宽（left:16 right:16），跳片头在右下 → **水平重叠**
+///   · 降档卡 110–148 与自动连播 96–132 → **纵向重叠 22px**
+///
+/// 互斥条件只覆盖了"跳片头 vs 自动连播"（前者要求 `_autoNextSeconds == null`），
+/// 另两组**没有任何互斥**。
+///
+/// ## 规则
+///
+/// 每个浮层声明自己要哪个**槽位**，由 [bottomFor] 换算成 `bottom` 值；
+/// 槽位间距 ≥ 浮层典型高度，即便逻辑上万一同时出现也是**上下堆叠**而非压住。
+/// 这样"新增一个浮层"时只需挑槽位，不必再猜 `bottom` 该写多少。
+abstract final class CfPlayerOverlay {
+  /// 槽位 1（最靠底栏）：自动连播倒计时 —— "必须立刻做决定"的提示，
+  /// 放最低最显眼，且不挡其它内容。
+  static const int autoNext = 1;
+
+  /// 槽位 2：跳过片头浮钮。
+  static const int skipIntro = 2;
+
+  /// 槽位 3（最靠上）：网络较慢/降档建议 —— 它是"建议"而非"待决"，
+  /// 放最高，不跟用户正在操作的按钮抢位置。
+  static const int netSlow = 3;
+
+  /// 槽位间距：一个浮层的典型高度（36–38）+ 呼吸间隙。
+  static const double stride = 52;
+
+  /// 槽位基准高度（底栏上方留白）。
+  static const double base = 96;
+
+  /// 给定槽位 → `Positioned.bottom`。
+  static double bottomFor(int slot) => base + (slot - 1) * stride;
+
+  /// 全部槽位（供测试遍历，校验两两间距足够）。
+  static const List<int> allSlots = [autoNext, skipIntro, netSlow];
+}
+
 /// 字号缩放钳制：标题类元素在系统大字号下按 [maxFactor] 封顶，
 /// 正文不钳制（无障碍原则：正文始终跟随系统缩放）。
 ///
