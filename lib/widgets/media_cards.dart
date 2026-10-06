@@ -59,11 +59,18 @@ class CfSection extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                     letterSpacing: -.3)),
             const Spacer(),
+            // ⚠️ 「更多」入口原为裸 `GestureDetector` + 11sp 文字：
+            //   可点区域只有文字本身（约 40×16）—— **高 16dp，远低于 48dp 基线**，
+            //   且没有任何按压反馈。审计实测本仓库"88 处可点元素 <40dp"，
+            //   这一处正是典型（最小的一处仅 16×16）。
+            //   改用 `CfTapTarget`：视觉仍是那行小字，命中区撑到 48dp。
             if (trailing != null)
-              GestureDetector(
+              CfTapTarget(
+                size: 48,
                 onTap: onTrailing,
+                semanticLabel: trailing!,
                 child: Text(trailing!,
-                    style: TextStyle(fontSize: 11, color: Cf.text3)),
+                    style: const TextStyle(fontSize: 11, color: Cf.text3)),
               ),
           ]),
         ),
@@ -85,99 +92,133 @@ class PosterCard extends StatelessWidget {
   final MediaProvider api;
   final VoidCallback? onTap;
 
+  /// 海报卡片的圆角。用令牌而不是就地写值（U1 的断言会拦裸数字）。
+  static const double _radius = Cf.radiusMd;
+
   @override
   Widget build(BuildContext context) {
     final url = item.posterUrl(api);
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Cf.border),
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Stack(fit: StackFit.expand, children: [
-                if (url != null)
-                  Image.network(url,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => _ph())
-                else
-                  _ph(),
-                const DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      stops: [.45, 1],
-                      colors: [Colors.transparent, Color(0xD1000000)],
-                    ),
+    final card = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Expanded(
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(_radius),
+            border: Border.all(color: Cf.border),
+          ),
+          // ⚠️ ClipRRect 的圆角必须**略小于**外层 Container，
+          //    否则裁切边与外框重合，会出现 1px 的亮边（描边被切掉一半）。
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(Cf.radiusSm),
+            child: Stack(fit: StackFit.expand, children: [
+              if (url != null)
+                Image.network(url,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => _ph())
+              else
+                _ph(),
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    stops: [.45, 1],
+                    colors: [Colors.transparent, Color(0xD1000000)],
                   ),
                 ),
-                if (item.communityRating case final r?)
-                  Positioned(
-                    top: 6,
-                    right: 6,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 7, vertical: 2),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(4),
-                        color: const Color(0xBF000000),
-                      ),
-                      child: Text('⭐ ${r.toStringAsFixed(1)}',
-                          style: TextStyle(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w700,
-                              color: Cf.warn)),
-                    ),
-                  ),
-                if (item.played)
-                  Positioned(
-                    bottom: 26,
-                    right: 7,
-                    child: Container(
-                      width: 17,
-                      height: 17,
-                      decoration: BoxDecoration(
-                          color: Cf.accent, shape: BoxShape.circle),
-                      child: Icon(Icons.check_rounded,
-                          size: 12, color: Cf.ink),
-                    ),
-                  ),
+              ),
+              if (item.communityRating case final r?)
                 Positioned(
-                  left: 8,
-                  right: 8,
-                  bottom: 6,
-                  child: Text(item.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          height: 1.3,
-                          color: Colors.white,
-                          shadows: [
-                            Shadow(blurRadius: 4, color: Colors.black87)
-                          ])),
+                  top: 6,
+                  right: 6,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(Cf.radiusXs),
+                      color: const Color(0xBF000000),
+                    ),
+                    // ⚠️ 用 CfText 而非裸 Text：9sp 角标在 200% 字号下 → 18sp，
+                    //    而角标容器只有 15px 高 → 文字会被裁掉。
+                    //    角标属"固定小容器"，必须钳制（详见 CfText 的 clamp 说明）。
+                    child: CfText('⭐ ${r.toStringAsFixed(1)}',
+                        clamp: true,
+                        style: const TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: Cf.warn)),
+                  ),
                 ),
-              ]),
-            ),
+              if (item.played)
+                Positioned(
+                  bottom: 26,
+                  right: 7,
+                  child: Container(
+                    width: 17,
+                    height: 17,
+                    decoration: BoxDecoration(
+                        color: Cf.accent, shape: BoxShape.circle),
+                    child: Icon(Icons.check_rounded, size: 12, color: Cf.ink),
+                  ),
+                ),
+              Positioned(
+                left: 8,
+                right: 8,
+                bottom: 6,
+                child: CfText(item.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        height: 1.3,
+                        color: Colors.white,
+                        shadows: [
+                          Shadow(blurRadius: 4, color: Colors.black87)
+                        ])),
+              ),
+            ]),
           ),
         ),
-        SizedBox(height: 5),
-        Text(
-          [
-            if (item.productionYear != null) '${item.productionYear}',
-            item.typeLabel,
-          ].join(' · '),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 10, color: Cf.text3),
+      ),
+      SizedBox(height: 5),
+      CfText(
+        [
+          if (item.productionYear != null) '${item.productionYear}',
+          item.typeLabel,
+        ].join(' · '),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 10, color: Cf.text3),
+      ),
+    ]);
+
+    // ⚠️ 从 `GestureDetector` 换成 `InkWell`（内含 Material）：
+    //
+    //   1. **按压反馈**：GestureDetector 点了毫无变化 —— 用户不确定有没有点上，
+    //      尤其在海报这种"点了要等一下才跳页"的场景。这是本项目
+    //      "按键没用"观感的主要来源之一（`UI-DESIGN.md` §3.3.2）。
+    //   2. **无障碍语义**：`Semantics(button: true, label: …)` 让读屏能念出
+    //      "《片名》，按钮"，而不是一个无名的可点区域。
+    //      同时把年份/类型/评分并进 label —— 读屏用户靠它判断"要不要点进去"。
+    return Semantics(
+      button: true,
+      label: [
+        item.name,
+        if (item.productionYear != null) '${item.productionYear} 年',
+        item.typeLabel,
+        if (item.communityRating case final r?) '评分 ${r.toStringAsFixed(1)}',
+        if (item.played) '已看',
+      ].join('，'),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(_radius),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(_radius),
+          child: card,
         ),
-      ]),
+      ),
     );
   }
 
@@ -251,95 +292,136 @@ class ContinueCard extends StatelessWidget {
   final MediaProvider api;
   final VoidCallback? onTap;
 
+  /// 卡片宽度。
+  ///
+  /// ⚠️ 原是写死的 `200`（审计 §2.1 点名）：在 Compact(360dp) 上占 55% 宽、
+  /// 在 Medium/Expanded 上却只有 25% —— 大屏上显得稀疏零落。
+  /// 改为**按断点给宽度**：大屏给更大卡片，保持"一眼能看清缩略图"的密度。
+  static double widthFor(BuildContext context) {
+    final wc = CfBreakpoints.of(MediaQuery.sizeOf(context).width);
+    return switch (wc) {
+      CfBreakpoints.expanded => 260.0,
+      CfBreakpoints.medium => 230.0,
+      _ => 200.0, // Compact
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     final url = item.thumbUrl(api);
     final remain = item.remainingMinutes;
-    return GestureDetector(
-      onTap: onTap,
-      child: SizedBox(
-        width: 200,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Container(
-            width: 200,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Cf.border),
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: AspectRatio(
-                aspectRatio: 16 / 9,
-                child: Stack(fit: StackFit.expand, children: [
-                  if (url != null)
-                    Image.network(url,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => _ph())
-                  else
-                    _ph(),
-                  const DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        stops: [.5, 1],
-                        colors: [Colors.transparent, Color(0xB3000000)],
-                      ),
-                    ),
-                  ),
-                  if (item.seasonEpisode case final se?)
-                    Positioned(
-                      top: 8,
-                      left: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
+    final cardW = widthFor(context);
+    // ⚠️ 换成 InkWell + Semantics：与 PosterCard 同因 ——
+    //   1. GestureDetector 无按压反馈（"点了没反应"的观感来源）
+    //   2. 读屏需要知道"继续观看《片名》，剩余 N 分钟"
+    return Semantics(
+      button: true,
+      label: [
+        '继续观看 ${item.name}',
+        ?item.seasonEpisode,
+        // `remain` 是 int?（未看过时无剩余时长）—— 用空安全写法而不是裸 >
+        if (remain != null && remain > 0) '剩余 $remain 分钟',
+        if (item.progress > 0) '已看 ${(item.progress * 100).round()}%',
+      ].join('，'),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(Cf.radiusMd),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(Cf.radiusMd),
+          child: SizedBox(
+            width: cardW,
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Container(
+                width: cardW,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(Cf.radiusMd),
+                  border: Border.all(color: Cf.border),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(Cf.radiusSm),
+                  child: AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: Stack(fit: StackFit.expand, children: [
+                      if (url != null)
+                        Image.network(url,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => _ph())
+                      else
+                        _ph(),
+                      const DecoratedBox(
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(4),
-                          color: const Color(0xB3000000),
-                          border:
-                              // 原为硬编码 0x4D00D4FF：外观页切主题时此描边不变色（实测 bug）。
-                              Border.all(
-                                  color: Cf.accent.withValues(alpha: 0.30)),
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            stops: [.5, 1],
+                            colors: [Colors.transparent, Color(0xB3000000)],
+                          ),
                         ),
-                        child: Text(se,
-                            style: Cf.micro.copyWith(
-                                fontWeight: FontWeight.w700,
-                                color: Cf.accent)),
                       ),
-                    ),
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    child: Container(
-                      height: 3,
-                      color: const Color(0x38FFFFFF),
-                      alignment: Alignment.centerLeft,
-                      child: FractionallySizedBox(
-                        widthFactor: item.progress,
+                      if (item.seasonEpisode case final se?)
+                        Positioned(
+                          top: 8,
+                          left: 8,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              borderRadius:
+                                  BorderRadius.circular(Cf.radiusXs),
+                              color: const Color(0xB3000000),
+                              border:
+                                  // 原为硬编码 0x4D00D4FF：外观页切主题时此描边不变色（实测 bug）。
+                                  Border.all(
+                                      color:
+                                          Cf.accent.withValues(alpha: 0.30)),
+                            ),
+                            // 季集号在固定高容器里 → 必须钳制（同 PosterCard 角标）
+                            child: CfText(se,
+                                clamp: true,
+                                style: Cf.micro.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                    color: Cf.accent)),
+                          ),
+                        ),
+                      Positioned(
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
                         child: Container(
-                            decoration:
-                                BoxDecoration(gradient: Cf.primaryGradient)),
+                          height: 3,
+                          color: const Color(0x38FFFFFF),
+                          alignment: Alignment.centerLeft,
+                          child: FractionallySizedBox(
+                            widthFactor: item.progress,
+                            child: Container(
+                                decoration: BoxDecoration(
+                                    gradient: Cf.primaryGradient)),
+                          ),
+                        ),
                       ),
-                    ),
+                    ]),
                   ),
-                ]),
+                ),
               ),
-            ),
+              const SizedBox(height: 9),
+              // 卡片标题：13sp < 14 → 属"正文语义"，跟随系统缩放。
+              // （标题在缩略图**下方**，不是固定高容器，跟随系统不会溢出）
+              Text(item.displayTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 3),
+              Text(
+                remain != null ? '剩余 $remain 分钟' : '继续播放',
+                style: const TextStyle(fontSize: 10, color: Cf.text3),
+              ),
+            ]),
           ),
-          SizedBox(height: 9),
-          Text(item.displayTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style:
-                  TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-          SizedBox(height: 3),
-          Text(
-            remain != null ? '剩余 $remain 分钟' : '继续播放',
-            style: TextStyle(fontSize: 10, color: Cf.text3),
-          ),
-        ]),
+        ),
       ),
     );
   }
