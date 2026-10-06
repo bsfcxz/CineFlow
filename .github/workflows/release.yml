@@ -154,22 +154,62 @@ jobs:
 
       # ★ 红线守卫：本工作流**只增不删**。任何情况下都不许动已有 Release。
       #   见 docs/AI-DISTRIBUTION.md §4（用户明确要求）。
+      #
+      # ⚠️ 为什么用 `gh api` 而不是 `gh release view`（实测踩过，是本工作流的核心缺陷）：
+      #   GitHub 的 `GET /releases/tags/<tag>` **对草稿返回 404**
+      #   （实测：草稿存在时该端点仍 404）→ `gh release view <tag>` 在只有草稿时**也失败**。
+      #   于是每次重跑都以为"Release 不存在"→ 再 `create` 一个 → **同名草稿越积越多**
+      #   → 最后 `gh release upload <tag>` 无法在多个同名草稿间唯一解析 → publish 失败。
+      #
+      #   正解：用 `gh api` 列**全部** Release（含草稿），再按 tag 过滤。
       - name: 守卫 · 确认目标 Release 尚不存在（只增不删）
+        id: guard
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          set -o pipefail
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           echo "现有 Release 列表（本次操作绝不会删除其中任何一个）："
           gh release list --limit 30 || true
-          if gh release view "$TAG" --json isDraft --jq '.isDraft' > /tmp/exists 2>/dev/null; then
-            IS_DRAFT="$(cat /tmp/exists)"
-            if [ "$IS_DRAFT" = "false" ]; then
-              echo "::error::Release $TAG 已发布（非草稿）。按 AI-DISTRIBUTION.md §4，"
-              echo "::error::不得覆盖已发布版本 —— 请递增版本号后重新发布。"
-              exit 1
-            fi
-            echo "已存在同名**草稿**，允许重跑（草稿对用户不可见，§4 例外条款）"
+
+          # 列出所有 Release（含草稿），筛出本 tag 的
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq "[.[] | select(.tag_name==\"$TAG\")] | {n: length, drafts: ([.[] | select(.draft)] | length), published: ([.[] | select(.draft|not)] | length), ids: [.[].id]}" \
+            > /tmp/rel.json 2>/dev/null || echo '{"n":0,"drafts":0,"published":0,"ids":[]}' > /tmp/rel.json
+          cat /tmp/rel.json
+
+          N=$(jq -r '.n' /tmp/rel.json)
+          PUB=$(jq -r '.published' /tmp/rel.json)
+          IDS=$(jq -r '.ids | join(" ")' /tmp/rel.json)
+
+          if [ "$PUB" != "0" ]; then
+            echo "::error::Release $TAG 已发布（非草稿）。按 AI-DISTRIBUTION.md §4，"
+            echo "::error::不得覆盖已发布版本 —— 请递增版本号后重新发布。"
+            exit 1
+          fi
+
+          # ★ 去重：同名草稿只能留一个，否则后面的 upload 无法唯一解析目标。
+          #   草稿对用户不可见，删多余草稿属 AI-DISTRIBUTION §4 的**明确例外条款**。
+          KEEP=""
+          if [ "$N" -gt 1 ]; then
+            echo "发现 $N 个同名草稿 —— 只保留第一个，删除多余（草稿不可见，§4 例外）"
+            FIRST=1
+            for id in $IDS; do
+              if [ "$FIRST" = "1" ]; then
+                KEEP="$id"; FIRST=0
+              else
+                echo "  删除多余草稿 id=$id"
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/$id" || true
+              fi
+            done
+          elif [ "$N" = "1" ]; then
+            KEEP=$(echo "$IDS" | awk '{print $1}')
+          fi
+
+          echo "keep_release_id=$KEEP" >> "$GITHUB_OUTPUT"
+          if [ -n "$KEEP" ]; then
+            echo "已存在同名**草稿**（id=$KEEP），允许重跑（§4 例外条款）"
           else
             echo "Release $TAG 不存在，将新建（不影响任何旧版本）"
           fi
@@ -177,6 +217,7 @@ jobs:
       - name: 建草稿 Release 并上传 APK
         env:
           GH_TOKEN: ${{ github.token }}
+          KEEP_ID: ${{ steps.guard.outputs.keep_release_id }}
         shell: bash
         run: |
           set -o pipefail
@@ -204,35 +245,59 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
 
-          if [ -f "$NOTES" ]; then
-            echo "使用 $NOTES 作为 Release 正文"
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              # 草稿重跑：只改正文，不重建
-              gh release edit "$TAG" --title "CineFlow v${VER}" --notes-file "$NOTES"
+          # ★ 用 guard 步骤给的结果，**不要**再用 `gh release view` 判断存在性：
+          #   它对草稿返回 404（实测），是本工作流此前"越跑草稿越多"的根因。
+          if [ -n "$KEEP_ID" ]; then
+            echo "已存在草稿 id=$KEEP_ID —— 只改正文，不重建"
+            if [ -f "$NOTES" ]; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/$KEEP_ID" \
+                -f name="CineFlow v${VER}" -F body="$(cat "$NOTES")" >/dev/null
             else
-              gh release create "$TAG" --draft --title "CineFlow v${VER}" --notes-file "$NOTES"
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/$KEEP_ID" \
+                -f name="CineFlow v${VER}" >/dev/null
             fi
           else
-            echo "::warning::缺少 $NOTES，退回自动生成正文（随后 release-notes.yml 会自动同步）"
-            if ! gh release view "$TAG" >/dev/null 2>&1; then
+            if [ -f "$NOTES" ]; then
+              echo "使用 $NOTES 作为 Release 正文"
+              gh release create "$TAG" --draft --title "CineFlow v${VER}" --notes-file "$NOTES"
+            else
+              echo "::warning::缺少 $NOTES，退回自动生成正文（随后 release-notes.yml 会自动同步）"
               gh release create "$TAG" --draft --title "CineFlow v${VER}" --generate-notes
             fi
           fi
+
           # 只上传 APK 与校验和；符号表留在构建产物里，不进 Release。
+          #
+          # ⚠️ 这里**故意用 release id 而不是 tag**：`gh release upload <tag>` 在
+          #    同名草稿不唯一时会失败；用 id 则永远指向确定的目标。
+          RID="$KEEP_ID"
+          if [ -z "$RID" ]; then
+            RID=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                  --jq "[.[] | select(.tag_name==\"$TAG\")][0].id")
+          fi
+          echo "上传目标 release id=$RID"
           # --clobber 仅用于**草稿重跑**覆盖自己的同名附件，绝不对已发布 Release 使用。
-          gh release upload "$TAG" dist/*.apk dist/checksums.txt --clobber
+          gh release upload "$RID" dist/*.apk dist/checksums.txt --clobber
 
       - name: 校验产物齐全后转正
         env:
           GH_TOKEN: ${{ github.token }}
+          KEEP_ID: ${{ steps.guard.outputs.keep_release_id }}
         shell: bash
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          N=$(gh release view "$TAG" --json assets --jq '.assets | length')
+          # 同上去草稿问题：用 id 查附件数
+          if [ -z "$KEEP_ID" ]; then
+            KEEP_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                      --jq "[.[] | select(.tag_name==\"$TAG\")][0].id")
+          fi
+          N=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$KEEP_ID" --jq '.assets | length')
           echo "Release 附件数：$N"
           if [ "$N" -lt 2 ]; then
             echo "::error::产物不全（期望至少 APK + checksums），Release 保持草稿"
             exit 1
           fi
-          gh release edit "$TAG" --draft=false
-          echo "Release $TAG 已发布"
+          # 转正同样用 id（草稿的 tag 解析不可靠，见上）
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/$KEEP_ID" \
+            -F draft=false >/dev/null
+          echo "Release $TAG 已发布（id=$KEEP_ID）"
