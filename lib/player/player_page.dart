@@ -1251,7 +1251,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             Positioned(
               left: 16,
               right: 16,
-              bottom: 110,
+              // 槽位 3（最靠上）：降档是「建议」，不跟用户正在操作的按钮抢位置
+              bottom: CfPlayerOverlay.bottomFor(CfPlayerOverlay.netSlow),
               child: Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 14, vertical: 10),
@@ -1315,7 +1316,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
               _autoNextSeconds == null)
             Positioned(
               right: 20,
-              bottom: 110,
+              // 槽位 2
+              bottom: CfPlayerOverlay.bottomFor(CfPlayerOverlay.skipIntro),
               child: GestureDetector(
                 onTap: () {
                   _introSkipped = true;
@@ -1344,7 +1346,8 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
           if (_autoNextSeconds != null)
             Positioned(
               right: 16,
-              bottom: 96,
+              // 槽位 1（最靠底栏）：待决提示，最显眼
+              bottom: CfPlayerOverlay.bottomFor(CfPlayerOverlay.autoNext),
               child: Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -2653,41 +2656,85 @@ class _ProgressBarState extends State<_ProgressBar> {
         : <double>[];
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
-      return GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onHorizontalDragStart: (_) => widget.onChangeStart(),
-        onHorizontalDragUpdate: (d) {
-          setState(() {
-            _dragValue =
-                ((_dragValue ?? pos) + d.delta.dx / w).clamp(0.0, 1.0);
-          });
-        },
-        onHorizontalDragEnd: (_) {
-          widget.onSeek(Duration(
-              milliseconds: ((_dragValue ?? pos) * totalMs).round()));
-          _dragValue = null;
-        },
-        onTapUp: (d) {
-          widget.onSeek(Duration(
-              milliseconds: (d.localPosition.dx / w * totalMs).round()));
-        },
-        child: Container(
-          height: 26,
-          alignment: Alignment.center,
-          child: Stack(
-              clipBehavior: Clip.none,
-              alignment: Alignment.centerLeft,
-              children: [
-            // 底轨
-            Container(
-              height: 4,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(4),
-                color: const Color(0x2EFFFFFF),
-              ),
-            ),
-            // 缓冲段
-            FractionallySizedBox(
+      // ---- 无障碍语义（审计 U5 要求）----
+      //
+      // 进度条原先**完全裸奔**：读屏用户既听不到"播到哪了"，
+      // 也无法用无障碍手势调整 —— 而它是播放器最重要的控件。
+      //
+      // 这里给出 slider 语义：
+      //   · `value` 用「已播 12:34 / 45:00」这类**可理解文本**，
+      //     而不是百分比数字（读屏念"34%"不如念时间有用）
+      //   · `increasedValue` / `decreasedValue` 说明滑动会变成什么
+      //   · `onIncrease` / `onDecrease` 让无障碍手势能真的 seek
+      //     （TalkBack 的"向上/向下滑动"会调这两个回调）
+      //
+      // 步长用 `kSeekStepSeconds`（与快进/快退键一致）—— 无障碍操作
+      // 与实体按键行为一致，用户不必学两套。
+      // 本 State 在 `_ProgressBar` 里，取不到 `_PlayerPageState._fmt`
+      // —— 就地写一个同格式的（`mm:ss` / `h:mm:ss`），保证读屏念法与界面一致。
+      String fmt(Duration d) {
+        final h = d.inHours;
+        final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+        final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+        return h > 0 ? '$h:$m:$s' : '$m:$s';
+      }
+
+      final posTxt = fmt(Duration(milliseconds: (pos * totalMs).round()));
+      final totalTxt = fmt(widget.duration);
+      final aheadMs = ((pos * totalMs) + PlayerPage.kSeekStepSeconds * 1000)
+          .clamp(0, totalMs)
+          .round();
+      final backMs = ((pos * totalMs) - PlayerPage.kSeekStepSeconds * 1000)
+          .clamp(0, totalMs)
+          .round();
+      return Semantics(
+        slider: true,
+        label: '播放进度',
+        value: '已播 $posTxt，共 $totalTxt',
+        increasedValue: fmt(Duration(milliseconds: aheadMs)),
+        decreasedValue: fmt(Duration(milliseconds: backMs)),
+        onIncrease: () => widget.onSeek(Duration(milliseconds: aheadMs)),
+        onDecrease: () => widget.onSeek(Duration(milliseconds: backMs)),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragStart: (_) => widget.onChangeStart(),
+          onHorizontalDragUpdate: (d) {
+            setState(() {
+              _dragValue =
+                  ((_dragValue ?? pos) + d.delta.dx / w).clamp(0.0, 1.0);
+            });
+          },
+          onHorizontalDragEnd: (_) {
+            widget.onSeek(Duration(
+                milliseconds: ((_dragValue ?? pos) * totalMs).round()));
+            _dragValue = null;
+          },
+          onTapUp: (d) {
+            widget.onSeek(Duration(
+                milliseconds: (d.localPosition.dx / w * totalMs).round()));
+          },
+          // ⚠️ 命中区 26dp 太矮（<48dp 基线）。用 `SizedBox` 把**外层**撑到 48，
+          //    内层视觉仍是 26 —— 拖动精度不变，但手指更容易按住。
+          //    （审计实测本仓库最小可点元素仅 16×16，这类"细控件"是重灾区）
+          child: SizedBox(
+            height: 48,
+            child: Container(
+              height: 26,
+              alignment: Alignment.center,
+              child: Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.centerLeft,
+                  children: [
+                    // 底轨
+                    Container(
+                      height: 4,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(Cf.radiusXs),
+                        color: const Color(0x2EFFFFFF),
+                      ),
+                    ),
+                    // 缓冲段
+                    FractionallySizedBox(
               widthFactor: buf,
               child: Container(
                 height: 4,
@@ -2738,6 +2785,8 @@ class _ProgressBarState extends State<_ProgressBar> {
               ),
             ),
           ]),
+            ),
+          ),
         ),
       );
     });
