@@ -89,6 +89,13 @@ class PlayerChannel(
             MPVLib.setOptionString("demuxer-max-bytes", "64MiB")
             MPVLib.setOptionString("demuxer-max-back-bytes", "32MiB")
 
+            // 网络 I/O 超时：默认 60s 太长，遇到 STRM 死源要干等一分钟才报错。
+            // 15s 与 Dart 侧 `PlayerPage._startTimeoutDuration` 对齐 ——
+            // 两层都设的意义：mpv 这层管**连接/读取**超时（能主动断开），
+            // Dart 那层管**用户观感**（既无时长也无进度就切转码/报错）。
+            // 缺任何一层都会出现"能恢复但用户已经盯着灰屏很久"的体验。
+            MPVLib.setOptionString("network-timeout", "15")
+
             // 不让 mpv 读用户 config：行为可预测
             MPVLib.setOptionString("config", "no")
             // 进度由 App 层负责（Emby 有自己的进度接口），别让 mpv 再写一份

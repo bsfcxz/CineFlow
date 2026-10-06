@@ -125,6 +125,42 @@ class PlayerPage extends ConsumerStatefulWidget {
   /// 音轨**没有"关闭"选项**（关掉声音无意义），所以必须 **≥2 条**才有选择余地。
   static bool showAudioButton(int audioTrackCount) => audioTrackCount > 1;
 
+  /// 起播超时时长。
+  ///
+  /// 15s 的取舍：Emby 直连 4K 高码率首帧在慢网下也可能要 5–8s，
+  /// 取 15s 可避免误杀正常起播；同时比"无限灰屏"好得多。
+  /// 与 Kotlin 侧 `network-timeout` 对齐（那一层管网络 I/O，这一层管用户观感）。
+  static const Duration startTimeoutDuration = Duration(seconds: 15);
+
+  /// 起播超时到点时，是否应判定为「挂死」。
+  ///
+  /// ## ⚠️ 判据必须是「没有时长/没有进度」，**不能**用「是否在播放」
+  ///
+  /// 原实现是 `if (_dur > 0 || _playing) return;` —— **会让本功能完全失效**：
+  /// `playing` 由 mpv 的 `pause` 属性驱动（`native_kernel.dart`:
+  /// `case 'pause': _pushState(playing: data != true)`），而 `openUrl(play: true)`
+  /// 一进去就把 `pause=no` 设上了 —— **尚未拿到任何数据时 `playing` 已经是 true**。
+  /// 于是死源（STRM 指向能连上但不返回数据的 URL）场景下计时器必然提前 return，
+  /// 灰屏照旧 —— 修了等于没修。
+  ///
+  /// 判据：
+  /// - `duration > 0`             → 已解封装出时长，起播成功
+  /// - `position > positionAtArm` → 已经在出画面（有些流拿不到 duration 但能播，不能误杀）
+  /// - 其余（有 pause=no 却既无时长也无进度）→ **判定为挂死**
+  ///
+  /// 抽成 `public static` 纯函数是为了**可断言**：这类判据错了界面看不出来
+  /// （要真有一个死源才能复现），只有单测的真值表守得住。
+  static bool shouldTimeout({
+    required bool playing,
+    required Duration duration,
+    required Duration position,
+    required Duration positionAtArm,
+  }) {
+    if (duration > Duration.zero) return false;
+    if (position > positionAtArm) return false;
+    return true;
+  }
+
   @override
   ConsumerState<PlayerPage> createState() => _PlayerPageState();
 }
@@ -384,6 +420,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       });
       await _player.openUrl(launch.url,
           play: true, headers: launch.headers);
+      // ★ 起播超时必须**在这里也布上**（首次起播），不能只布在换集路径。
+      //
+      //   实测缺口：`_armStartTimeout()` 原先只在 `_playEpisode`（换集）里调用，
+      //   而**首次进播放器**走的是本方法 → 恰恰是最常走的路径没有超时保护。
+      //   后果：从详情页第一次点播放遇到 STRM 死源，仍会**灰屏无限等待**
+      //   —— 修了半天，主场景没修到。
+      _armStartTimeout();
       if (_resumeSeconds > 3) {
         await _player.seek(Duration(seconds: _resumeSeconds.toInt()));
       }
@@ -739,11 +782,52 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       // 换集必须重载弹幕（否则沿用上一集的弹幕时间轴，完全对不上）
       unawaited(_loadDanmaku());
       _startSpeedWatch();
+      _armStartTimeout();
     } catch (e) {
       setState(() => _error = e is MediaException ? e.message : '切换失败');
     } finally {
       if (mounted) setState(() => _switching = false);
     }
+  }
+
+  /// 起播超时的计时器（由 [_armStartTimeout] 布防、[_finalizeAndExit] 撤销）。
+  Timer? _startTimeout;
+
+  /// 起播超时：open 后 15s 仍无时长 → 强制切转码或报错（防灰屏挂死）。
+  ///
+  /// ## 背景
+  /// STRM 死源直连会无限等待外部 URL，表现为**灰屏无反馈**。
+  ///
+  /// ## ⚠️ 判据必须是「没有时长」而不是「没在播放」
+  ///
+  /// 原先的条件是 `if (_dur > 0 || _playing) return;` —— **这会让本功能完全失效**：
+  /// `playing` 由 mpv 的 `pause` 属性驱动（`native_kernel.dart`:
+  /// `case 'pause': _pushState(playing: data != true)`），而 `openUrl(play: true)`
+  /// 一进去就把 `pause=no` 设上了 —— **尚未拿到任何数据时 `playing` 就已经是 true**。
+  /// 于是死源场景下计时器必然提前 return，灰屏照旧。
+  ///
+  /// 判据已抽到 [PlayerPage.shouldTimeout]（纯函数、可单测）。
+  void _armStartTimeout() {
+    _startTimeout?.cancel();
+    final posAtArm = _pos;
+    _startTimeout = Timer(PlayerPage.startTimeoutDuration, () {
+      if (!mounted) return;
+      // 判据走**同一个** public static 纯函数（单测断言的就是它）——
+      // 不要在这里重写一份逻辑，否则测试与实现会各自漂移。
+      final dead = PlayerPage.shouldTimeout(
+        playing: _playing,
+        duration: _dur,
+        position: _pos,
+        positionAtArm: posAtArm,
+      );
+      if (!dead) return;
+      if (_playMethod == 'direct' &&
+          (_launch?.transcodingUrl ?? '').isNotEmpty) {
+        unawaited(_reopenAs('transcode', reason: '直连超时，已切换转码'));
+      } else {
+        setState(() => _error = '连接超时，该视频源可能不可用');
+      }
+    });
   }
 
   /// 起播速度监测（码率跟不上就建议降档）。
@@ -788,6 +872,10 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       await _player.openUrl(
           method == 'transcode' ? launch.transcodingUrl! : launch.url,
           play: true);
+      // 重新布防：切到转码后若**转码流也挂住**，同样需要超时兜底
+      // （否则"直连超时→切转码→转码也超时"会重新变成灰屏死等）。
+      // 注意 `_armStartTimeout` 内部先 cancel，不会叠加计时器。
+      _armStartTimeout();
       if (keepPos.inSeconds > 3) {
         await _player.seek(keepPos);
       }
@@ -1015,6 +1103,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     _flashTimer?.cancel();
     _autoNextTimer?.cancel();
     _speedTimer?.cancel();
+    _startTimeout?.cancel();
     // 恢复应用内亮度
     unawaited(ScreenBrightness().resetApplicationScreenBrightness());
     // 延迟销毁：避免在路由销毁帧内同步释放解码器（media_kit 原生崩溃坑）
