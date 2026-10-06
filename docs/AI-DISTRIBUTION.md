@@ -166,6 +166,33 @@ release-notes.yml 自动把 changelog 同步为 Release 正文
 | 日期 | 事件 | 处置 |
 |---|---|---|
 | 2026-10-05 | 建立本规范 | 用户明确要求：**上传到 GitHub 不删除原有 Release；每次上传前必须增加版本号且经用户审批** |
+| 2026-10-06 | **v0.3.0 首次发布**（用户当轮明确指令"发布 v0.3.0 并打包tag" + 审批单回"批准"） | 走 `release.yml` 通道。**发布过程暴露 3 个真实缺陷**，见下 |
+
+### 7.1 v0.3.0 发布暴露的缺陷（都已修，此记录供后人避免重踩）
+
+**① 仓库 Actions 默认权限是 read-only** —— 实测
+`GET /actions/permissions/workflow` 返回 `default_workflow_permissions: 'read'`。
+GitHub 的规则是**仓库设置是权限上限**，工作流里的 `permissions: contents: write`
+**只能收窄、不能放大** → `gh release create` 必然失败。
+**修**：用户授权后改为 `write`（`PUT /actions/permissions/workflow`）。
+
+**② `gh release view` 对草稿返回 404**（本次最隐蔽的一个）—— 实测
+`GET /releases/tags/v0.3.0` 在**草稿存在时仍返回 404**。
+→ 工作流每次都以为"Release 不存在"→ 再 `create` 一个 → **同名草稿越积越多**；
+→ 最后 `gh release upload <tag>` **无法在多个同名草稿间唯一解析** → publish 失败。
+**修**：守卫步骤改用 `gh api /releases`（**含草稿**）按 tag 过滤；
+同名草稿只留一个、多余的删掉（草稿不可见，属 §4 例外条款）；
+`upload` / 转正**一律用 release id 而非 tag**（id 永远唯一）。
+
+**③ `publish` job 缺 `actions/checkout`** —— 于是工作区是空的，
+`[ -f "docs/changelog/vX.Y.Z.md" ]` **恒为假** → 总是走 `--generate-notes` 兜底
+→ **精心写的 changelog 从未被用作 Release 正文**（设计上"changelog 优先"名存实亡）。
+**修**：补 checkout。
+
+> **教训**：这三条都属于"**本地/肉眼完全看不出来**"的类型。
+> 尤其②——重跑一次就多一个草稿，**越修越坏**，
+> 且由于日志需要额外权限，只能靠"把诊断写进 job summary"+ 直接查 Releases API 才定位到。
+> **CI 失败时不要反复重跑**：先查状态副作用（本例：草稿数量在涨）。
 
 ---
 
