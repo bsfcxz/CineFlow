@@ -159,6 +159,22 @@ kotlin {
 dependencies {
     // Patrol 的测试编排器（配合上面的 testOptions.execution 使用）
     androidTestUtil("androidx.test:orchestrator:1.5.1")
+
+    // ---- Media3（androidx.media3 / ExoPlayer）—— 双内核的第二实现 ----
+    //
+    // 用户明确要求 "mpv + androidx.media 双内核"。两个内核各有不可替代的场景：
+    //   · mpv：格式支持最全（几乎任意容器/编码）、外挂字幕、画面滤镜、音视频延迟
+    //   · Media3：Android 官方栈，与系统媒体会话（通知栏/蓝牙键/音频焦点）集成顺畅
+    //
+    // 只引 `exoplayer` 一个模块：它已传递依赖 common/datasource/decoder/extractor，
+    // 无需逐个声明（多引反而可能版本不一致）。
+    //
+    // ⚠️ 不引 `media3-ui`：我们用 `setVideoSurface(Flutter Texture)` 输出，
+    //    不需要 Media3 自带的 PlayerView（引了会多一套 View 层与依赖）。
+    //
+    // ⚠️ 用 `media3-exoplayer` 而不是旧的 `com.google.android.exoplayer:exoplayer`：
+    //    后者是已停止维护的 ExoPlayer 2.x 命名空间。
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
 }
 
 flutter {
