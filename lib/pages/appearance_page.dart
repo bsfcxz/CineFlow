@@ -69,9 +69,20 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
               Row(mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
                 for (var i = 0; i < Cf.themePresets.length; i++)
-                  GestureDetector(
+                  // ⚠️ 三处修复（审计 U8）：
+                  //   1. `GestureDetector` → `InkWell`：切主题这种"立即生效"
+                  //      的操作，点了**必须有反馈** —— 尤其当用户点了**当前
+                  //      已选中**的那项时颜色不会变，没有按压反馈就完全像没响应。
+                  //   2. 命中区撑到 72dp（色块 40 + 间距 7 + 文字行 ≈ 62）。
+                  //   3. 补语义：读屏要能念出"主题色 极光青，已选中"。
+                  CfTapTarget(
+                    size: 72,
+                    semanticLabel: '主题色 ${Cf.themePresets[i].$1}'
+                        '${_selected == i ? '，已选中' : ''}',
                     onTap: () => _apply(i),
-                    child: Column(children: [
+                    child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
                       Container(
                         width: 40,
                         height: 40,
@@ -102,7 +113,10 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
                         ),
                       ),
                       const SizedBox(height: 7),
-                      Text(Cf.themePresets[i].$1,
+                      // 主题名在"四项横排"的窄格子里 → 必须钳制字缩，
+                      // 否则 200% 下三项文字会互相挤压/换行
+                      CfText(Cf.themePresets[i].$1,
+                          clamp: true,
                           style: TextStyle(
                               fontSize: 11,
                               fontWeight: _selected == i
