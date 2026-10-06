@@ -38,9 +38,21 @@ List<File> _dartFiles() {
 }
 
 /// 去掉整行注释 —— 否则"注释里提到令牌"会被算作采用（假阳性）。
+///
+/// ## ⚠️ 这一步是必须的（实测踩过同类坑）
+///
+/// 姊妹文件 `shell_tab_test.dart` 的第一版**没剥注释**，结果反向注入无效：
+/// 源码里有一行注释写着 `// SafeArea(top: false) 已把…`，
+/// 于是即使把**代码里**的 `top: false` 删掉，正则仍匹配到**注释** → 测试假绿。
+///
+/// 教训：凡是基于源码文本的断言，**必须先在"无注释文本"上做匹配** ——
+/// 否则你守的可能是自己的注释。
 String _stripLineComments(String text) => text
     .split('\n')
-    .where((l) => !l.trimLeft().startsWith('//'))
+    .where((l) {
+      final s = l.trimLeft();
+      return !s.startsWith('//') && !s.startsWith('*');
+    })
     .join('\n');
 
 void main() {
