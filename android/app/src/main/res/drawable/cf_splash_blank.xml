@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CineFlow 空白启动图标（Android 12+ 系统启动图专用）。
+
+  ## 为什么需要一个"透明图标"而不是不写这个属性
+
+  Android 12（API 31）起**系统强制接管冷启动画面**，开发者无法取消它，
+  只能决定它的外观。若不声明 `windowSplashScreenAnimatedIcon`，
+  系统的默认行为是**回落用 `android:icon`** 来画 —— 而那是自适应应用图标
+  （88% 是透明安全区），系统还会再套一层**圆形遮罩**：
+  启动图上的 logo"又小、又被裁成圆形"。
+
+  本工程 Dart 侧画的是 `CfLogo`（圆角方块，52dp）→
+  **形态 / 尺寸 / 位置三重不一致**，肉眼就是"启动时图标跳一下"。
+
+  ## 现在怎么做
+  用户要求去掉启动页（"暂时直接去除这个，保留登录页"）。
+  Android 12+ 的系统启动图既然无法取消，就把它**简化成纯品牌底色**：
+  用一个完全透明的图标，使启动图上**没有任何 logo**。
+
+  于是整条冷启动链路只剩下一种视觉：
+      系统启动图（#0B1020 纯色） → 首帧窗口背景（#0B1020 纯色） → 登录页
+  而登录页背景正是 `Cf.bg` = `#0B1020` —— **三者同色，过渡无缝、零跳变**。
+  登录页自身的 `CfLogo` 随页面一起出现，不再有"另一个 logo 先闪一下"。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@android:color/transparent" />
+    <size
+        android:width="1dp"
+        android:height="1dp" />
+</shape>

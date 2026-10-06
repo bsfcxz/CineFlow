@@ -50,7 +50,44 @@ Future<void> main() async {
     systemNavigationBarColor: Cf.bg,
     systemNavigationBarIconBrightness: Brightness.light,
   ));
-  runApp(const ProviderScope(child: CineFlowApp()));
+
+  // ---- 会话预热：在首帧之前把会话恢复完（2026-10）----
+  //
+  // ## 为什么必须在这里做（而不是交给 UI 处理 loading 态）
+  //
+  // 冷启动时 `sessionProvider` 是异步的（读 flutter_secure_storage）。
+  // 在它恢复完之前，路由无法判断用户是否已登录，于是**必须**有个过渡：
+  //
+  //   · 停在首页 → `HomePage` 里是 `ref.read(embyApiProvider)!`（非空断言），
+  //     而该 provider 依赖 `sessionProvider.value`，此刻是 null
+  //     → 直接抛 `Null check operator used on a null value`（**红屏**）
+  //   · 跳登录页 → 已登录用户会**先闪一下登录页**再跳回首页
+  //   · 显示一张过渡页 → 就是刚从路由里删掉的 `/splash`，
+  //     它和系统启动图、登录页的 logo 尺寸/形态都不同 → "图标跳两下"
+  //
+  // 三条路都不好，而**根因是"首帧时会话还没准备好"**。
+  // 所以在首帧之前把它恢复完，加载态就根本不出现 —— 三个问题一起消失。
+  //
+  // 这段时间用户看到的是**系统启动图**（品牌深蓝底），不是黑屏也不是空白，
+  // 所以这里等待是自然的，不产生额外闪烁。
+  //
+  // ## 为什么要 timeout
+  // flutter_secure_storage 底层是 Android Keystore 解密，正常 < 100ms；
+  // 但设备密钥损坏等异常下可能抛错或迟迟不返回。**绝不能因恢复失败而不启动**：
+  // 超时/异常一律继续，此时会话按 null 处理 → 走登录页（用户重新登录即可）。
+  final container = ProviderContainer();
+  try {
+    await container
+        .read(sessionProvider.future)
+        .timeout(const Duration(seconds: 3));
+  } catch (e) {
+    debugPrint('[Session] 预热失败（按未登录继续）: $e');
+  }
+
+  runApp(UncontrolledProviderScope(
+    container: container,
+    child: const CineFlowApp(),
+  ));
 }
 
 class CineFlowApp extends ConsumerStatefulWidget {

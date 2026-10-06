@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cineflow/core/router.dart';
 import 'package:cineflow/data/models.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -36,7 +38,6 @@ void main() {
 
     test('各路径常量不重复（防手误复制粘贴）', () {
       const all = [
-        Routes.splash,
         Routes.login,
         Routes.home,
         Routes.search,
@@ -44,6 +45,30 @@ void main() {
         Routes.player,
       ];
       expect(all.toSet().length, all.length, reason: '存在重复路径常量');
+    });
+
+    test('不再有 /splash 路由（2026-10 用户要求去掉启动页）', () {
+      // 这条断言守的是"别把它加回来"：/splash 会让冷启动出现
+      // 第三个尺寸不同的 logo（系统启动图 → splash → 登录页），
+      // 肉眼就是"图标跳一下再变一次"。
+      expect(
+        Routes.login,
+        '/login',
+        reason: '登录页路径不该被改动',
+      );
+      // 用源码断言守住：router.dart 里不应再出现 splash 字样
+      final src = File('lib/core/router.dart').readAsStringSync();
+      final code = src
+          .split('\n')
+          .where((l) => !l.trimLeft().startsWith('//'))
+          .join('\n');
+      expect(
+        code.contains('/splash'),
+        isFalse,
+        reason: 'router.dart 里又出现了 /splash 路由。\n'
+            '冷启动到登录页之间的过渡页会导致 logo 尺寸跳变，\n'
+            '会话预热已移到 main.dart（首帧前恢复完，加载态不出现）。',
+      );
     });
   });
 
@@ -81,25 +106,23 @@ void main() {
       );
     });
 
-    test('已登录但停在 splash → 回首页', () {
-      expect(
-        resolveRedirect(session: authed, location: Routes.splash),
-        Routes.home,
-      );
-    });
-
-    test('会话恢复中 → splash（不能先闪登录页）', () {
+    test('会话恢复中 → 落登录页（不落首页，首页非空依赖 api 会红屏）', () {
       expect(
         resolveRedirect(session: loading, location: Routes.home),
-        Routes.splash,
-        reason: '冷启动会话未恢复完时若判成未登录，用户会看到登录页一闪',
+        Routes.login,
+        reason: '冷启动时会话尚未恢复（SessionNotifier.build 是异步的）。\n'
+            '此时**不能**放行首页：HomePage 里是 `ref.read(embyApiProvider)!`，\n'
+            '而该 provider 依赖 sessionProvider.value（此刻为 null）\n'
+            '→ 直接抛 Null check operator used on a null value（红屏）。\n'
+            '登录页只用 sessionProvider.notifier，恢复期间渲染它是安全的。',
       );
     });
 
-    test('会话恢复中且已在 splash → 不重复跳', () {
+    test('会话恢复中且已在登录页 → 不重复跳（避免无限重定向）', () {
       expect(
-        resolveRedirect(session: loading, location: Routes.splash),
+        resolveRedirect(session: loading, location: Routes.login),
         isNull,
+        reason: '返回登录页本身会导致 go_router 反复重定向',
       );
     });
 

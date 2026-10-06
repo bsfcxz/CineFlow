@@ -294,12 +294,54 @@ UI 改动必须真渲染验证：
 
 **② Android 12+ 有两套启动绘制**：系统用 `android:windowSplashScreen*` 先画一次，
 Flutter 侧再用 `launch_background` 画一次。未声明前者时系统**回落用 `android:icon`**，
-两次内容不同 → 闪烁。故必须补 `values-v31/styles.xml`，让两次绘制**用同一张图**。
+两次内容不同 → 闪烁。故必须补 `values-v31/styles.xml`。
 
 > ⚠️ `postSplashScreenTheme` **不能写**：它来自 `androidx.core:core-splashscreen`，
 > 本工程无该依赖，AAPT 会报 `style attribute 'attr/postSplashScreenTheme' not found`
 > （实测：写 `android:` 前缀同样报错）。Flutter embedding 已通过 manifest 的
 > `io.flutter.embedding.android.NormalTheme` 处理主题切换，无需此属性。
+
+#### ★ 2026-10：彻底去掉启动页（用户明确要求）
+
+用户反馈："启动页 / 闪屏页有问题，先暂时直接去除这个，保留登录页"。
+
+**根因**：冷启动到登录页之间，logo 出现了**三次，尺寸形态全不同** ——
+
+| 阶段 | 显示 | 尺寸 / 形态 |
+|---|---|---|
+| ① 系统启动图（API 31+ 强制） | `launch_logo` | 288×288 圆角方块，被系统**裁成圆形** |
+| ② Dart `/splash` 路由 | `CfLogo(size: 56, radius: 16)` | 56dp |
+| ③ 登录页 | `CfLogo()` | 默认 **52dp / radius 14** |
+
+**修法（Dart 与 Android 两侧必须一起改）**：
+
+- **Dart**：删除 `/splash` 路由；`main.dart` 在 `runApp` **之前**用
+  `ProviderContainer` 预热会话（`.timeout(3s)` + 兜异常），
+  然后交给 `UncontrolledProviderScope`。
+  首帧前会话已就绪 → **加载态根本不出现**，三个问题（红屏 / 闪登录页 / 需要过渡页）一起消失。
+- **Android**：启动图只留**纯品牌底色**，图标换成 `@drawable/cf_splash_blank`（全透明）；
+  `NormalTheme.windowBackground` 由 `?android:colorBackground` 改为 `@color/cf_bg`。
+
+结果：链路只剩一种视觉 ——
+`启动图(#0B1020) → NormalTheme 窗口背景(#0B1020) → 登录页(Cf.bg = #0B1020)`
+**三者同色 → 无缝**；登录页的 `CfLogo` 随页面一起出现。
+
+> ⚠️ **`values-night-v31/styles.xml` 必须有**（实测踩过的限定符 bug）：
+> Android 资源解析中 **UI 模式（`-night`）优先级高于平台版本（`-v31`）**。
+> 只在 `values-v31` 声明 `windowSplashScreen*` 时，**深色模式**会选到 `values-night`
+> （没有这些属性）→ 系统回落用 `android:icon`（圆形遮罩 + 88% 透明安全区）绘制。
+> 现象：**同一个 App 的启动画面随系统主题变化**。
+> 验证方法：`aapt2 dump resources <apk>` 应看到 4 个 `LaunchTheme` 变体
+> （`()` / `(night)` / `(v31)` / `(night-v31)`），后两者带 `cf_bg` + `cf_splash_blank`。
+
+> ⚠️ **XML 注释里不能出现两个连续连字符 `--`**（实测被 AAPT 拦下）：
+> 我在注释里放 Markdown 表格，其分隔行 `|---|---|---|` 含 `--` →
+> `Error: 注释中不允许出现字符串 "--"`。
+> **`flutter analyze` 与 `flutter test` 全都发现不了**，只有真正构建到
+> `packageDebugResources` 才炸。已加入 `check-dev.ps1` 门禁（9 个资源的注释检查）。
+
+> ⚠️ **`?android:colorBackground` 不要用于窗口背景**：它在**浅色**系统主题下解析为
+> **纯白**，垫在 Flutter UI 背后 → 首帧前闪一整屏白（实测纯白像素 94.6%）。
 
 ### 3.7 错误呈现：红色用「信号」不用「面积」
 
