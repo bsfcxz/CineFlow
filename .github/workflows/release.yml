@@ -133,6 +133,12 @@ jobs:
     #    所以务必确认它已开启——否则这道门形同虚设。
     environment: release
     steps:
+      # ★ 必须先 checkout：下面的步骤要读 `docs/changelog/vX.Y.Z.md` 作为 Release 正文。
+      #   没有这一步时工作区是空的 → `[ -f "$NOTES" ]` 恒为假 →
+      #   总是走 `--generate-notes` 兜底，**精心写的 changelog 根本用不上**。
+      #   （这是本工作流的真实缺陷：设计上"changelog 优先"，实际从未生效。）
+      - uses: actions/checkout@v4
+
       - name: 计算版本号（与构建任务产物名一致：去掉 v 前缀）
         id: v2
         shell: bash
@@ -173,21 +179,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          set -o pipefail
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           VER="${TAG#v}"
           NOTES="docs/changelog/v${VER}.md"
 
-          # ---- 诊断（失败时能直接看到原因，不必再靠猜）----
-          echo "=== 诊断信息 ==="
-          echo "TAG=$TAG VER=$VER"
-          echo "NOTES=$NOTES  存在=$([ -f "$NOTES" ] && echo yes || echo no)"
-          echo "gh 路径: $(command -v gh || echo '未找到')"
-          echo "gh 版本: $(gh --version 2>&1 | head -1)"
-          echo "token 权限自检（能否读仓库）:"
-          gh api repos/${GITHUB_REPOSITORY} --jq '.permissions' 2>&1 | head -3 || true
-          echo "dist 目录内容:"
-          ls -la dist/ 2>&1 | head -10 || true
-          echo "=== 诊断结束 ==="
+          # 把诊断写进 **job summary**（可经 API 匿名读取，便于排查 CI 失败；
+          # 日志本身需要额外权限，本仓库的自动化取不到）。
+          {
+            echo "### release publish 诊断"
+            echo ""
+            echo '```'
+            echo "TAG=$TAG VER=$VER"
+            echo "NOTES=$NOTES exists=$([ -f "$NOTES" ] && echo yes || echo no)"
+            echo "gh=$(command -v gh || echo MISSING)"
+            echo "gh-version=$(gh --version 2>&1 | head -1)"
+            echo "token-sha=${GITHUB_SHA:0:7}"
+            echo "--- dist ---"
+            ls -la dist/ 2>&1 | head -12
+            echo "--- gh auth ---"
+            gh auth status 2>&1 | head -8
+            echo "--- repo perms (via gh) ---"
+            gh api repos/${GITHUB_REPOSITORY} --jq '.permissions' 2>&1 | head -3
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
 
           if [ -f "$NOTES" ]; then
             echo "使用 $NOTES 作为 Release 正文"
