@@ -163,6 +163,26 @@ class PlayerPage extends ConsumerStatefulWidget {
     return true;
   }
 
+  /// 抽屉宽度：按可用宽自适应。
+  ///
+  /// ## 为什么不能写死（审计 U6）
+  ///
+  /// 原为常量 `272`：分屏/小窗下（可用宽 <360dp）抽屉**超出窗口**，
+  /// 右侧内容（关闭钮、开关）被裁掉且**无法滚动到** ——
+  /// 那不只是"看起来挤"，而是**有控件点不到**。
+  ///
+  /// ## 取值规则
+  /// `(可用宽 × 0.76).clamp(200, 272)`
+  ///   · **76%** 留出左侧 24% 可见视频区 —— 用户知道画面还在播、
+  ///     也知道抽屉能滑走（100% 会像整页跳转，失去"抽屉"语义）
+  ///   · **下限 200** 保可读性（再窄设置项文字就挤成一列）
+  ///   · **上限 272** 大屏不再变宽（横屏平板上 1800dp 的抽屉毫无意义）
+  ///
+  /// 抽成 `public static` 纯函数：宽度是纯算术，可直接断言边界，
+  /// 不必把依赖内核的播放页渲染起来（纯 widget 测试里没有 mpv）。
+  static double drawerWidthFor(double availableWidth) =>
+      (availableWidth * 0.76).clamp(200.0, 272.0);
+
   @override
   ConsumerState<PlayerPage> createState() => _PlayerPageState();
 }
@@ -2052,6 +2072,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   /// 修法：未就绪时返回空 `SizedBox`（而不是让它去读 `_player`）。
   Widget _settingsDrawer() {
     if (!_ready) return const SizedBox.shrink();
+    final drawerW = PlayerPage.drawerWidthFor(MediaQuery.sizeOf(context).width);
     return Positioned(
       top: 0,
       right: 0,
@@ -2063,7 +2084,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeOutCubic,
           child: Container(
-            width: 272,
+            width: drawerW,
             decoration: BoxDecoration(
               color: Color(0xF70D1328),
               border: Border(left: BorderSide(color: Cf.border)),
