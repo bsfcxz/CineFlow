@@ -53,60 +53,84 @@ class PlayerActionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ⚠️ 8 个按钮在窄屏上放不下 —— 实测 360dp 屏溢出 16px（整行可见地坏掉）。
+    //
+    // 宽度预算（实测计算）：
+    //   320dp 屏 → 可用 308 → 每按钮 38.5
+    //   360dp 屏 → 可用 348 → 每按钮 43.5
+    //   411dp 屏 → 可用 399 → 每按钮 49.9
+    //
+    // 故取 **38dp 为下限**，并用 `Flexible` 让宽屏上的按钮按比例分到更多空间
+    // （固定 38 会让大屏显得稀疏）。
+    // 取 38 而不是 40：`40 × 8 = 320 > 308`，会在最小屏（320dp）上溢出。
+    // 溢出比触控区小 2dp 严重得多 —— 前者整行坏掉，后者仍可点。
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
       child: Row(
         children: [
-          _IconBtn(
-            key: keys['prev'],
-            icon: Icons.skip_previous,
-            onTap: hasPrevious ? onPrevious : null,
-            tooltip: '上一项',
+          Flexible(
+            child: _IconBtn(
+              key: keys['prev'],
+              icon: Icons.skip_previous,
+              onTap: hasPrevious ? onPrevious : null,
+              tooltip: '上一项',
+            ),
           ),
-          _IconBtn(
-            key: keys['next'],
-            icon: Icons.skip_next,
-            onTap: hasNext ? onNext : null,
-            tooltip: '下一项',
+          Flexible(
+            child: _IconBtn(
+              key: keys['next'],
+              icon: Icons.skip_next,
+              onTap: hasNext ? onNext : null,
+              tooltip: '下一项',
+            ),
           ),
-          _TextBtn(
-            key: keys['playlist'],
-            text: '列表',
-            onTap: onOpenPlaylist,
+          Flexible(
+            child: _TextBtn(
+              key: keys['playlist'],
+              text: '列表',
+              onTap: onOpenPlaylist,
+            ),
           ),
-          _TextBtn(
-            key: keys['speed'],
-            text: speedLabel,
-            onTap: onCycleSpeed,
-            // 倍速是"当前值即按钮文案"，用高亮表示它被改过（≠1.0x）
-            active: speedLabel != '1.0x',
+          Flexible(
+            child: _TextBtn(
+              key: keys['speed'],
+              text: speedLabel,
+              onTap: onCycleSpeed,
+              active: speedLabel != '1.0x',
+            ),
           ),
           const Spacer(),
-          _TextBtn(
-            key: keys['danmakuToggle'],
-            text: '弹',
-            onTap: onToggleDanmaku,
-            active: danmakuEnabled,
+          Flexible(
+            child: _TextBtn(
+              key: keys['danmakuToggle'],
+              text: '弹',
+              onTap: onToggleDanmaku,
+              active: danmakuEnabled,
+            ),
           ),
-          _IconBtn(
-            key: keys['danmakuSettings'],
-            icon: Icons.subtitles_outlined,
-            onTap: onOpenDanmakuSettings,
-            tooltip: '弹幕设置',
+          Flexible(
+            child: _IconBtn(
+              key: keys['danmakuSettings'],
+              icon: Icons.subtitles_outlined,
+              onTap: onOpenDanmakuSettings,
+              tooltip: '弹幕设置',
+            ),
           ),
-          _IconBtn(
-            key: keys['settings'],
-            icon: Icons.settings_outlined,
-            onTap: onOpenSettings,
-            tooltip: '设置',
+          Flexible(
+            child: _IconBtn(
+              key: keys['settings'],
+              icon: Icons.settings_outlined,
+              onTap: onOpenSettings,
+              tooltip: '设置',
+            ),
           ),
-          _IconBtn(
-            key: keys['fullscreen'],
-            icon: fullscreen
-                ? Icons.fullscreen_exit
-                : Icons.fullscreen,
-            onTap: onToggleFullscreen,
-            tooltip: fullscreen ? '退出全屏' : '全屏',
+          Flexible(
+            child: _IconBtn(
+              key: keys['fullscreen'],
+              icon: fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+              onTap: onToggleFullscreen,
+              tooltip: fullscreen ? '退出全屏' : '全屏',
+            ),
           ),
         ],
       ),
@@ -136,8 +160,9 @@ class _IconBtn extends StatelessWidget {
       disabledColor: Colors.white24,
       splashRadius: 22,
       tooltip: tooltip,
-      // 命中区 44×44：底栏密集排布下 48 会显得疏，44 仍高于可点基线
-      constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+      // ⚠️ 38×44：宽度受「8 个按钮在 320dp 屏上的预算」约束
+      //    （见 PlayerActionBar.build 里的计算）。用 44 会在 320dp 屏上溢出。
+      constraints: const BoxConstraints(minWidth: 38, minHeight: 44),
       padding: EdgeInsets.zero,
     );
   }
@@ -163,14 +188,15 @@ class _TextBtn extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(PlayerUi.tabRadius),
         child: Container(
-          constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
+          // 宽度同 _IconBtn（38 是 320dp 屏上的预算下限）
+          constraints: const BoxConstraints(minHeight: 44, minWidth: 38),
           padding: const EdgeInsets.symmetric(horizontal: 10),
           alignment: Alignment.center,
           child: Text(
             text,
             style: TextStyle(
               color: active ? PlayerUi.progressFilled : Colors.white,
-              fontSize: PlayerUi.valueSize,
+              fontSize: PlayerUi.segmentSize,
               fontWeight: active ? FontWeight.w700 : FontWeight.w500,
             ),
           ),
