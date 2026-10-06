@@ -14,57 +14,28 @@ import '../state/providers.dart';
 class LoginPage extends ConsumerStatefulWidget {
   const LoginPage({super.key});
 
-  @override
-  ConsumerState<LoginPage> createState() => _LoginPageState();
-}
-
-class _LoginPageState extends ConsumerState<LoginPage> {
-  final _addr = TextEditingController(text: 'http://');
-  final _addrFocus = FocusNode();
-  final _user = TextEditingController();
-  final _pass = TextEditingController();
-  bool _remember = true;
-  bool _obscure = true;
-  bool _busy = false;
-  int _selectedServer = -1;
-  List<SavedServer> _servers = const [];
-
-  @override
-  void initState() {
-    super.initState();
-    Future(() async {
-      try {
-        final s = await ref.read(sessionStoreProvider).loadServers();
-        if (mounted) setState(() => _servers = s);
-      } catch (_) {
-        // 存储不可用（如测试环境）时忽略
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _addr.dispose();
-    _addrFocus.dispose();
-    _user.dispose();
-    _pass.dispose();
-    super.dispose();
-  }
-
   /// 地址智能识别：从任意粘贴内容中提取 `scheme://host:port`。
   ///
-  /// 支持：
-  ///   http://emby.example.com:8096/web/index.html#!/item?id=2852317&serverId=...
-  ///   https://emby.example.com
-  ///   emby.example.com:8096        （自动补 http://）
-  ///   emby.example.com           （自动补 http://）
-  ///   https://emby.example.com:443（去默认端口）
-  String _normalizeServerUrl(String raw) {
+  /// ## 为什么是 `public static`
+  ///
+  /// 这是**纯字符串变换**，且用户最容易踩的正是这里（从浏览器粘贴一长串
+  /// Emby web URL）。做成 `public static` 就能单测真值表，
+  /// 而不是只能靠真机手打地址去试（见 `test/server_url_test.dart`）。
+  /// 与 `PlayerPage.showEpisodeButton` 等同一约定。
+  ///
+  /// ## 支持的输入
+  /// - `http://emby.example.com:8096/web/index.html#!/item?id=1&serverId=x`
+  ///   → `http://emby.example.com:8096`（**截掉路径/查询/锚点**）
+  /// - `https://emby.example.com` / `emby.example.com`（自动补 `http://`）
+  /// - `emby.example.com:8096`（无协议，自动补 `http://`）
+  /// - `https://emby.example.com:443`（去掉默认端口）
+  /// - `wss://emby.example.com`（按 https 处理并去掉 `wss://`）
+  static String normalizeServerUrl(String raw) {
     var url = raw.trim();
     if (url.isEmpty) return url;
 
-    // 去掉首尾引号/空白
-    url = url.replaceAll(RegExp(r'["]+|["]+$'), '');
+    // 去掉首尾引号（从浏览器/聊天软件复制常带）
+    url = url.replaceAll(RegExp(r'^["]+|["]+$'), '');
 
     // 无协议 → 自动补 http://（端口 443 或显式 wss 提示则 https）
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -89,11 +60,78 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     return hasPort ? '$scheme://$host:${uri.port}' : '$scheme://$host';
   }
 
+  @override
+  ConsumerState<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends ConsumerState<LoginPage> {
+  final _addr = TextEditingController(text: 'http://');
+  final _addrFocus = FocusNode();
+  final _user = TextEditingController();
+  final _pass = TextEditingController();
+  bool _remember = true;
+  bool _obscure = true;
+  bool _busy = false;
+  int _selectedServer = -1;
+  List<SavedServer> _servers = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    // ★ 地址框**失去焦点**时规范化。
+    //
+    //   为什么不用 TextField.onTapOutside：那个回调只在"点击输入框之外"时触发，
+    //   而用户更常见的动作是**直接点「用户名」框** —— 那是另一个 TextField，
+    //   算不算"outside"取决于 Flutter 版本与手势竞技场，实测不可靠。
+    //   监听 FocusNode 覆盖所有失焦路径（点别处、切页面、IME 收起），最稳。
+    //
+    //   注意：失焦时机在 TextField 内部可能晚于 onChanged，这里只读 _addr.text，
+    //   不涉及光标位置处理，安全。
+    _addrFocus.addListener(_onAddrFocusChange);
+    Future(() async {
+      try {
+        final s = await ref.read(sessionStoreProvider).loadServers();
+        if (mounted) setState(() => _servers = s);
+      } catch (_) {
+        // 存储不可用（如测试环境）时忽略
+      }
+    });
+  }
+
+  void _onAddrFocusChange() {
+    if (!_addrFocus.hasFocus) _normalizeAddrInPlace();
+  }
+
+  @override
+  void dispose() {
+    _addrFocus.removeListener(_onAddrFocusChange);
+    _addr.dispose();
+    _addrFocus.dispose();
+    _user.dispose();
+    _pass.dispose();
+    super.dispose();
+  }
+
+  /// 把地址框内容就地规范化（幂等：已经规范过就不会再改）。
+  ///
+  /// 由**两条**路径调用，缺一不可：
+  ///   1. `onEditingComplete`（用户按了回车/IME 完成）
+  ///   2. 焦点移出（`onTapOutside` 或 `_addrFocus` 失去焦点）
+  ///
+  /// ⚠️ 原实现只有第 1 条 —— 而用户更常见的动作是**粘贴完直接点下一个输入框**，
+  ///    那种情况下地址保持一长串 URL，登录必然失败且界面看不出原因。
+  void _normalizeAddrInPlace() {
+    final normalized = LoginPage.normalizeServerUrl(_addr.text);
+    if (normalized != _addr.text) {
+      _addr.text = normalized;
+    }
+  }
+
   Future<void> _login() async {
     if (_busy) return;
     FocusScope.of(context).unfocus();
 
-    final url = _normalizeServerUrl(_addr.text);
+    final url = LoginPage.normalizeServerUrl(_addr.text);
     final username = _user.text.trim();
     if (url.length <= 7 || username.isEmpty || _pass.text.isEmpty) {
       _toast('请完整填写服务器地址、用户名和密码', danger: true);
@@ -291,13 +329,18 @@ class _LoginPageState extends ConsumerState<LoginPage> {
           autocorrect: false,
           style: TextStyle(fontSize: 13),
           onEditingComplete: () {
-            // 失焦/回车时自动规范化地址（粘贴长 Emby web URL → 提取 host:port）
-            final normalized = _normalizeServerUrl(_addr.text);
-            if (normalized != _addr.text) {
-              _addr.text = normalized;
-            }
+            // 回车/IME 完成时规范化地址（粘贴长 Emby web URL → 提取 host:port）
+            _normalizeAddrInPlace();
             FocusScope.of(context).unfocus();
           },
+          // ★ 失焦也要规范化。
+          //
+          //   原实现**只**接了 `onEditingComplete`，而注释却写着"失焦/回车时" ——
+          //   于是**最常见的那条路径漏了**：用户粘贴完地址，直接去点"用户名"框
+          //   （不按回车）→ 地址保持一长串原始 URL → 登录必然失败，
+          //   而界面看不出哪里错了。
+          //   TextField 没有 onBlur 回调，故用 FocusNode 监听（_addrFocus）。
+          onTapOutside: (_) => _normalizeAddrInPlace(),
           decoration:
               const InputDecoration(hintText: 'http://emby.example.com:8096'),
         ),
