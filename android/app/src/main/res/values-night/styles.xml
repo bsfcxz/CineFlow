@@ -1,18 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  CineFlow 主题（系统**深色**模式）。
+
+  ★ 2026-10：用户要求"去掉启动页，保留登录页"。
+    与 `values/styles.xml`（浅色）保持完全一致的启动链路：
+      1. `LaunchTheme.windowBackground` = launch_background（纯 #0B1020 底色，无 logo）
+      2. `NormalTheme.windowBackground` = `@color/cf_bg`
+
+    ⚠️ 原 `NormalTheme` 用的是 `?android:colorBackground`：
+       深色系统主题下解析为接近黑的系统色（未必等于 #0B1020），
+       与品牌底色有细微色差 → 首帧前会出现"底色跳一下"。
+       固定为 `@color/cf_bg` 后深浅两种模式表现一致。
+-->
 <resources>
-    <!-- Theme applied to the Android Window while the process is starting when the OS's Dark Mode setting is on -->
+    <!-- 进程启动期间应用到 Activity 的主题（Flutter 首帧画出后自动移除） -->
     <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
-        <!-- Show a splash screen on the activity. Automatically removed when
-             the Flutter engine draws its first frame -->
         <item name="android:windowBackground">@drawable/launch_background</item>
     </style>
-    <!-- Theme applied to the Android Window as soon as the process has started.
-         This theme determines the color of the Android Window while your
-         Flutter UI initializes, as well as behind your Flutter UI while its
-         running.
 
-         This Theme is only used starting with V2 of Flutter's Android embedding. -->
+    <!-- 进程已启动后应用的主题；垫在 Flutter UI 背后 -->
     <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
-        <item name="android:windowBackground">?android:colorBackground</item>
+        <item name="android:windowBackground">@color/cf_bg</item>
     </style>
 </resources>

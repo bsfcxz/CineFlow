@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CineFlow 启动主题（Android 12+ / API >= 31 **且** 系统深色模式）。
+
+  ## ⚠️ 这份文件修的是一个真实的资源限定符 bug（实测踩过）
+
+  Android 解析资源时，**UI 模式（-night）的优先级高于平台版本（-v31）**。
+  本工程原本只在 `values-v31/styles.xml` 里声明了 `windowSplashScreen*`，
+  `values-night/styles.xml` 里**没有**。
+
+  于是当系统处于**深色模式**时，Android 选中的是 **`values-night`** 那份 ——
+  它没有 `windowSplashScreenAnimatedIcon`，系统就**回落用 `android:icon`**
+  （自适应图标，88% 透明安全区）绘制启动图，并再套一层**圆形遮罩**。
+  结果：深色模式下启动图上的 logo"又小又被裁圆"，
+  而浅色模式下是另一副样子 —— **同一个 App 的启动画面随系统主题变化**。
+
+  修法：补上 `values-night-v31`（night + v31 的组合限定符），
+  与 `values-v31` 保持同一套属性。
+
+  ## 为什么用透明图标（cf_splash_blank）
+
+  用户要求"去掉启动页，保留登录页"。Android 12+ 的系统启动图**无法取消**，
+  但可以把它简化成**纯品牌底色**：用一个完全透明的图标，
+  使启动图上没有任何 logo。
+
+  于是冷启动链路只剩一种视觉：
+      系统启动图(#0B1020 纯色) → 首帧窗口背景(#0B1020) → 登录页(Cf.bg 也是 #0B1020)
+  **三者同色 → 无缝过渡、零跳变**；登录页的 `CfLogo` 随页面一起出现，
+  不会再有"另一个尺寸的 logo 先闪一下"。
+-->
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <!-- 启动图背景：品牌深蓝，与登录页 Cf.bg 完全一致 -->
+        <item name="android:windowSplashScreenBackground">@color/cf_bg</item>
+        <!-- 透明图标：让系统启动图上不出现任何 logo（详见文件头说明） -->
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/cf_splash_blank</item>
+        <!-- 兼容 Flutter embedding：首帧绘制前仍用这张背景 -->
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@color/cf_bg</item>
+    </style>
+</resources>

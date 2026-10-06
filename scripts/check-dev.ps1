@@ -304,6 +304,35 @@ if (Test-Path $wfDir) {
     }
 }
 
+# --- Android 资源 XML：注释里不能出现连续两个连字符 ---
+#
+# ⚠️ 实测踩过（2026-10 改启动页时）：我在 `values-v31/styles.xml` 的注释里
+#    放了一张 Markdown 表格，其分隔行 `|---|---|---|` 含 `--`。
+#    XML 规范不允许注释内出现 `--`，AAPT 直接报：
+#      `values-v31/styles.xml:15:6: Error: 注释中不允许出现字符串 "--"。`
+#    而 `flutter analyze` 与 `flutter test` **全都发现不了** ——
+#    只有真正 `flutter build apk` 到 `packageDebugResources` 那一步才会炸。
+#    所以把它做成门禁：不必等 3 分钟构建就知道。
+$resDir = 'android/app/src/main/res'
+if (Test-Path $resDir) {
+    $badXml = @()
+    foreach ($x in Get-ChildItem $resDir -Recurse -Filter '*.xml' -File) {
+        $raw = [System.IO.File]::ReadAllText($x.FullName)
+        foreach ($m in [regex]::Matches($raw, '(?s)<!--(.*?)-->')) {
+            if ($m.Groups[1].Value -match '--') {
+                $line = ($raw.Substring(0, $m.Index) -split "`n").Count
+                $badXml += "$($x.Name):$line"
+            }
+        }
+    }
+    if ($badXml.Count -eq 0) {
+        $n = @(Get-ChildItem $resDir -Recurse -Filter '*.xml' -File).Count
+        Ok "Android 资源 XML：$n 个文件注释合法（无 '--'）"
+    } else {
+        Bad "Android 资源 XML 注释含非法 '--'（AAPT 会报「注释中不允许出现字符串 --」）：$($badXml -join ', ')"
+    }
+}
+
 # =====================================================================
 # L0-c · 构建产物完整性
 # =====================================================================

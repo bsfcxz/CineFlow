@@ -7,22 +7,21 @@
   实测启动瞬间会闪**一整屏白**（截图像素统计：纯白占 94.6%），
   与随后的深色 UI 强烈割裂——这就是"打开应用白屏"观感的一半来源。
 
-  现改为品牌深蓝底 + 居中折带标记，与 Dart 侧 `/splash` 页
-  （Cf.bg 背景 + CfLogo）视觉衔接，冷启动不再有白闪。
+  ★ 2026-10：用户要求"去掉启动页，保留登录页"。原先这里是
+     「品牌深蓝底 + 居中 launch_logo」，而 Dart 侧 `/splash` 是 `CfLogo`、
+     登录页又是另一个默认尺寸的 `CfLogo` —— **三张 logo 尺寸形态都不同**，
+     肉眼就是"图标跳一下再变一次"。
+
+     处理：Dart 侧的 `/splash` 已删除，这里也**只留纯品牌底色、去掉 logo**。
+     于是冷启动链路只剩一种视觉：
+         启动背景(#0B1020 纯色) → 首帧窗口背景(#0B1020) → 登录页(Cf.bg = #0B1020)
+     **三者同色 → 无缝**；登录页自己的 `CfLogo` 随页面一起画出，不再有跳变。
+
+     注：`launch_logo.png` 仍保留在 res 下（供将来需要时使用），
+     但**不再被任何启动资源引用**。
 
   改色值必须同步 values/colors.xml 与 lib/core/theme.dart。
-
-  ★ 2026-10 修「冷启动图标跳变」：与 drawable-v21 同样的问题 ——
-    原用的 `@mipmap/ic_launcher_foreground` 是自适应图标前景（88% 透明安全区），
-    启动屏显示的是"又小又偏"的 logo，与 Dart `/splash` 的 `CfLogo` 不一致。
-    改用 `@drawable/launch_logo`（紧密裁切、对齐 CfLogo 几何）。
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/cf_bg" />
-
-    <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@drawable/launch_logo" />
-    </item>
 </layer-list>

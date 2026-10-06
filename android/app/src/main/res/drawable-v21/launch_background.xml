@@ -1,29 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  CineFlow 启动背景（API ≥ 21）。
+  CineFlow 启动背景（API >= 21）—— **只有品牌底色，没有 logo**。
 
   ⚠️ 这里原本是 Flutter 模板原封不动的 `?android:colorBackground`——
   在浅色系统主题下解析为**纯白**，冷启动会闪一整屏白。
   深色主题下虽不白，但仍与 Cf.bg(#0B1020) 不一致，会出现"底色跳变"。
   现固定为品牌深蓝，**两种系统主题下表现一致**。
 
+  ★ 2026-10：用户要求"去掉启动页，保留登录页"。
+    原先是「品牌底色 + 居中 launch_logo」，而链路上还有 Dart `/splash` 的
+    `CfLogo(size:56)` 与登录页的 `CfLogo()`（默认 52dp）——
+    **三张 logo 尺寸/形态都不同**，肉眼就是"图标跳一下再变一次"。
+
+    处理：Dart 侧 `/splash` 已删除；这里也**去掉 logo，只留纯底色**。
+    冷启动链路只剩一种视觉：
+
+        启动背景(#0B1020) → 首帧窗口背景(#0B1020) → 登录页(Cf.bg = #0B1020)
+
+    三者同色 → **无缝**；登录页自己的 `CfLogo` 随页面一起画出，不再有跳变。
+
+    注：`launch_logo.png` 仍保留在 res 下（将来需要时可复用），
+    但**不再被任何启动资源引用**。
+
   改色值必须同步 values/colors.xml 与 lib/core/theme.dart。
-
-  ★ 2026-10 修「冷启动图标跳变」：
-    原来用的是 `@mipmap/ic_launcher_foreground` —— 那是**自适应图标前景**，
-    实测 324×324 里 **88% 是透明安全区**，实际内容只有 142×168。
-    于是启动屏上是个"又小又偏"的 logo，而 Dart `/splash` 是
-    `CfLogo(size: 56)` 的实心圆角方块 → **尺寸/位置/形态三重不一致 = 肉眼可见的跳变**。
-
-    改用 `@drawable/launch_logo`（由 `tool/gen_splash_logo.py` 生成）：
-    **紧密裁切、无安全区留白**，且渐变与圆角比例严格对齐 `CfLogo`。
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@color/cf_bg" />
-
-    <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@drawable/launch_logo" />
-    </item>
 </layer-list>

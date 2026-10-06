@@ -1,38 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  CineFlow 启动主题（Android 12+ / API ≥ 31）。
+  CineFlow 启动主题（Android 12+ / API >= 31）。
 
   ## 为什么需要单独一份
   Android 12 起，**系统接管了冷启动画面**：它会用 `android:windowSplashScreen*`
   自己绘制一张启动图，绘制完成前**根本轮不到** `android:windowBackground`。
 
-  本工程原先没有声明这些属性 → 系统**回落用 `android:icon`**（自适应应用图标）
-  绘制启动图，而 Flutter 侧又在之后用 `launch_background` 画一次。
-  两次绘制的内容**尺寸与位置不同** → 用户看到的就是"启动会闪一下之前的图标"。
+  ## ★ 2026-10：启动图简化为「纯品牌底色」（用户要求去掉启动页）
 
-  ## 这里做了什么
-  1. `windowSplashScreenBackground` = 品牌深蓝，与 Cf.bg 一致（不再有底色跳变）
-  2. `windowSplashScreenAnimatedIcon` = `@drawable/launch_logo`
-     —— 与 `launch_background.xml` **用同一张图**，两次绘制视觉连续
-  3. `postSplashScreenTheme` 指向 NormalTheme，启动图消失后交回 Flutter
+  用户反馈"冷启动到登录页之间图标会跳，先直接去掉这个启动页，保留登录页"。
+  根因是这条链路上 logo 出现了**三次，且尺寸/形态各不相同**：
 
-  ⚠️ 图标必须是**紧密裁切**的（`tool/gen_splash_logo.py` 生成的即是）。
-     若用自适应前景图（88% 是透明安全区），系统会再套一层圆形遮罩，
-     视觉上图标会缩得很小。
+  | 阶段 | 显示 | 尺寸 / 形态 |
+  |  (表头分隔行已省略，因为 XML 注释里不允许出现两个连续连字符)  |
+  | ① 系统启动图（API 31+ 强制） | `launch_logo` | 288×288 圆角方块，被系统**裁成圆形** |
+  | ② Dart `/splash` 路由 | `CfLogo(size: 56, radius: 16)` | 56dp 圆角方块 |
+  | ③ 登录页 | `CfLogo()` | 默认 **52dp / radius 14** |
+
+  处理：
+  · ② 已**删除**（`lib/core/router.dart` 不再有 `/splash` 路由）
+  · ① 改为**透明图标** `@drawable/cf_splash_blank` —— 启动图上不再有任何 logo
+
+  于是整条链路只剩一种视觉：
+      系统启动图(#0B1020 纯色) → 首帧窗口背景(#0B1020) → 登录页(Cf.bg = #0B1020)
+  **三者同色 → 无缝过渡、零跳变**，登录页的 `CfLogo` 随页面一起出现。
+
+  ## 为什么不一并删掉 `windowSplashScreen*`（那就退回老 bug）
+  若这些属性**整个不声明**，系统的默认行为是**回落用 `android:icon`**
+  （自适应图标，88% 是透明安全区）来画启动图，还会再套一层**圆形遮罩** ——
+  正是上面表里 ① 的问题。所以必须显式声明，只是把图标换成透明的。
+
+  ## ⚠️ 深色模式另有一份
+  见 `values-night-v31/styles.xml`：Android 的资源解析里
+  **UI 模式（-night）优先级高于平台版本（-v31）**，
+  只在 `values-v31` 声明会导致深色模式下选到 `values-night`（无这些属性）→ 回落画 icon。
+
+  ## ⚠️ 不要写 `postSplashScreenTheme`
+  它来自 `androidx.core:core-splashscreen` 库，本工程没引该依赖，
+  AAPT 会报 `style attribute 'attr/postSplashScreenTheme' not found`
+  （实测踩过：写成 `android:` 前缀同样报错）。
+  启动图消失后切回普通主题由 Flutter embedding 通过 manifest 里的
+  `io.flutter.embedding.android.NormalTheme` meta-data 处理。
 -->
 <resources>
     <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
-        <!-- 启动图背景：品牌深蓝（values/colors.xml 的 cf_bg） -->
+        <!-- 启动图背景：品牌深蓝，与登录页 Cf.bg 完全一致 -->
         <item name="android:windowSplashScreenBackground">@color/cf_bg</item>
-        <!-- 启动图图标：与 launch_background.xml 同一张，保证视觉连续 -->
-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/launch_logo</item>
-        <!-- ⚠️ 这里**不要**写 `postSplashScreenTheme`：
-             它来自 androidx.core:core-splashscreen 库，本工程没引该依赖，
-             AAPT 会报 "style attribute 'attr/postSplashScreenTheme' not found"
-             （实测踩过：写成 android: 前缀同样报错）。
-             启动图消失后切回普通主题这件事，Flutter embedding 已通过
-             manifest 里的 `io.flutter.embedding.android.NormalTheme` meta-data 处理，
-             无需在此声明。 -->
+        <!-- 透明图标：让系统启动图上不出现任何 logo（详见文件头说明） -->
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/cf_splash_blank</item>
         <!-- 兼容 Flutter embedding：首帧绘制前仍用这张背景 -->
         <item name="android:windowBackground">@drawable/launch_background</item>
     </style>

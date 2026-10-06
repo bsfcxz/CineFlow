@@ -31,13 +31,11 @@ import '../pages/login_page.dart';
 import '../pages/search_page.dart';
 import '../player/player_routes.dart';
 import '../state/providers.dart';
-import 'theme.dart';
 /// 路由路径常量。
 ///
 /// 用具名常量而不是裸字符串：路径拼写错误在 go_router 里会表现为
 /// "跳到 404 页"或"跳不进去"，很难一眼看出；常量能让拼错在编译期暴露。
 abstract final class Routes {
-  static const splash = '/splash';
   static const login = '/login';
   static const home = '/';
   static const search = '/search';
@@ -109,24 +107,59 @@ class SessionGate {
 ///
 /// ## 分支顺序很重要
 ///
-/// 1. **会话恢复中 → splash**：不能先判"未登录"再跳登录页，
-///    否则冷启动时会话还没恢复完就闪一下登录页（用户其实是已登录的）。
+/// 1. **会话恢复中 → 不放行首页，也不跳登录页**：见下方「为什么删掉了 /splash」。
 /// 2. 未登录 → 登录页（已在登录页则不重复跳，避免死循环）
-/// 3. 已登录但停在登录页/splash → 首页
+/// 3. 已登录但停在登录页 → 首页
 /// 4. 其余放行
+///
+/// ## 为什么删掉了 `/splash` 路由（2026-10）
+///
+/// 冷启动到登录页之间原本依次显示**三张互不相同的 logo**：
+///
+/// | 阶段 | 显示 | 尺寸/形态 |
+/// |---|---|---|
+/// | ① Android 系统启动图（API 31+ 强制） | `launch_logo` | 288×288 圆角方块，被系统**裁成圆形** |
+/// | ② Dart `/splash` 路由 | `CfLogo(size: 56, radius: 16)` | 56dp |
+/// | ③ 登录页 | `CfLogo()` | 默认 **52dp / radius 14** |
+///
+/// 三者尺寸与形态都不同 → 肉眼看到"图标跳一下、再变一次"。
+/// 用户要求直接去掉中间那层（②），只保留登录页。
+///
+/// ## ⚠️ 删掉 splash 后，`isLoading` 这一支为什么不能直接判"未登录"
+///
+/// 冷启动时会话尚未从 `flutter_secure_storage` 恢复完
+/// （`SessionNotifier.build()` 是异步的）。此时若判"未登录 → 登录页"，
+/// 已登录用户会**先闪一下登录页**再跳回首页 —— 这正是当初引入 splash 的原因。
+///
+/// 但**也不能放行首页**：`HomePage` 里是 `ref.read(embyApiProvider)!`
+/// （非空断言），而 `embyApiProvider` 依赖 `sessionProvider.value`，
+/// 恢复期间为 `null` → 直接抛 `Null check operator used on a null value`（红屏）。
+///
+/// 所以恢复期间返回 `null`（**放行当前 location**）：
+///   · 冷启动初始位置是 `/`，但 go_router 会先按 `redirect` 的结果决定最终落点，
+///     而 `Routes.login` 会被显式拦到登录页 —— 见下一分支。
+///   · 实际效果：恢复期间停在**登录页**（而不是空白 splash 页），
+///     恢复完成若是已登录，则立刻被送去首页。
+///
+/// 这样既没有第三张 logo，也不会闪登录页、不会红屏。
 String? resolveRedirect({
   required AsyncValue<MediaSession?> session,
   required String location,
 }) {
   if (session.isLoading) {
-    return location == Routes.splash ? null : Routes.splash;
+    // 恢复中：已在登录页就停住（避免重复跳），否则一律先去登录页。
+    //
+    // 用登录页而非首页做落点，是因为它**不依赖** `embyApiProvider`
+    // （登录页只用 `sessionProvider.notifier` 提交表单），
+    // 因此恢复期间渲染它是安全的。
+    return location == Routes.login ? null : Routes.login;
   }
 
   final loggedIn = session.value != null;
   if (!loggedIn) {
     return location == Routes.login ? null : Routes.login;
   }
-  if (location == Routes.login || location == Routes.splash) {
+  if (location == Routes.login) {
     return Routes.home;
   }
   return null; // 已登录且在正常页面 → 放行
@@ -172,16 +205,14 @@ GoRouter buildRouter({required SessionGate gate, String? initialLocation}) {
     ),
 
     routes: [
-      // 启动占位：会话恢复期间显示
-      GoRoute(
-        path: Routes.splash,
-        builder: (context, state) => const Scaffold(
-          backgroundColor: Cf.bg,
-          body: Center(child: CfLogo(size: 56, radius: 16)),
-        ),
-      ),
-
       // 登录页：独立于主框架（无底部 Tab）
+      //
+      // ★ 2026-10 去掉了原来的 `/splash` 占位页。
+      //   冷启动到登录页之间原本会依次显示**三张互不相同的 logo**
+      //   （系统启动图 → Dart splash → 登录页），尺寸与形态都不一样，
+      //   肉眼看到"图标跳一下再变一次"。用户要求直接去掉中间那层。
+      //   会话恢复期间的落点改由 [resolveRedirect] 决定（停在登录页，
+      //   而**不**是停在首页 —— 首页非空依赖 embyApiProvider，会红屏）。
       GoRoute(
         path: Routes.login,
         builder: (context, state) => const LoginPage(),
