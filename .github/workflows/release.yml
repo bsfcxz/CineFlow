@@ -176,6 +176,19 @@ jobs:
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           VER="${TAG#v}"
           NOTES="docs/changelog/v${VER}.md"
+
+          # ---- 诊断（失败时能直接看到原因，不必再靠猜）----
+          echo "=== 诊断信息 ==="
+          echo "TAG=$TAG VER=$VER"
+          echo "NOTES=$NOTES  存在=$([ -f "$NOTES" ] && echo yes || echo no)"
+          echo "gh 路径: $(command -v gh || echo '未找到')"
+          echo "gh 版本: $(gh --version 2>&1 | head -1)"
+          echo "token 权限自检（能否读仓库）:"
+          gh api repos/${GITHUB_REPOSITORY} --jq '.permissions' 2>&1 | head -3 || true
+          echo "dist 目录内容:"
+          ls -la dist/ 2>&1 | head -10 || true
+          echo "=== 诊断结束 ==="
+
           if [ -f "$NOTES" ]; then
             echo "使用 $NOTES 作为 Release 正文"
             if gh release view "$TAG" >/dev/null 2>&1; then
