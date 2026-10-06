@@ -159,6 +159,93 @@ class PlayerKeys {
 
   /// 页面根节点（断言"已进入播放页"用）
   final page = const _PlayerKey('page');
+
+  // ---- 以下为 2026-10 播放器 UI 重构新增（按 HTML 原型实现）----
+  //
+  // 命名按"原型 DOM id"对齐（playlistBtn / speedBtn / fullscreenBtn…），
+  // 便于对照原型排查；前缀 `player_` 由 `_PlayerKey` 统一加。
+
+  /// 返回按钮（顶栏左）
+  final backButton = const _PlayerKey('backButton');
+
+  /// 顶部栏根节点
+  final topBar = const _PlayerKey('topBar');
+
+  /// 文件名文本（断言标题正确）
+  final titleText = const _PlayerKey('titleText');
+
+  /// 进度条（可拖动 seek）
+  final progressBar = const _PlayerKey('progressBar');
+
+  /// 当前时间文本（可点击切"剩余"）
+  final timeText = const _PlayerKey('timeText');
+
+  /// 播放列表面板入口（底栏「列表」）
+  final playlistButton = const _PlayerKey('playlistButton');
+
+  /// 倍速按钮（显示 `1.0x`，点击循环）
+  final speedButton = const _PlayerKey('speedButton');
+
+  /// 弹幕设置入口（底栏图标）
+  final danmakuSettingsButton = const _PlayerKey('danmakuSettingsButton');
+
+  /// 设置入口（齿轮）
+  final settingsButton = const _PlayerKey('settingsButton');
+
+  /// 全屏切换
+  final fullscreenButton = const _PlayerKey('fullscreenButton');
+
+  /// 上一项
+  final prevMediaButton = const _PlayerKey('prevMediaButton');
+
+  /// 下一项
+  final nextMediaButton = const _PlayerKey('nextMediaButton');
+
+  /// 面板遮罩（点击关闭所有面板）
+  final panelMask = const _PlayerKey('panelMask');
+
+  /// 面板头部关闭按钮
+  final panelClose = const _PlayerKey('panelClose');
+
+  /// 设置面板根节点
+  final settingsPanel = const _PlayerKey('settingsPanel');
+
+  /// 播放列表面板根节点
+  final playlistPanel = const _PlayerKey('playlistPanel');
+
+  /// 弹幕面板根节点
+  final danmakuPanel = const _PlayerKey('danmakuPanel');
+
+  /// 反馈层：快进/快退提示
+  final seekFeedback = const _PlayerKey('seekFeedback');
+
+  /// 反馈层：长按倍速提示
+  final speedFeedback = const _PlayerKey('speedFeedback');
+
+  /// 反馈层：亮度指示器
+  final brightnessIndicator = const _PlayerKey('brightnessIndicator');
+
+  /// 反馈层：音量指示器
+  final volumeIndicator = const _PlayerKey('volumeIndicator');
+
+  /// 设置面板的 Tab（参数化：视频/音频/字幕/信息）。
+  ///
+  /// ⚠️ 返回类型写 `ValueKey<String>` 而不是 `_PlayerKey`：
+  /// **公开 API 不得暴露私有类型**（与 `ShellKeys.tab` 同一约定）。
+  ValueKey<String> settingsTab(String tab) => _PlayerKey('settingsTab_$tab');
+
+  /// 播放列表项（参数化：下标）
+  ValueKey<String> playlistItem(int index) =>
+      _PlayerKey('playlistItem_$index');
+
+  /// 音轨行（参数化：轨道 id）
+  ValueKey<String> audioTrack(String id) => _PlayerKey('audioTrack_$id');
+
+  /// 字幕轨道行（参数化：轨道 id）
+  ValueKey<String> subtitleTrack(String id) => _PlayerKey('subtitleTrack_$id');
+
+  /// 弹幕开关（面板内的 Switch）
+  final danmakuSwitch = const _PlayerKey('danmakuSwitch');
 }
 
 /// 全局键聚合入口——测试与应用的唯一引用点。
