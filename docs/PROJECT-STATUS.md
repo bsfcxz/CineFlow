@@ -13,7 +13,7 @@
 - 媒体库 / 详情 / 播放全部由**用户自建的 Emby 服务器**真实数据驱动；**应用本身不托管任何内容**。
 - 播放内核：**安卓原生 mpv**（自持 `libmpv.so` + Kotlin/JNI 薄桥 + Flutter 纹理输出）。
 - 扩展能力：115 网盘直连播放、弹幕（弹弹play 官方 + 自建兼容）、豆瓣榜单。
-- 许可：**Apache-2.0**，源码 https://github.com/1357980024/CineFlow
+- 许可：**Apache-2.0**，源码 https://github.com/bsfcxz/CineFlow
 
 ### 与原始计划书的关系
 

@@ -20,8 +20,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 已知缺陷与未实现功能
-    url: https://github.com/1357980024/CineFlow/blob/master/AGENTS.md
+    url: https://github.com/bsfcxz/CineFlow/blob/master/AGENTS.md
     about: 先看 AGENTS.md §7 的缺陷台账——你要报的可能已经记录在案。
   - name: 下载与安装
-    url: https://github.com/1357980024/CineFlow/releases/latest
+    url: https://github.com/bsfcxz/CineFlow/releases/latest
     about: 已构建的 APK 在 Releases 页面。
