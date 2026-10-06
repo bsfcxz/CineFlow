@@ -33,6 +33,8 @@ import '../danmaku/danmaku_settings_page.dart';
 import '../data/emby_provider.dart';
 import '../data/media_provider.dart';
 import '../data/models.dart';
+// 测试键：Patrol 真机 UI 测试靠它定位控制条上的按钮（`lib/keys.dart` 是唯一契约）。
+import '../keys.dart';
 import '../state/providers.dart';
 import 'player_facade.dart';
 import 'kernel.dart';
@@ -1131,11 +1133,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         if (!didPop) _finalizeAndExit();
       },
       child: Scaffold(
+        key: keys.player.page,
         backgroundColor: Colors.black,
         body: Stack(fit: StackFit.expand, children: [
           // 视频层 + 手势
           Positioned.fill(
             child: GestureDetector(
+              key: keys.player.videoGestureArea,
               behavior: HitTestBehavior.opaque,
               onTap: _onTap,
               onDoubleTapDown: (d) => _doubleTapPos = d.globalPosition,
@@ -1170,6 +1174,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     ref.watch(danmakuConfigProvider).value ??
                         const DanmakuConfig();
                 return DanmakuOverlay(
+                  key: keys.player.danmakuOverlay,
                   items: _danmaku,
                   position: _pos,
                   enabled: _danmakuEnabled,
@@ -1379,6 +1384,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
               bottom: 0,
               child: Center(
                 child: _glassCircle(
+                  key: keys.player.fitButton,
                   size: 40,
                   iconSize: 18,
                   icon: Icons.aspect_ratio_rounded,
@@ -1398,6 +1404,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   opacity: _locked ? 1 : (_showControls ? 1 : 0),
                   duration: const Duration(milliseconds: 250),
                   child: _glassCircle(
+                    key: keys.player.lockButton,
                     size: 40,
                     iconSize: 18,
                     icon: _locked
@@ -1418,11 +1425,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
             duration: const Duration(milliseconds: 250),
             child: IgnorePointer(
               ignoring: !_showControls || _locked,
-              child: Column(children: [
-                _topBar(),
-                const Spacer(),
-                _bottomBar(),
-              ]),
+              child: Column(
+                key: keys.player.controls,
+                children: [
+                  _topBar(),
+                  const Spacer(),
+                  _bottomBar(),
+                ],
+              ),
             ),
           ),
 
@@ -1566,9 +1576,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     double size = 46,
     double iconSize = 20,
     double hitSize = 48,
+    // 可选测试键：Patrol 靠它找到这个圆钮（`lib/keys.dart` 是唯一契约）。
+    // 做成可选是因为多数圆钮不需要被测试选中，只有控制层那几个要。
+    Key? key,
   }) {
     final target = hitSize > size ? hitSize : size;
     return SizedBox(
+      key: key,
       width: target,
       height: target,
       child: Center(
@@ -1758,6 +1772,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
           // 仅在"多集"时显示（电影/单集没有选择余地 → 隐藏，避免噪音）
           if (_showEpisodeBtn) ...[
             _ctrlBtn(
+              key: keys.player.episodeButton,
               icon: Icons.playlist_play_rounded,
               label: '选集 ${_index + 1}/${eps!.length}',
               onTap: _showEpisodeSheet,
@@ -1772,6 +1787,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
               physics: const ClampingScrollPhysics(),
               child: Row(children: [
                 _ctrlBtn(
+                  key: keys.player.rateButton,
                   icon: Icons.speed_rounded,
                   label: '${_rate}x',
                   onTap: _showRateSheet,
@@ -1779,6 +1795,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                 // 字幕：无字幕轨时隐藏（点开只有"关闭"，无可选）
                 if (_showSubtitleBtn)
                   _ctrlBtn(
+                    key: keys.player.subtitleButton,
                     icon: Icons.subtitles_outlined,
                     label: _subtitleLabel(),
                     onTap: _showSubtitleSheet,
@@ -1786,11 +1803,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                 // 音轨：少于 2 条时隐藏（音轨没有"关闭"选项，1 条即无可选）
                 if (_showAudioBtn)
                   _ctrlBtn(
+                    key: keys.player.audioButton,
                     icon: Icons.graphic_eq_rounded,
                     label: _audioLabel(),
                     onTap: _showAudioSheet,
                   ),
                 _ctrlBtn(
+                  key: keys.player.danmakuButton,
                   icon: Icons.chat_bubble_rounded,
                   label: '弹幕',
                   active: _danmakuEnabled,
@@ -1828,12 +1847,14 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
         //   切集仍可通过「选集」抽屉完成，不丢功能。
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
           _glassCircle(
+            key: keys.player.seekBackButton,
             icon: Icons.replay_10_rounded,
             iconSize: Cf.iconLg,
             onTap: () => _seekBy(-PlayerPage.kSeekStepSeconds),
           ),
           SizedBox(width: 20),
           GestureDetector(
+            key: keys.player.togglePlayButton,
             onTap: _togglePlay,
             child: Container(
               width: 62,
@@ -1858,6 +1879,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
           ),
           SizedBox(width: 20),
           _glassCircle(
+            key: keys.player.seekForwardButton,
             icon: Icons.forward_10_rounded,
             iconSize: Cf.iconLg,
             onTap: () => _seekBy(PlayerPage.kSeekStepSeconds),
@@ -1957,9 +1979,12 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     required String label,
     bool active = false,
     VoidCallback? onTap,
+    // 可选测试键（同上：只有控制条上被 Patrol 点的那几个需要）
+    Key? key,
   }) {
     final color = active ? Cf.accent : Cf.text2;
     return SizedBox(
+      key: key,
       height: 48, // 命中区 ≥48dp（视觉仍是下面的 32dp）
       child: Center(
         child: Material(
@@ -1998,7 +2023,32 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   // ---------- 设置抽屉（原型 .psettings） ----------
 
+  /// 设置抽屉。
+  ///
+  /// ## ⚠️ 必须在 `_ready` 之前返回空（否则整页崩溃）
+  ///
+  /// 抽屉内部读 `_player.state.track...`（选中的字幕/音轨），
+  /// 而 `_player` 是 `_facade!` —— `_facade` 要等 `_boot()` 异步建完内核才非空。
+  ///
+  /// 但 `build` 里是**无条件**调用本方法的（`_settingsDrawer()` 没有守卫），
+  /// 于是**冷启动进播放页的头几百毫秒**（建纹理 + `mpv_initialize` 期间），
+  /// 这一句就会抛：
+  ///
+  ///     Null check operator used on a null value
+  ///     _PlayerPageState._player (player_page.dart:176)
+  ///     _PlayerPageState._settingsDrawer (player_page.dart:2107)
+  ///     _PlayerPageState.build (player_page.dart:1440)
+  ///
+  /// **整页 build 抛异常 = 红屏**。这与用户反馈的"视频点击播放时闪红"高度吻合：
+  /// 闪一下红，随即 `_boot` 完成、`_ready` 变真、正常渲染 ——
+  /// 现象上就是"闪一下"。
+  ///
+  /// 此前没被发现，是因为**从没有任何测试构建过未就绪状态的播放页**
+  /// （集成测试直接驱动内核，不建 UI）。补 UI 测试时立刻暴露。
+  ///
+  /// 修法：未就绪时返回空 `SizedBox`（而不是让它去读 `_player`）。
   Widget _settingsDrawer() {
+    if (!_ready) return const SizedBox.shrink();
     return Positioned(
       top: 0,
       right: 0,
