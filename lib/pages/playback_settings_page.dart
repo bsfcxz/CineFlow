@@ -236,33 +236,64 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
 
   Widget _opt(String label,
       {required bool selected, required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          color: selected ? Cf.accent.withValues(alpha: 0.13) : Cf.surface2,
-          border: Border.all(color: selected ? Cf.accent : Cf.border),
-          boxShadow: selected
-              ? [
-                  BoxShadow(
-                      color: Cf.accent.withValues(alpha: .18),
-                      blurRadius: 10),
-                ]
-              : null,
+    // ⚠️ 两处修复（审计 U8）：
+    //   1. `GestureDetector` → `InkWell`：加了**按压反馈**。
+    //      选项 chip 点了没有任何视觉变化时，用户会怀疑没点上而重复点。
+    //   2. **命中区撑到 48dp**：原为 `vertical: 8` + 12sp 文字 ≈ 30dp 高，
+    //      只有基线的 62%。用 ConstrainedBox 撑高、视觉内边距不变 ——
+    //      chip 看起来一样大，但手指更容易点中。
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(Cf.radiusSm),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(Cf.radiusSm),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 48),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(Cf.radiusSm),
+                color:
+                    selected ? Cf.accent.withValues(alpha: 0.13) : Cf.surface2,
+                border: Border.all(color: selected ? Cf.accent : Cf.border),
+                boxShadow: selected
+                    ? [
+                        BoxShadow(
+                            color: Cf.accent.withValues(alpha: .18),
+                            blurRadius: 10),
+                      ]
+                    : null,
+              ),
+              alignment: Alignment.center,
+              // 设置项在**固定行高**容器里 → 必须钳字缩（200% 下 12sp→24sp
+              // 会把 48dp 的行高撑破）
+              child: CfText(label,
+                  clamp: true,
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight:
+                          selected ? FontWeight.w800 : FontWeight.w500,
+                      color: selected ? Cf.accent : Cf.text2)),
+            ),
+          ),
         ),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 12,
-                fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
-                color: selected ? Cf.accent : Cf.text2)),
       ),
     );
   }
 
   Widget _toggle(bool value, ValueChanged<bool> onChanged) {
-    return GestureDetector(
+    // ⚠️ 开关视觉只有 44×25，命中区仅 25dp（48dp 的 52%）——
+    //    审计实测"设置抽屉开关 18h"就是这类。用 CfTapTarget 把命中区
+    //    撑到 48dp，**视觉仍是 44×25 不变**（视觉与命中分离）。
+    return CfTapTarget(
+      size: 48,
+      semanticLabel: value ? '已开启' : '已关闭',
       onTap: () => onChanged(!value),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
