@@ -150,7 +150,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-dev.ps1
 
 # 分项（便于单独排查）
 flutter analyze                                   # 0 error / 0 warning
-flutter test                                      # 286 例全绿
+flutter test                                      # 469 例全绿
 (cd go && go vet ./... && go test ./...)          # 143 例全绿
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-secrets.ps1  # 敏感信息
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-docs.ps1     # 必需文档 + 断链

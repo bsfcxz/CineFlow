@@ -89,14 +89,14 @@
 | 四 | UI/UX | **~80%** | **列表页重构**（ADR 0003 后待重做） |
 | 五 | 弹幕 | **~70%** | 发送 / 手动匹配 / 密度图；**官方 API 未联调** |
 | 六 | 多平台 | **搁置** | 用户明确缩小范围 |
-| 七 | 测试与发布 | **~70%** | **release 签名**（缺陷 7.16，发布前必做） |
+| 七 | 测试与发布 | **~85%** | release 签名**已就绪**（7.16 已修，v0.3.1 已发布三 ABI） |
 | 八 | 115 网盘 | **~55%** | **真实账号联调**（无账号） |
 
 ### 3.2 实测数字（2026-10-05）
 
 | 项 | 值 | 命令 |
 |---|---|---|
-| Dart 单测 | **286 例全绿** | `flutter test` → `+286: All tests passed!` |
+| Dart 单测 | **469 例全绿** | `flutter test` → `+469: All tests passed!` |
 | Go 单测 | **143 例全绿** | `go test ./...`（media 11 / rpc 12 / pan115 60 / m115 60） |
 | 真机集成 | **1 例通过** | `flutter test integration_test/... -d <id>` |
 | `flutter analyze` | **0 issue**（error/warning/info 全 0） | `flutter analyze` |
