@@ -151,11 +151,11 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
                     context,
                     MaterialPageRoute(
                         builder: (_) => const DanmakuSettingsPage())),
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(16),
                 child: Container(
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
+                    borderRadius: BorderRadius.circular(16),
                     color: Cf.surface,
                     border: Border.all(color: Cf.border),
                   ),
@@ -164,7 +164,7 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
                       width: 32,
                       height: 32,
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(9),
+                        borderRadius: BorderRadius.circular(8),
                         color: Cf.ai.withValues(alpha: .12),
                       ),
                       child: Icon(Icons.subtitles_rounded,
@@ -206,7 +206,7 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         color: Cf.surface,
         border: Border.all(color: Cf.border),
       ),
@@ -241,7 +241,7 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(9),
+          borderRadius: BorderRadius.circular(8),
           color: selected ? Cf.accent.withValues(alpha: 0.13) : Cf.surface2,
           border: Border.all(color: selected ? Cf.accent : Cf.border),
           boxShadow: selected
@@ -270,7 +270,7 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
         height: 25,
         padding: const EdgeInsets.all(2.5),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(13),
+          borderRadius: BorderRadius.circular(12),
           color: value ? Cf.accent : Cf.border,
         ),
         alignment: value ? Alignment.centerRight : Alignment.centerLeft,

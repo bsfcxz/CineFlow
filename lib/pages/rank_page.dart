@@ -84,7 +84,7 @@ class _RankPageState extends ConsumerState<RankPage> {
                         width: 18,
                         height: 2.5,
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(2),
+                          borderRadius: BorderRadius.circular(4),
                           color: _group == g
                               ? Cf.accent
                               : Colors.transparent,
@@ -286,7 +286,7 @@ class _RankRow extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(
                       horizontal: 7, vertical: 1),
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(5),
+                    borderRadius: BorderRadius.circular(4),
                     color: const Color(0x1F52B54B),
                     border: Border.all(color: const Color(0x5952B54B)),
                   ),

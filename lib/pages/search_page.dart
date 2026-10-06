@@ -91,7 +91,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                   height: 38,
                   padding: const EdgeInsets.symmetric(horizontal: 13),
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(11),
+                    borderRadius: BorderRadius.circular(12),
                     color: Cf.surface2,
                     border: Border.all(color: Cf.border),
                   ),
@@ -199,7 +199,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 6),
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(18),
+                        borderRadius: BorderRadius.circular(16),
                         color: Cf.surface2,
                         border: Border.all(color: Cf.border),
                       ),

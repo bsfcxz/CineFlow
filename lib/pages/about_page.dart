@@ -132,7 +132,7 @@ class AboutPage extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         color: Cf.surface,
         border: Border.all(color: Cf.border),
       ),
@@ -163,7 +163,7 @@ class AboutPage extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         color: Cf.surface,
         border: Border.all(color: Cf.border),
       ),
@@ -199,7 +199,7 @@ class AboutPage extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         color: const Color(0x14FFB347), // 提示色 8% 透明
         border: Border.all(color: const Color(0x40FFB347)),
       ),
@@ -231,7 +231,7 @@ class AboutPage extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         color: Cf.surface,
         border: Border.all(color: Cf.border),
       ),
@@ -295,7 +295,7 @@ class AboutPage extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(16),
         color: color.withValues(alpha: .14),
         border: Border.all(color: color.withValues(alpha: .4)),
       ),
@@ -311,11 +311,11 @@ class AboutPage extends StatelessWidget {
   }) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(12),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 12),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           color: Cf.surface2,
           border: Border.all(color: Cf.border),
         ),

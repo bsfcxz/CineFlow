@@ -53,7 +53,7 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
               color: Cf.surface,
               border: Border.all(color: Cf.border),
             ),
@@ -122,7 +122,7 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
               color: Cf.surface,
               border: Border.all(color: Cf.border),
             ),

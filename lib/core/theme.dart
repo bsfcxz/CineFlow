@@ -34,6 +34,23 @@ abstract final class Cf {
   static const gap6 = 32.0;
 
   // ---- 圆角令牌（统一随设计语言，避免各页 8/10/12/14 混用）----
+  //
+  // ## 为什么是这 4 档（实测收敛依据）
+  //
+  // 收敛前全仓 `circular()` 用到 **16 种值**（1/2/4/5/6/7/8/9/10/11/12/13/14/16/18/20），
+  // 其中 **9/10/11/13/14 是 1–2px 级差** —— 肉眼分不出，
+  // 却让界面"没有节奏"（与字号 22 档、图标 15 档同源）。
+  //
+  // 收敛规则（按**元素尺寸**分层，不是按手感）：
+  //   · `radiusXs = 4`  —— 微元素：角标、进度条端帽、勾选框
+  //     （这类元素高 2–17px，用 8 会显得过圆）
+  //   · `radiusSm = 8`  —— 小控件：chip、行内按钮、小缩略图
+  //   · `radiusMd = 12` —— 卡片、输入框、弹层行（**默认档**）
+  //   · `radiusLg = 16` —— 大面板、底部弹层、对话框
+  //
+  // ⚠️ **不要新增介于两档之间的值**。要更弱的效果用颜色令牌表达，
+  //    而不是再切 1px —— 那正是这 16 种值的来源。
+  static const radiusXs = 4.0;
   static const radiusSm = 8.0;
   static const radiusMd = 12.0;
   static const radiusLg = 16.0;
@@ -577,3 +594,121 @@ TextScaler clampTextScale(TextScaler scaler, {double maxFactor = 1.3}) {
   if (f <= maxFactor) return scaler;
   return TextScaler.linear(maxFactor);
 }
+
+/// 语义化文本 —— **排版令牌 + 字号钳制的唯一入口**。
+///
+/// ## 为什么需要它（而不是直接用 `Text(style: Cf.title)`）
+///
+/// U1 审计实测：`Cf` 的 8 个排版令牌**只被用了 24 处，而裸 `fontSize` 有 232 处**；
+/// 更关键的是 `clampTextScale`（审计要求的字缩钳制能力）**真代码采用 0 处** ——
+/// 也就是说"字号上限 1.3x"这条规则**从未生效**。
+///
+/// 根因不是"大家忘了用"，而是**用起来太麻烦**：要同时写
+/// `style: Cf.title` **和** `textScaler: clampTextScale(MediaQuery.textScalerOf(context))`
+/// 两处，还得记得哪些档该钳、哪些不该钳。
+/// 抽成本组件后，**正确用法是唯一省事用法**：
+///
+/// ```dart
+/// CfText('第 1 集', style: Cf.title)              // 自动带钳制
+/// CfText('简介正文', style: Cf.body, clamp: false) // 正文跟随系统（默认就不钳）
+/// ```
+///
+/// ## 钳制策略（对齐审计 §2.3）
+/// · **标题类**（pageTitle/section/title/numeric）→ 钳到 1.3x
+///   理由：200% 下底部 Tab 文字会与图标重叠、轮播标题溢出、设置行三行截断
+/// · **正文类**（body/label/caption/micro）→ **不钳**
+///   理由：无障碍原则 —— 用户调大字号是真实需求，正文压回去等于拒绝服务
+///
+/// 默认值按"是否标题"自动判定，调用方通常无需传 `clamp`。
+class CfText extends StatelessWidget {
+  const CfText(
+    this.data, {
+    super.key,
+    required this.style,
+    this.clamp,
+    this.textAlign,
+    this.maxLines,
+    this.overflow,
+    this.softWrap,
+  });
+
+  final String data;
+  final TextStyle style;
+
+  /// 是否对系统字号缩放封顶。
+  /// null（默认）= 按 [style] 的字号自动判定：**≥14sp 视为标题 → 钳制**。
+  final bool? clamp;
+  final TextAlign? textAlign;
+  final int? maxLines;
+  final TextOverflow? overflow;
+  final bool? softWrap;
+
+  /// 自动判定阈值：≥14 视为标题（对齐排版令牌里 title=14 这一档）。
+  static const double _titleThreshold = 14;
+
+  @override
+  Widget build(BuildContext context) {
+    final shouldClamp = clamp ?? ((style.fontSize ?? 13) >= _titleThreshold);
+    return Text(
+      data,
+      style: style,
+      textAlign: textAlign,
+      maxLines: maxLines,
+      overflow: overflow,
+      softWrap: softWrap,
+      textScaler: shouldClamp
+          ? clampTextScale(MediaQuery.textScalerOf(context))
+          : null, // null = 完全跟随系统（不干预）
+    );
+  }
+}
+
+/// 触控目标最小尺寸（Material 基线 48dp）。
+///
+/// ## 为什么需要它
+/// U1 审计实测：**88 处可点元素 <40dp**，最小仅 **16×16**（48dp 的 1/9）。
+/// 根因与令牌同类 —— 没有统一的"最小触控"落法，各处手写尺寸。
+///
+/// 用法：把视觉尺寸与命中区**分开**（视觉可以小，命中必须达标）：
+/// ```dart
+/// CfTapTarget(child: Icon(Icons.close, size: 16))   // 视觉 16，命中 48
+/// ```
+/// `Center` 保证视觉元素居中、不会被拉伸变形 ——
+/// 这是"只是把 SizedBox 改大"做不到的（那会把图标也拉大）。
+class CfTapTarget extends StatelessWidget {
+  const CfTapTarget({
+    super.key,
+    required this.child,
+    this.size = 48,
+    this.onTap,
+    this.semanticLabel,
+  });
+
+  final Widget child;
+  final double size;
+  final VoidCallback? onTap;
+
+  /// 无障碍读屏文案。自绘图标按钮**必须**给（否则读屏只会念"按钮"）。
+  final String? semanticLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget t = SizedBox(
+      width: size,
+      height: size,
+      child: Center(child: child),
+    );
+    if (onTap != null) {
+      t = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: t,
+      );
+    }
+    if (semanticLabel != null) {
+      t = Semantics(button: true, label: semanticLabel, child: t);
+    }
+    return t;
+  }
+}
+

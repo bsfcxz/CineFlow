@@ -229,7 +229,7 @@ class _Pan115LoginPageState extends ConsumerState<Pan115LoginPage> {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: const Color(0x1AFFB347),
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(color: const Color(0x55FFB347)),
         ),
         child: const Row(

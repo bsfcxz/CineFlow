@@ -402,14 +402,14 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       width: 96,
       height: 142,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(11),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Cf.border),
         boxShadow: const [
           BoxShadow(blurRadius: 36, offset: Offset(0, 12), color: Colors.black54)
         ],
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         child: url != null
             ? Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => _ph())
             : _ph(),
@@ -445,7 +445,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(6),
+                  borderRadius: BorderRadius.circular(8),
                   color: const Color(0x14FFFFFF),
                   border: Border.all(color: const Color(0x22FFFFFF)),
                 ),
@@ -810,7 +810,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                       padding: const EdgeInsets.symmetric(horizontal: 14),
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(9),
+                        borderRadius: BorderRadius.circular(8),
                         color: active
                             ? Cf.accent.withValues(alpha: 0.12)
                             : Cf.surface2,
@@ -868,7 +868,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       child: Container(
         padding: const EdgeInsets.all(9),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(11),
+          borderRadius: BorderRadius.circular(12),
           color: Cf.surface,
           border: Border.all(color: Cf.border),
         ),
@@ -1033,7 +1033,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: BorderRadius.circular(8),
                     color: active ? Cf.accent.withValues(alpha: 0.12) : Cf.surface2,
                     border:
                         Border.all(color: active ? Cf.accent : Cf.border),

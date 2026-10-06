@@ -59,7 +59,7 @@ class _DoubanDetailSheet extends ConsumerWidget {
                     width: 84,
                     height: 120,
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(9),
+                      borderRadius: BorderRadius.circular(8),
                       color: Cf.surface2,
                     ),
                     alignment: Alignment.center,
@@ -166,7 +166,7 @@ class _DoubanDetailSheet extends ConsumerWidget {
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     gradient: Cf.primaryGradient,
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text('在媒体库中搜索「$title」',
                       maxLines: 1,
@@ -188,7 +188,7 @@ class _DoubanDetailSheet extends ConsumerWidget {
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(9),
+                  borderRadius: BorderRadius.circular(8),
                   color: Cf.surface2,
                   border: Border.all(color: Cf.border),
                 ),
@@ -203,7 +203,7 @@ class _DoubanDetailSheet extends ConsumerWidget {
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(9),
+                  borderRadius: BorderRadius.circular(8),
                   color: Cf.surface2,
                   border: Border.all(color: Cf.border),
                 ),

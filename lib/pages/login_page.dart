@@ -164,7 +164,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       behavior: SnackBarBehavior.floating,
       backgroundColor: Cf.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: danger ? Cf.danger : Cf.border),
       ),
     ));
@@ -381,7 +381,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
             InkWell(
               key: keys.login.rememberRow,
               onTap: () => setState(() => _remember = !_remember),
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(8),
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 child: Row(children: [
@@ -439,14 +439,14 @@ class _ServerCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Material(
       color: selected ? Cf.accent.withValues(alpha: 0.07) : Cf.surface2,
-      borderRadius: BorderRadius.circular(11),
+      borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(11),
+        borderRadius: BorderRadius.circular(12),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(11),
+            borderRadius: BorderRadius.circular(12),
             border:
                 Border.all(color: selected ? Cf.accent : Cf.border),
           ),
@@ -457,7 +457,7 @@ class _ServerCard extends StatelessWidget {
               decoration: BoxDecoration(
                 gradient:
                     LinearGradient(colors: [Cf.surface, Cf.border]),
-                borderRadius: BorderRadius.circular(9),
+                borderRadius: BorderRadius.circular(8),
               ),
               alignment: Alignment.center,
               child: Text(icon, style: TextStyle(fontSize: 16)),
@@ -558,7 +558,7 @@ class _PrimaryButton extends StatelessWidget {
     return DecoratedBox(
       decoration: BoxDecoration(
         gradient: Cf.primaryGradient,
-        borderRadius: BorderRadius.circular(9),
+        borderRadius: BorderRadius.circular(8),
         boxShadow: [
           BoxShadow(
               color: Cf.accent.withValues(alpha: .3),
@@ -570,7 +570,7 @@ class _PrimaryButton extends StatelessWidget {
         color: Colors.transparent,
         child: InkWell(
           onTap: busy ? null : onPressed,
-          borderRadius: BorderRadius.circular(9),
+          borderRadius: BorderRadius.circular(8),
           child: Container(
             height: 46,
             alignment: Alignment.center,
