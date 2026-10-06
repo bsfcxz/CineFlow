@@ -55,6 +55,13 @@ class _FakeApi implements MediaProvider {
   }
 
   @override
+  Future<List<MediaItem>> getNextUp(String seriesId, {int limit = 1}) async {
+    // 首页聚合不调这个端点（它属于详情页）；
+    // 但也返回一条，便于将来扩展测试时不至于抛未实现。
+    return [_item('N0')];
+  }
+
+  @override
   Future<ItemPage> getItems({
     String? parentId,
     String includeTypes = 'Movie,Series',

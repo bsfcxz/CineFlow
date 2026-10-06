@@ -6,9 +6,9 @@
 /// `Set-Cookie`（CDN 一次性凭证）。这两样都**不在 URL 里**。
 /// 只把 URL 交给播放器 → CDN 返回 403 → 现象是"地址取到了但播不了"。
 ///
-/// media_kit 的 `Media(httpHeaders:)` 会转成 mpv 的 `http-header-fields`
-/// （已核实其实现），所以这条路是通的。`Pan115Playback` 把 url 与 headers
-/// **绑在同一个类型里返回**，就是为了不给"只拿 URL"的机会。
+///
+/// 内核迁移后语义不变：`PlayerFacade.openUrl(url, headers:)` →
+/// `PlayerChannel.open` 把 headers 拼成 `http-header-fields` 交给 mpv。
 ///
 /// ## 为什么播放器不复用 Emby 的 player_page
 ///
@@ -25,10 +25,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 
 import '../core/theme.dart';
+import '../player/player_facade.dart';
 import 'pan115_client.dart';
 import 'pan115_store.dart';
 
@@ -53,8 +52,13 @@ class Pan115PlayerPage extends ConsumerStatefulWidget {
 }
 
 class _Pan115PlayerPageState extends ConsumerState<Pan115PlayerPage> {
-  late final Player _player;
-  late final VideoController _controller;
+  /// 播放门面（原生 mpv）。异步创建：先建 Flutter 纹理，再 initialize mpv。
+  PlayerFacade? _facade;
+  PlayerFacade get _player => _facade!;
+  bool get _ready => _facade != null;
+
+  /// 视频尺寸变化计数（纹理要重建才能反映新宽高比）
+  int _videoTick = 0;
 
   Pan115Playback? _playback;
   bool _resolving = true;
@@ -67,6 +71,8 @@ class _Pan115PlayerPageState extends ConsumerState<Pan115PlayerPage> {
   bool _showControls = true;
   Timer? _hideTimer;
 
+  final List<StreamSubscription> _subs = [];
+
   @override
   void initState() {
     super.initState();
@@ -76,42 +82,69 @@ class _Pan115PlayerPageState extends ConsumerState<Pan115PlayerPage> {
         [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]));
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
 
-    _player = Player();
-    _controller = VideoController(_player);
-    _player.stream.position.listen((p) {
-      if (mounted) setState(() => _pos = p);
-    });
-    _player.stream.duration.listen((d) {
-      if (mounted) setState(() => _dur = d);
-    });
-    _player.stream.playing.listen((v) {
-      if (mounted) setState(() => _playing = v);
-    });
-    _player.stream.buffering.listen((v) {
-      if (mounted) setState(() => _buffering = v);
-    });
-    _player.stream.error.listen((e) {
-      // 播放失败时给出可行动提示（最常见原因是直链过期 → 重新取地址）
-      if (mounted) setState(() => _error = _friendlyError(e));
-    });
-
     _armHide();
-    unawaited(_resolveAndPlay());
+    unawaited(_boot());
+  }
+
+  /// 建内核 → 订阅流 → 取直链起播。
+  Future<void> _boot() async {
+    try {
+      final p = await createPlayerFacade();
+      if (!mounted) {
+        unawaited(p.dispose());
+        return;
+      }
+      _facade = p;
+      _subs.addAll([
+        p.stream.position.listen((v) {
+          if (mounted) setState(() => _pos = v);
+        }),
+        p.stream.duration.listen((v) {
+          if (mounted) setState(() => _dur = v);
+        }),
+        p.stream.playing.listen((v) {
+          if (mounted) setState(() => _playing = v);
+        }),
+        p.stream.buffering.listen((v) {
+          if (mounted) setState(() => _buffering = v);
+        }),
+        p.videoSizeStream.listen((_) {
+          if (mounted) setState(() => _videoTick++);
+        }),
+        p.stream.error.listen((e) {
+          // 播放失败时给出可行动提示（最常见原因是直链过期 → 重新取地址）
+          if (mounted) setState(() => _error = _friendlyError(e));
+        }),
+      ]);
+      await _resolveAndPlay();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _resolving = false;
+          _error = '播放器初始化失败：$e';
+        });
+      }
+    }
   }
 
   @override
   void dispose() {
     _hideTimer?.cancel();
+    for (final s in _subs) {
+      s.cancel();
+    }
     // 恢复竖屏与系统 UI（否则退出后整个应用会一直是横屏无状态栏）
     unawaited(SystemChrome.setPreferredOrientations(
         [DeviceOrientation.portraitUp]));
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    // ⚠️ 同步 dispose 原生播放器会崩（AGENTS.md §6.2 实测 SIGSEGV）。
-    // 这里延后销毁，与 Emby 播放器同一处理方式。
-    final p = _player;
-    Future<void>.delayed(const Duration(milliseconds: 350), () {
-      unawaited(p.dispose());
-    });
+    // ⚠️ 同步拆原生播放器会崩（AGENTS.md §6.2 实测 SIGSEGV）。
+    // 这里延后销毁：等本次 build/路由销毁帧走完再释放 mpv 与纹理。
+    final p = _facade;
+    if (p != null) {
+      Future<void>.delayed(const Duration(milliseconds: 350), () {
+        unawaited(p.dispose());
+      });
+    }
     super.dispose();
   }
 
@@ -168,10 +201,7 @@ class _Pan115PlayerPageState extends ConsumerState<Pan115PlayerPage> {
 
     // ★ 关键：把 headers 一起交给播放器。
     // 漏掉它们 → CDN 403（UA 绑定 + download_token）。
-    await _player.open(
-      Media(pb.url, httpHeaders: pb.headers),
-      play: true,
-    );
+    await _player.openUrl(pb.url, play: true, headers: pb.headers);
   }
 
   void _armHide() {
@@ -193,10 +223,9 @@ class _Pan115PlayerPageState extends ConsumerState<Pan115PlayerPage> {
       body: PopScope(
         canPop: true,
         child: Stack(fit: StackFit.expand, children: [
-          // 视频层
-          if (_error == null && !_resolving)
-            Video(controller: _controller, controls: NoVideoControls,
-                fit: BoxFit.contain),
+          // 视频层（原生 mpv 的 Flutter 纹理）
+          if (_error == null && !_resolving && _ready)
+            _player.videoView(fit: BoxFit.contain, tick: _videoTick),
 
           if (_resolving)
             Center(child: CircularProgressIndicator(color: Cf.accent)),

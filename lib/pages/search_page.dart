@@ -97,7 +97,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                   ),
                   child: Row(children: [
                     Icon(Icons.search_rounded,
-                        size: 17, color: Cf.text3),
+                        size: 16, color: Cf.text3),
                     SizedBox(width: 9),
                     Expanded(
                       child: TextField(
@@ -111,20 +111,29 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                           border: InputBorder.none,
                           hintText: '搜索影片 / 剧集 / 演员',
                           hintStyle:
-                              TextStyle(fontSize: 12.5, color: Cf.text3),
+                              TextStyle(fontSize: 13, color: Cf.text3),
                         ),
                       ),
                     ),
                     if (_ctrl.text.isNotEmpty)
-                      GestureDetector(
-                        onTap: () {
+                      // ⚠️ 原先是裸 GestureDetector 包 16px 图标 ——
+                      // **可点区域仅 16×16**，是 48dp 标准的 1/9，
+                      // 手指几乎点不中（而且它就在输入框右缘，容易误触到别处）。
+                      // 改成 IconButton + 收敛视觉尺寸：命中区 48dp、图标视觉 18。
+                      IconButton(
+                        tooltip: '清空',
+                        onPressed: () {
                           _ctrl.clear();
                           setState(() {
                             _results = null;
                           });
                         },
-                        child: Icon(Icons.close_rounded,
-                            size: 16, color: Cf.text3),
+                        icon: const Icon(Icons.close_rounded, size: 20),
+                        color: Cf.text3,
+                        visualDensity: VisualDensity.compact,
+                        constraints: const BoxConstraints(
+                            minWidth: 40, minHeight: 40),
+                        padding: EdgeInsets.zero,
                       ),
                   ]),
                 ),
@@ -134,7 +143,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                 onTap: () => _search(_ctrl.text),
                 child: Text('搜索',
                     style: TextStyle(
-                        fontSize: 12.5,
+                        fontSize: 13,
                         color: Cf.accent,
                         fontWeight: FontWeight.w600)),
               ),
@@ -157,19 +166,25 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       children: [
         if (_history.isNotEmpty) ...[
           Row(children: [
-            Text('搜索历史',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+            Text('搜索历史', style: Cf.label.copyWith(fontWeight: FontWeight.w700)),
             const Spacer(),
-            GestureDetector(
-              onTap: () async {
+            // 同上：原为 16px 裸 GestureDetector。这是**破坏性操作**
+            // （清空历史），点不中/误触的代价更大，且无二次确认。
+            IconButton(
+              tooltip: '清空搜索历史',
+              onPressed: () async {
                 await ref.read(sessionStoreProvider).clearSearchHistory();
                 await _loadHistory();
               },
-              child: Icon(Icons.delete_outline_rounded,
-                  size: 16, color: Cf.text3),
+              icon: const Icon(Icons.delete_outline_rounded, size: 20),
+              color: Cf.text3,
+              visualDensity: VisualDensity.compact,
+              constraints:
+                  const BoxConstraints(minWidth: 40, minHeight: 40),
+              padding: EdgeInsets.zero,
             ),
           ]),
-          SizedBox(height: 10),
+          const SizedBox(height: Cf.gap3),
           Wrap(
               spacing: 8,
               runSpacing: 8,
@@ -226,7 +241,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                     child: Text('${i + 1}',
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                            fontSize: 12.5,
+                            fontSize: 13,
                             fontWeight: FontWeight.w800,
                             fontStyle: FontStyle.italic,
                             color: i < 3 ? Cf.danger : Cf.text3)),
@@ -310,11 +325,11 @@ class _SearchPageState extends ConsumerState<SearchPage> {
               child: CircularProgressIndicator(color: Cf.accent)),
         )),
         error: (e, _) => Text('$e',
-            style: TextStyle(fontSize: 10.5, color: Cf.text3)),
+            style: TextStyle(fontSize: 11, color: Cf.text3)),
         data: (list) {
           if (list.isEmpty) {
             return Text('豆瓣没有匹配的条目',
-                style: TextStyle(fontSize: 10.5, color: Cf.text3));
+                style: TextStyle(fontSize: 11, color: Cf.text3));
           }
           return SizedBox(
             height: 172,
@@ -351,7 +366,7 @@ class _DoubanHitCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                  fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  fontSize: 11, fontWeight: FontWeight.w700)),
           Row(children: [
             if (hit.year != null)
               Text(hit.year!,

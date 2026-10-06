@@ -3,7 +3,27 @@
 > 本仓库支持 AI 编码代理协作开发（遵循 agents.md 开放约定），本文件是代理的工作须知。
 > 本文件是代理的唯一作业依据：动手前通读，收工前对照 §8 验收、§10 流程自检。
 >
-> 冲突优先级：**用户当轮指令 > 本文件 > docs/DEVELOPMENT.md > README.md > 计划书 cineflow.html**。
+> ## 🔴 第 0 步（每轮开发强制）
+>
+> **动手前先读 [`docs/AI-MEMORY.md`](docs/AI-MEMORY.md)**（AI 记忆库：进度快照 + 变更台账 + 交接），
+> **收工前必须更新它**（追加本轮台账、刷新进度与工作区状态）。
+>
+> **收工前必须跑 [`scripts/check-dev.ps1`](scripts/check-dev.ps1)** —— 一条命令跑完
+> 静态分析/单测/门禁/产物/真机冒烟，**退出码 0 才算完成**：
+> ```bash
+> powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-dev.ps1
+> ```
+> 有跳过项（如无设备）时，**必须在汇报里明确列出"哪些没验证"**——
+> 这是本仓库反复踩过的坑（文档声称验证过、实际没跑）。
+>
+> ## 🔴 涉及发版/上传时（另一套规则）
+>
+> **发版前必读 [`docs/AI-DISTRIBUTION.md`](docs/AI-DISTRIBUTION.md)** —— 分发铁律 **D1–D10**：
+> **未经用户当轮明确审批，绝不打 tag、绝不创建/修改/删除任何 Release**；
+> **上传只增不删**（旧版本是用户回滚的唯一退路）。
+> 审批凭据用 `tool/release_ticket.ps1`（`-Action approve/status/consume/revoke`）。
+>
+> 冲突优先级：**用户当轮指令 > 本文件 > docs/AI-MEMORY.md > docs/DEVELOPMENT.md > README.md > 计划书 cineflow.html**。
 > 计划书是产品愿景（可能滞后于代码），**代码与实测才是事实来源**。
 
 ---
@@ -73,7 +93,8 @@ flutter devices          # 确认真机在线（用 `flutter devices` 自己查 
 
 Flutter 实现的 **Emby 第三方播放器**（当前**仅 Android 手机端**，iOS/桌面/平板/TV 已明确搁置），
 媒体库/详情/播放器全部由 Emby REST API 真实数据驱动；排行榜/热门搜索接入豆瓣公开接口。
-播放内核 media_kit(libmpv)，状态管理 riverpod 3.x，网络 dio 5.x。
+播放内核 **安卓原生 mpv（自持 libmpv.so + Kotlin/JNI 薄桥，Flutter 纹理输出）**，
+状态管理 riverpod 3.x，网络 dio 5.x。
 
 **与计划书的关系**：计划书 `../cineflow.html` 定义了「Flutter + Go 内嵌服务层(Synurang/FFI)」架构与八阶段路线图。
 2026-10 起按用户要求**严格执行该技术栈**：Go 核心层已落地（ADR 0004）、`go_router` 与 `drift` 已接入（ADR 0005）。
@@ -88,11 +109,11 @@ Flutter 实现的 **Emby 第三方播放器**（当前**仅 Android 手机端**�
 |---|---|---|
 | 一 | 工程初始化 | Flutter 侧完成；**Go 侧已落地**（2026-10，ADR 0004） |
 | 二 | Emby API 接入 | ~97%（缺 401 自愈；`Sessions/Playing*` 含 EventName、`POST …/UserData` 已补） |
-| 三 | 视频播放核心 | **~95%**（Start 上报 ✅；多版本 ✅；转码经实测判定服务器不支持，暂缓） |
+| 三 | 视频播放核心 | **~96%**（Start 上报 ✅；多版本 ✅；**播放内核已迁移到「安卓原生 mpv」（K0–K4，ADR 0009）并真机验证起播/硬解/音画** ✅；转码经实测判定服务器不支持，暂缓。**待办**：K3 Media3 会话层（通知栏/耳机键/后台/音频焦点）→ CF-P3-KERNEL-004；迁移片源对照回归（4K DV/PGS）→ CF-P3-KERNEL-005） |
 | 四 | UI/UX 与媒体库 | **~80%**（排序 ✅ / default_rate ✅ / 加载失败不伪装空库 ✅ / 首页降级 ✅ / 演职员含导演 ✅ / 服务端筛选数据层 ✅。**媒体库页已移除（ADR 0003），列表页 UI 待全量重构 → CF-P4-UI-019**） |
 | 五 | 弹幕系统 | **~70%**（协议/渲染/设置全部落地：官方签名 + 自建 URL-token 双形态、两种 `p` 布局、异步 1.5s×5min 轮询、追尾判据轨道分配、设置页与持久化。**未做**：弹幕发送、手动匹配面板、密度折线图；**未联调**：官方 API 本机不可达） |
 | 六 | 多平台适配 | **搁置**（用户明确只做手机端） |
-| 七 | 测试与发布 | ~68%（**263 例 Flutter 单测 + 93 例 Go 单测**全绿；CI 有；debug 签名待换） |
+| 七 | 测试与发布 | ~70%（**286 例 Flutter 单测 + 143 例 Go 单测**全绿，另有 **1 个真机集成测试**；CI 有；debug 签名待换） |
 | 八 | 115 网盘扩展 | **~55%**（协议层 + 扫码登录 UI + 文件浏览 + 播放页全部落地，见 ADR 0007。**真机已验证到"能拿到二维码"**；**未联调**：无真实账号，列文件/取直链/真实播放未验证。走的是**非公开 webapi 接口**，有风控风险） |
 
 ### 技术栈现状（用户要求"严格按照 Go + Flutter"）
@@ -104,7 +125,7 @@ Flutter 实现的 **Emby 第三方播放器**（当前**仅 Android 手机端**�
 | **go_router** | ✅ | ADR 0005；路由表 `lib/core/router.dart` |
 | **Go 核心逻辑层** | ✅ | ADR 0004；`go/`，编译为 `libcineflow_go.so` |
 | **Synurang（gRPC over FFI）** | ⏳ **未落地** | 生成器需 Rust + protoc，本机无；当前用**同构的 JSON-over-FFI**，替换时只改 Go 侧转发 |
-| media_kit (libmpv) | ✅ | |
+| **播放内核（安卓原生 mpv）** | ✅ | **ADR 0009**；`lib/player/` + `android/app/src/main/{kotlin,cpp}/`。自持 `jniLibs/arm64-v8a/libmpv.so`，**Flutter 纹理输出**（非 PlatformView）。**media_kit 已移除**（K4） |
 | **SQLite (drift)** | ✅ | ADR 0005；`lib/data/db/` |
 | flutter_secure_storage | ✅ | |
 | dio | ✅ | |
@@ -205,118 +226,26 @@ MCP `flutter` 服务器提供等价的封装工具：`devices` / `run_app` / `ru
 
 ## 4. 目录地图
 
-```
-go/                              # ★ Go 核心逻辑层（ADR 0004）→ libcineflow_go.so
-├── go.mod
-├── bridge.go                    # C ABI 薄包装（含 import "C"，**不要在此写业务逻辑**）
-└── internal/
-    ├── rpc/                     # 零 cgo 路由：Dispatch + JSON 信封（可纯 Go 单测）
-    │   ├── pan115_routes.go     #   ★ 115 的 13 个 FFI 方法路由
-    │   └── pan115_session.go    #   ★ 115 进程内会话表（Go 侧不落盘凭据）
-    ├── media/                   # 零 cgo 规则：IsPlayable/Normalize/Filters/Progress/Sort
-    └── pan115/                  # ★ 115 webapi 协议层（零 cgo，可离线单测）
-        ├── client.go            #   端点常量/固定 UA/扫码状态机/flexBool 宽容解析
-        ├── login.go             #   扫码登录链路、错误码分类、WAF 识别、账号信息
-        ├── files.go             #   文件列表（offset 分页）、宽容类型、目录判据、格式化
-        ├── playback.go          #   取直链（缓存/失效）、**播放头唯一产出点**
-        ├── ratelimit.go         #   全局 2 req/s 串行限速（账号安全）+ WAF A/B 分类
-        ├── crypto_bridge.go     #   m115 加解密的唯一调用点
-        └── m115/                #   ★ m115 加解密（移植自 115driver，MIT 署名齐全）
-            ├── m115.go          #    公开 API：GenerateKey/Encode/Decode
-            ├── rsa.go           #    115 内置 1024 位公钥 + 分块模幂
-            ├── xor.go           #    seed/clientKey 常量与密钥派生
-            ├── util.go          #    reverseBytes
-            └── LICENSE-MIT-115driver  # MIT 全文（已剔除立场声明段）
-lib/
-├── main.dart                    # 入口 + Go/DB 自检（会话门控已迁到 router）
-├── core/
-│   ├── theme.dart               # 设计系统唯一来源：Cf 色彩令牌 / 渐变 / CfLogo
-│   ├── uuid.dart                # UUID v4（设备 ID）
-│   ├── version.dart             # ★ 版本号单一来源（kAppVersion/kClientVersion，镜像 VERSION）
-│   ├── go_core.dart             # ★ Go 层 Dart 绑定（FFI + 内存释放 + 降级 + invokeAsync）
-│   └── router.dart              # ★ go_router 路由表 + resolveRedirect（会话门控，纯函数）
-├── data/
-│   ├── media_provider.dart      # ★ MediaProvider 抽象接口（新增媒体能力先改这里）
-│   ├── emby_provider.dart       # Emby REST 实现（含实测结论注释，改动前先读）
-│   ├── models.dart              # ★ 中立媒体模型（MediaItem 等）+ Emby 线格式解析
-│   ├── session_store.dart       # secure_storage：会话/服务器/搜索历史/播放偏好(cf_pref_*)
-│   ├── home_repository.dart     # 首页聚合；单区块失败必须吞掉降级
-│   ├── db/                      # ★ drift 本地库（ADR 0005）
-│   │   ├── app_database.dart    #   表定义 + cacheGet/Put（TTL 在写入时固化）+ 播放历史
-│   │   ├── app_database.g.dart  #   build_runner 生成，**不要手改**
-│   │   └── db_provider.dart     #   连接与 appDbProvider（测试可 override 成内存库）
-│   └── douban/                  # 豆瓣客户端（外部引入：douban_client/douban_http/douban_image/…）
-├── state/
-│   ├── providers.dart           # SessionNotifier(AsyncNotifier) / embyApiProvider / homeProvider
-│   └── douban_providers.dart    # 豆瓣 providers（缓存注入 DriftDoubanCache）
-├── danmaku/                     # ★ 弹幕（阶段五）
-│   ├── danmaku_models.dart      #   数据模型 + `p` 两种布局解析 + 文本清洗
-│   ├── danmaku_sign.dart        #   官方签名 base64(sha256(AppId+Ts+Path+Secret))
-│   ├── danmaku_client.dart      #   HTTP + 双认证形态 + 错误分层 + 缓存
-│   ├── danmaku_async.dart       #   异步生成轮询状态机（1.5s × 5min）
-│   ├── danmaku_match.dart       #   Emby 条目名 → 番剧名/集号（纯逻辑）
-│   ├── danmaku_layout.dart      #   轨道分配（追尾判据）+ 可见性计算
-│   ├── danmaku_overlay.dart     #   CustomPainter 渲染层 + 开关按钮
-│   ├── danmaku_config.dart      #   源配置 + 地址归一化/校验
-│   ├── danmaku_providers.dart   #   riverpod 接线（失败不影响播放）
-│   └── danmaku_settings_page.dart # 设置页（源/外观/屏蔽词/开关）
-├── pan115/                      # ★ 115 网盘（阶段八，见 §6.8 与 ADR 0007）
-│   ├── pan115_client.dart       #   Go 核心层的 Dart 门面（全部走 invokeAsync）
-│   ├── pan115_store.dart        #   凭据安全存储 + provider 接线（凭据不落盘到 Go）
-│   ├── pan115_login_page.dart   #   扫码登录（含风险提示；轮询串行 + 世代号作废）
-│   ├── pan115_browser_page.dart #   文件浏览（面包屑/文件夹树，不假装成"季/集"）
-│   └── pan115_player.dart       #   播放（★ 核心职责：把 headers 原样交给 media_kit）
-├── pages/                       # 7 个页面：login/home/home_shell/detail/rank/search/profile
-│                                #   （library_page.dart 已移除，见 ADR 0003）
-├── player/
-│   ├── player_page.dart         # ★ 播放器整页（控制层/手势/抽屉/进度上报）
-│   └── player_routes.dart       # ★ 播放器路由 + extra 载荷 + 深链回退
-└── widgets/                     # media_cards.dart（公共卡片 + showComingSoon）/ douban_detail_sheet.dart
+> ★ **完整目录地图已外移到 [`docs/DIRECTORY-MAP.md`](docs/DIRECTORY-MAP.md)。**
+> 里面有每个目录/关键文件的**职责与对应 ADR**，以及测试文件清单。
+>
+> **为什么不在本文件里**：`AGENTS.md` 有工作区指令预算（65536 字节），
+> 超出会被截断、后面的章节代理读不到；而目录结构属"环境可自助查询"的信息
+> （`glob` / `ls` / `rg --files` 几秒可确认），常驻指令里是纯浪费。
 
-test/
-├── widget_test.dart             # 登录页冒烟测试（FakeStore 隔离平台通道）
-├── sort_and_prefs_test.dart     # 默认倍速编解码闭环 + 偏好键（5 例）
-├── home_repository_test.dart    # 首页四区块降级契约 + 全失败必须报错（6 例）
-├── people_test.dart             # 演职员筛选/导演摘要/防御式解析（10 例）
-├── server_filter_test.dart      # Genres/Years 参数 + POST UserData + EventName（16 例）
-├── router_test.dart             # 路径构造 + 会话门控分支（15 例）
-├── db_test.dart                 # drift 表语义：TTL/播放历史（17 例）
-├── douban_cache_test.dart       # 缓存 TTL 契约（12 例，§7.4 回归线）
-└── danmaku_*.dart               # ★ 弹幕 7 个文件共 161 例：
-                                 #   签名 12 · 匹配 30 · 布局 34 · 客户端 42 ·
-                                 #   异步 24 · 配置 25 · 持久化 14
-                                 # （115 的测试在 Go 侧：go/internal/pan115 + m115，共 70 例）
-tool/
-├── build_apk.bat / .sh          # release 构建
-├── build_go.sh                  # ★ Go 交叉编译到 jniLibs（按 ABI，自动探测 NDK）
-├── patch_b.py / patch_c.py / patch_d.py  # ⚠️ 历史一次性补丁脚本，已执行完毕，禁止重跑
-└── icon/icon_template.svg.frag  # 图标模板；_gen/ 是生成产物（含 Edge 垃圾文件，勿提交）
-scripts/
-├── check-secrets.ps1            # ★ 敏感信息门禁（反向注入验证过）
-├── check-docs.ps1               # ★ 必需文档 + Markdown 断链门禁
-└── discover_oss.py              # GitHub 开源发现与核实（--verify）
-.github/
-├── skills/                      # 本地工作流资产（不入库，见 .gitignore）
-│   ├── cineflow-workflow/       # 六段流水线 / 铁律 R1–R9 / references（gates·task-cards·context-budget）
-│   ├── cineflow-review/         # L0–L3 分级审查、否决项、输出格式
-│   ├── cineflow-tech-skills/    # 技术技能包 / references（emby-api·player-media·douban·degradation-and-device）
-│   ├── cineflow-oss-search/     # 开源发现、许可边界、references/search-playbook
-│   └── cineflow-release/        # 发版规范：版本号三处同步、changelog、APK 上传
-├── workflows/                   # CI：ci.yml（analyze/test/门禁）、release.yml、release-notes.yml
-├── ISSUE_TEMPLATE/              # YAML issue forms（bug / feature）+ config.yml
-└── PULL_REQUEST_TEMPLATE.md
-docs/
-├── DEVELOPMENT.md               # 架构决策与踩坑实录（改行为后需同步）
-├── architecture.md              # ★ 分层与 MediaProvider 契约（按实际代码写）
-├── CHANGELOG-GUIDE.md           # 变更日志写作法
-├── changelog/                   # ★ 发布说明（每版一份，Release 正文的事实源）
-├── decisions/                   # ADR：0001（已废弃）· 0002（纯 Dart MVP，现行）
-└── lessons/                     # 踩坑经验索引与写作规范
-../cineflow.html                 # 计划书（工作区根目录，非本工程内）
-```
+**要改哪一层，先看这份表**：
 
-**技能与文档的关系**：`.github/skills/` 是**作业口径**（怎么做），`docs/` 是**仓库内证据**
-（契约、清单、看板、台账）。改流程改技能，改契约改 `docs/`——两者不一致时以 `docs/` 与代码为准。
+| 层 | 位置 | 关键约束 |
+|---|---|---|
+| Go 核心 | `go/internal/{rpc,media,pan115}` | **零 cgo**，否则 `go test` 编不过（§6.5） |
+| Dart 绑定 | `lib/core/go_core.dart` | FFI + 内存释放 + 降级 |
+| 抽象层 | `lib/data/media_provider.dart` | UI 只依赖它，别直接 import 实现（§5.1） |
+| 中立模型 | `lib/data/models.dart` | 不含 Emby 词汇（缺陷 §7.20 未清完） |
+| 设计系统 | `lib/core/theme.dart` | **令牌唯一来源**，见 §6.4.1 |
+| 播放器 | `lib/player/` + `android/.../{kotlin,cpp}/` | 顺序约束极严，见 §6.2 |
+| 弹幕 | `lib/danmaku/` | 双认证形态不可统一，见 §6.7 |
+| 115 | `lib/pan115/` + `go/internal/pan115/` | 有风控风险，见 §6.8 与 ADR 0007 |
+| 门禁 | `scripts/check-dev.ps1` | **收工必跑，退出码 0 才算过** |
 
 ---
 
@@ -362,12 +291,37 @@ docs/
   故客户端只做直连。若将来接入支持转码的服务器，需重新 curl 实测 DeviceProfile 与
   `TranscodingUrl` 形状后再实现——**不要凭文档或记忆写**。
 
-### 6.2 播放器（media_kit / libmpv）
-- **播放中在 dispose 同步 `Player.dispose()` 会原生崩溃**（实测 SIGSEGV 闪退）。必须：
-  `PopScope` 里先上报 Stop + pause → `dispose` 里延迟 ≥300ms 异步销毁；
-  同时恢复应用内亮度与竖屏。
-- **无 WakeLock**：manifest 未申请 `WAKE_LOCK`（§7.11），播放中长时间无操作可能熄屏。
-- 控制层用 `NoVideoControls` 关掉 media_kit 默认 UI，全部自绘——别把默认控件放回来。
+### 6.2 播放器（安卓原生 mpv，ADR 0009）
+
+> 内核已从 media_kit 迁到「安卓原生 mpv + Flutter 纹理」。完整实测坑见
+> `docs/PLAYER-KERNEL.md` §4 与 ADR 0009；这里只列改代码前必须知道的。
+
+- **`av_jni_set_java_vm` 必须注册**（`JNI_OnLoad` 里）：不注册时现象极误导——
+  **解封装完全正常**（logcat 能看到 h264/aac 全部轨道列出来），
+  但 `[mpv/vo/gpu/android] No Java virtual machine has been registered` →
+  GPU 上下文初始化失败 → `end-file error`。**"能解析出轨道"不等于"能播"**。
+- **`wid` 必须在 `mpv_initialize` 之前 `mpv_set_option`**：之后设置不再生效。
+  故 Kotlin 顺序钉死为 `createSurface → attachSurface → initialize`，
+  `PlayerChannel.initialize/open` 都会先 `ensureTexture()`。
+- **Surface 必须 `NewGlobalRef`**：`wid` 传的是全局引用地址；局部引用 JNI 返回即失效。
+- **事件线程必须先 join 再 `mpv_terminate_destroy`**，否则退出播放器必崩。
+- **`#if CINEFLOW_HAS_MPV` 不能写成 `#ifdef`**：CMake 对无 libmpv 的 ABI 传 `=0`，
+  `#ifdef` 只判断"是否定义"，会把桩代码编成真实现。
+- **跨 ABI 链接**：`JNI_OnLoad` 里对 `av_jni_*` 的调用也要包在 `#if` 内，
+  否则 v7a/x86_64（无 libmpv）报 `undefined symbol`。
+  **只构建 arm64 验证不出这个问题。**
+- **Flutter 纹理 id 从 0 开始**：断言 `textureId > 0` 是错的；
+  要验证纹理可用应渲染 `Texture(textureId:)` 看是否抛异常。
+- **事件 JSON 必须转义**（`sb_json_string`）：mpv 日志与 `track-list` 带引号/换行，
+  且 `aid` 关闭时字面量是 `no`——裸拼会让 Dart 侧 `jsonDecode` 抛异常后**静默丢事件**。
+- **dispose 仍不能同步**（沿用旧坑）：退出走"先上报 Stop + pause → 延迟 ≥350ms 释放"。
+  `NativeKernel.dispose` 内部还会 `detachSurface` + join 事件线程。
+- **无 WakeLock / 无画中画**：见 §7.11。
+- **控制层全部自绘**：页面里**不再有** `NoVideoControls` 这类插件开关
+  （media_kit 已移除）；视频层是 `_player.videoView(fit:…, tick:…)`。
+- **`_player` 是异步创建的**：`_boot()` 完成后才非空，
+  build 路径以 `_ready` 为门、只读状态用 `_pstate`（未就绪返回空状态）。
+  改动 `player_page.dart` 时**不要把 `_player` 当同步可用的字段**。
 
 ### 6.3 豆瓣
 - `m.douban.com/rexxar/api/v2` 公开接口，**必须带移动端 UA + Referer**（否则 418）。
@@ -402,6 +356,22 @@ docs/
   并确认「重试」按钮真能把页面恢复（这一步常被漏掉，却是"重试"按钮唯一的价值）。
 - **`uiautomator dump` 反映的是"当前已渲染"的内容**：列表页仍有旧数据时，
   它不会显示错误态——不要据此判定"修复没生效"。先触发重载再 dump。
+
+### 6.4.1 UI 设计纪律（2026-10 新增）
+
+> ★ **改动 UI 前必读 [`docs/UI-DESIGN.md`](docs/UI-DESIGN.md）** ——
+> 令牌体系（字号 9 档 / 间距 / 圆角 / 动效）、对比度实测、交互纪律、
+> 参考项目踩过的陷阱表，全在那里。
+> 本节只留**最容易违反、后果最直接**的四条；细节一律看该文档。
+
+- **可点区域 ≥48dp**，视觉尺寸与命中区分开。实测本仓库曾有 **5 处**
+  裸 `GestureDetector` 包图标，最小仅 **16×16**（48dp 标准的 1/9），
+  既点不中又无按压反馈 → 一律用 `IconButton`。
+- **不写死尺寸**：`height: 270` / `crossAxisCount: 3` 在别的屏宽上都会出问题，
+  改为按屏高/可用宽计算。
+- **风格刻度是枚举**：要第 5 种圆角，先改 `theme.dart` 的表，别在页面里就地写新值。
+- **空态与错误态分开**：真没内容 → `CfEmptyView`；加载失败 → `CfErrorView`。
+  把失败画成空态是缺陷 §7.8 的原始形态。
 
 ### 6.5 Go 核心层 / FFI（2026-10 新增，全是实测踩出来的）
 - **`import "C"` 会污染整个包**：含 cgo 的包在 `CGO_ENABLED=0`（本机默认）或无 gcc 时
@@ -588,14 +558,29 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 ## 8. 验收基线（AI 收工前必须执行并报告结果）
 
 ### 8.1 必过项（不通过 = 未完成）
+
+> **一条命令跑完全部必过项**：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-dev.ps1`
+> （含下方 1/2/2b/2c/3 与产物检查、真机冒烟；退出码 0 才算过）。
+> 下面保留分项说明，便于单独排查。
+
 1. `flutter analyze` → **0 error / 0 warning**（仅允许 §5.7 的 3 条 douban info）。
-2. `flutter test` → **全绿**（当前 **263 例**）。
-   > 实测依据：`flutter test` 输出 `+263: All tests passed!`。
+2. `flutter test` → **全绿**（当前 **286 例**）。
+   > 实测依据：`flutter test` 输出 `+286: All tests passed!`。
    > 分布：登录冒烟 1 / 偏好 5 / 首页降级 6 / 演职员 10 / 服务端筛选+EventName 16 /
-   > 路由 15 / drift 17 / 豆瓣缓存 12 / **弹幕 161**
+   > 路由 15 / drift 17 / 豆瓣缓存 12 / Go 核心 13 / **弹幕 161**
    > （签名 12 · 匹配 30 · 布局 34 · 客户端 42 · 异步 24 · 配置 25 · 持久化 14）。
    > （本文件此前多次写错测试数。**改测试数量时请以 `flutter test` 的实际输出为准**，别照抄本行。）
-2b. `go vet ./...` → 0 警告；`go test ./...` → **93 例全绿**（在 `go/` 目录下跑）。
+2c. **真机集成测试**（改了播放内核必跑）：
+   `flutter test integration_test/player_kernel_test.dart -d <device-id>` → **1 passed**。
+   > 这是**唯一**能验证「Dart → MethodChannel → Kotlin → JNI → libmpv」整条链路的测试：
+   > `flutter test` 跑在桌面 VM 上，碰不到 MethodChannel 与 JNI，链路断了也照样全绿。
+   > 覆盖：建纹理 → initialize → 起播 → duration/分辨率属性事件 → position 推进
+   > → seek → setRate → pause/play → dispose 不崩。
+   > 可用 `--dart-define=CF_TEST_URL=...` 换成内网 Emby 直链。
+   > ⚠️ MIUI 上 `adb install` 可能被 `INSTALL_FAILED_USER_RESTRICTED` 拦住，
+   > 先关校验：`adb shell settings put global verifier_verify_adb_installs 0`
+   > （实测这一条即可放行）。
+2b. `go vet ./...` → 0 警告；`go test ./...` → **143 例全绿**（在 `go/` 目录下跑）。
    > 实测依据：`go test ./...` 输出 4 个 ok 包。
    > 分布：media 11 / rpc 12 / **pan115 48** / **m115 22**。
    > 全部包**零 cgo 依赖**，故无需 NDK 即可测（这是把业务逻辑拆出 main 包的直接收益，
@@ -780,6 +765,9 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 
 | 想知道 | 看 |
 |---|---|
+| **接下来往哪走、先做什么、什么卡住了** | **`docs/DEVELOPMENT-PLAN.md`**（开发计划书：目的地 / 已定决策 / 作业面 / 雾区 / 范围外 / 执行顺序） |
+| **UI 令牌 / 对比度 / 交互纪律 / UI 陷阱** | **`docs/UI-DESIGN.md`**（**改 UI 前必读**；§6.4.1 只有四条摘要） |
+| **目录结构与各层职责** | **`docs/DIRECTORY-MAP.md`**（从 §4 外移而来，含测试文件清单） |
 | 踩坑与经验（"这为什么这么写"） | `docs/lessons/`（索引在 `docs/lessons/README.md`） |
 | 架构与 `MediaProvider` 契约 | `docs/architecture.md`；决策背景见 `docs/decisions/` |
 | 为什么没有 Go 层 / 为什么用 Navigator | `docs/decisions/0002-pure-dart-mvp.md`（**已被 0004/0005 收窄**）；0001 是已废弃的原始设想 |
@@ -789,6 +777,7 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 | **115 为什么走 webapi 而不是官方开放平台、有什么风险** | **`docs/decisions/0007-pan115-webapi-route.md`** |
 | Emby 与 115 的播放模型差异、能力对照表 | 同上（§"与 Emby 的关系"） |
 | 审查清单（提交前逐条打勾） | `docs/review-checklist.md`（§0–§7） |
+| **按键/交互元素是否可用** | **`python tool/audit_buttons.py out.txt`**（查空实现/死按钮/命中区过小/失败被吞；清单见 `docs/UI-DESIGN.md` §3.3.2） |
 | 技术技能与开源借鉴（S1–S10） | `docs/TECH-SKILLS.md` + 技能 `cineflow-tech-skills` |
 | 已核实开源仓库注册表（含许可） | `docs/OSS-SOURCES.md` + `scripts/discover_oss.py --verify` |
 | 变更日志怎么写 | `docs/CHANGELOG-GUIDE.md` |

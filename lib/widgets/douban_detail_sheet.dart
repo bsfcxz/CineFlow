@@ -86,7 +86,7 @@ class _DoubanDetailSheet extends ConsumerWidget {
                         if (entry?.rateCount case final c?)
                           Text('  $c 人评过',
                               style: TextStyle(
-                                  fontSize: 9.5, color: Cf.text3)),
+                                  fontSize: 10, color: Cf.text3)),
                       ]),
                     ],
                     if (entry?.subtitle case final sub? when sub.isNotEmpty)
@@ -113,13 +113,13 @@ class _DoubanDetailSheet extends ConsumerWidget {
                   child: Text('$e',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                          fontSize: 11.5, color: Cf.text2))),
+                          fontSize: 12, color: Cf.text2))),
               data: (d) {
                 if (d == null) {
                   return Center(
                       child: Text('暂无更多详情',
                           style:
-                              TextStyle(fontSize: 11.5, color: Cf.text3)));
+                              TextStyle(fontSize: 12, color: Cf.text3)));
                 }
                 return ListView(
                   controller: scrollCtrl,
@@ -127,11 +127,11 @@ class _DoubanDetailSheet extends ConsumerWidget {
                     if (d.intro case final intro? when intro.isNotEmpty) ...[
                       Text('简介',
                           style: TextStyle(
-                              fontSize: 12.5, fontWeight: FontWeight.w800)),
+                              fontSize: 13, fontWeight: FontWeight.w800)),
                       SizedBox(height: 6),
                       Text(intro,
                           style: TextStyle(
-                              fontSize: 11.5,
+                              fontSize: 12,
                               color: Cf.text2,
                               height: 1.7)),
                       SizedBox(height: 14),
@@ -193,7 +193,7 @@ class _DoubanDetailSheet extends ConsumerWidget {
                   border: Border.all(color: Cf.border),
                 ),
                 child: Icon(Icons.open_in_new_rounded,
-                    size: 17, color: Cf.text2),
+                    size: 16, color: Cf.text2),
               ),
             ),
             SizedBox(width: 9),
@@ -208,7 +208,7 @@ class _DoubanDetailSheet extends ConsumerWidget {
                   border: Border.all(color: Cf.border),
                 ),
                 child: Icon(Icons.close_rounded,
-                    size: 18, color: Cf.text2),
+                    size: 20, color: Cf.text2),
               ),
             ),
           ]),
@@ -226,7 +226,7 @@ class _DoubanDetailSheet extends ConsumerWidget {
         SizedBox(
           width: 84,
           child: Text(label,
-              style: TextStyle(fontSize: 10.5, color: Cf.text3)),
+              style: TextStyle(fontSize: 11, color: Cf.text3)),
         ),
         Expanded(
           child: Text(v.join(' / '),

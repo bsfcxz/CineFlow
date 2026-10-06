@@ -8,6 +8,7 @@ import '../core/theme.dart';
 import '../core/version.dart';
 import '../data/emby_provider.dart';
 import '../data/session_store.dart';
+import '../keys.dart';
 import '../state/providers.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
@@ -86,7 +87,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       content: Text(text,
           style: TextStyle(
               color: danger ? Cf.danger : Cf.accent,
-              fontSize: 12.5,
+              fontSize: 13,
               fontWeight: FontWeight.w600)),
       behavior: SnackBarBehavior.floating,
       backgroundColor: Cf.surface,
@@ -100,6 +101,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: keys.login.page,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -148,35 +150,39 @@ class _LoginPageState extends ConsumerState<LoginPage> {
 
                   const _FieldLabel('服务器地址'),
                   TextField(
+                    key: keys.login.serverField,
                     controller: _addr,
                     keyboardType: TextInputType.url,
                     autocorrect: false,
-                    style: TextStyle(fontSize: 12.5),
+                    style: TextStyle(fontSize: 13),
                     decoration:
                         const InputDecoration(hintText: 'http://emby.example.com:8096'),
                   ),
                   const _FieldLabel('用户名'),
                   TextField(
+                    key: keys.login.usernameField,
                     controller: _user,
                     autocorrect: false,
-                    style: TextStyle(fontSize: 12.5),
+                    style: TextStyle(fontSize: 13),
                     decoration:
                         const InputDecoration(hintText: '用户名 / 邮箱'),
                   ),
                   const _FieldLabel('密码'),
                   TextField(
+                    key: keys.login.passwordField,
                     controller: _pass,
                     obscureText: _obscure,
-                    style: TextStyle(fontSize: 12.5),
+                    style: TextStyle(fontSize: 13),
                     decoration: InputDecoration(
                       hintText: '••••••••',
                       suffixIcon: IconButton(
+                        key: keys.login.passwordToggle,
                         onPressed: () => setState(() => _obscure = !_obscure),
                         icon: Icon(
                           _obscure
                               ? Icons.visibility_outlined
                               : Icons.visibility_off_outlined,
-                          size: 18,
+                          size: 20,
                           color: Cf.text3,
                         ),
                       ),
@@ -187,6 +193,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       InkWell(
+                        key: keys.login.rememberRow,
                         onTap: () => setState(() => _remember = !_remember),
                         borderRadius: BorderRadius.circular(6),
                         child: Padding(
@@ -201,6 +208,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                         ),
                       ),
                       GestureDetector(
+                        key: keys.login.quickConnectLink,
                         onTap: () => _toast('快速连接：在服务器端生成 6 位配对码'),
                         child: Text('快速连接码 →',
                             style:
@@ -210,6 +218,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                   ),
                   SizedBox(height: 16),
                   _PrimaryButton(
+                    key: keys.login.submitButton,
                     text: _busy ? '正在连接…' : '登  录',
                     busy: _busy,
                     onPressed: _login,
@@ -220,7 +229,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                   // 版本对不上最伤可信度（缺陷 7.17 的漏网处）。
                   Text('CineFlow $kAppVersionLabel · 登录即代表同意《用户协议》',
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 9.5, color: Cf.text3)),
+                      style: TextStyle(fontSize: 10, color: Cf.text3)),
                 ],
               ),
             ),
@@ -249,7 +258,7 @@ class _ServerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: selected ? const Color(0x1200D4FF) : Cf.surface2,
+      color: selected ? Cf.accent.withValues(alpha: 0.07) : Cf.surface2,
       borderRadius: BorderRadius.circular(11),
       child: InkWell(
         onTap: onTap,
@@ -271,7 +280,7 @@ class _ServerCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(9),
               ),
               alignment: Alignment.center,
-              child: Text(icon, style: TextStyle(fontSize: 17)),
+              child: Text(icon, style: TextStyle(fontSize: 16)),
             ),
             SizedBox(width: 11),
             Expanded(
@@ -280,7 +289,7 @@ class _ServerCard extends StatelessWidget {
                 children: [
                   Text(name,
                       style: TextStyle(
-                          fontSize: 12.5, fontWeight: FontWeight.w700)),
+                          fontSize: 13, fontWeight: FontWeight.w700)),
                   SizedBox(height: 2),
                   Text(addr,
                       maxLines: 1,
@@ -328,7 +337,7 @@ class _FieldLabel extends StatelessWidget {
       padding: const EdgeInsets.only(top: 12, bottom: 5),
       child: Text(text,
           style: TextStyle(
-              fontSize: 10.5,
+              fontSize: 11,
               color: Cf.text3,
               fontWeight: FontWeight.w600,
               letterSpacing: 0.5)),
@@ -347,19 +356,19 @@ class _Checkbox extends StatelessWidget {
       height: 15,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(4),
-        color: on ? const Color(0x2600D4FF) : Cf.surface2,
+        color: on ? Cf.accent.withValues(alpha: 0.15) : Cf.surface2,
         border: Border.all(color: on ? Cf.accent : Cf.border, width: 1.5),
       ),
       alignment: Alignment.center,
       child:
-          on ? Icon(Icons.check, size: 10, color: Cf.accent) : null,
+          on ? Icon(Icons.check, size: 16, color: Cf.accent) : null,
     );
   }
 }
 
 class _PrimaryButton extends StatelessWidget {
   const _PrimaryButton(
-      {required this.text, required this.onPressed, this.busy = false});
+      {super.key, required this.text, required this.onPressed, this.busy = false});
   final String text;
   final VoidCallback onPressed;
   final bool busy;

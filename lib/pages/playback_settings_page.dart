@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/theme.dart';
 import '../danmaku/danmaku_settings_page.dart';
+import '../player/player_page.dart' show PlayerPage;
 import '../state/providers.dart' show sessionStoreProvider;
 
 /// 当前偏好的内存快照（进入页面拉取，改动即写盘）
@@ -14,10 +15,15 @@ class _Prefs {
   final double defaultRate;
   final bool skipIntroAuto;
   final bool autoNext;
+
+  /// 长按倍速（播放时长按屏幕临时加速用）
+  final double holdSpeed;
+
   const _Prefs({
     required this.defaultRate,
     required this.skipIntroAuto,
     required this.autoNext,
+    required this.holdSpeed,
   });
 }
 
@@ -29,10 +35,13 @@ final _prefsProvider =
       1.0;
   final skip = await store.getPref('skip_intro_auto');
   final next = await store.getPref('auto_next');
+  // 复用 PlayerPage 的解析（越界/非法一律回退 2.0x），保证两处口径一致
+  final hold = PlayerPage.parseHoldSpeed(await store.getPref('hold_speed'));
   return _Prefs(
     defaultRate: rate,
     skipIntroAuto: skip != '0',
     autoNext: next != '0',
+    holdSpeed: hold,
   );
 });
 
@@ -98,6 +107,24 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
               ),
               SizedBox(height: 14),
 
+              // —— 长按倍速 ——
+              // ★ 从播放器控制条搬到这里（用户要求）：它属于"设置一次就不再改"
+              //   的偏好，放在播放中的控制条上只是噪音，还挤占横屏宽度。
+              _card(
+                title: '长按倍速',
+                sub: '播放时长按屏幕，临时用该倍速；松手恢复',
+                child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final s in const [1.5, 2.0, 2.5, 3.0])
+                        _opt('${s}x',
+                            selected: p.holdSpeed == s,
+                            onTap: () => _save('hold_speed', '$s')),
+                    ]),
+              ),
+              SizedBox(height: 14),
+
               // —— 自动连播 ——
               _card(
                 title: '自动连播下一集',
@@ -141,7 +168,7 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
                         color: Cf.ai.withValues(alpha: .12),
                       ),
                       child: Icon(Icons.subtitles_rounded,
-                          size: 17, color: Cf.ai),
+                          size: 16, color: Cf.ai),
                     ),
                     SizedBox(width: 12),
                     const Expanded(
@@ -158,7 +185,7 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
                       ]),
                     ),
                     Icon(Icons.chevron_right_rounded,
-                        size: 18, color: Cf.text3),
+                        size: 20, color: Cf.text3),
                   ]),
                 ),
               ),
@@ -190,11 +217,11 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
                 children: [
               Text(title,
                   style: TextStyle(
-                      fontSize: 13.5, fontWeight: FontWeight.w800)),
+                      fontSize: 14, fontWeight: FontWeight.w800)),
               SizedBox(height: 3),
               Text(sub,
                   style: TextStyle(
-                      fontSize: 10.5, color: Cf.text3, height: 1.5)),
+                      fontSize: 11, color: Cf.text3, height: 1.5)),
             ]),
           ),
           ?trailing,
@@ -215,7 +242,7 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(9),
-          color: selected ? const Color(0x2100D4FF) : Cf.surface2,
+          color: selected ? Cf.accent.withValues(alpha: 0.13) : Cf.surface2,
           border: Border.all(color: selected ? Cf.accent : Cf.border),
           boxShadow: selected
               ? [

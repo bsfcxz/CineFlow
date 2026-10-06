@@ -29,6 +29,24 @@ android {
         versionName = flutter.versionName
         // 不要在这里加 ndk.abiFilters：与 --split-per-abi 的 splits 配置互斥会构建失败；
         // 架构精简统一走 tool/build_apk.sh（--split-per-abi）。
+
+        // Patrol 真机 UI 测试：由 PatrolJUnitRunner 驱动 Dart 测试用例，
+        // clearPackageData 保证每个用例在干净的应用数据上启动。
+        testInstrumentationRunner = "pl.leancode.patrol.PatrolJUnitRunner"
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
+    }
+
+    // Patrol 要求用 AndroidX Test Orchestrator 隔离每个测试用例，
+    // 避免用例之间通过进程状态互相污染。
+    testOptions {
+        execution = "ANDROIDX_TEST_ORCHESTRATOR"
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
@@ -44,6 +62,11 @@ kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
+}
+
+dependencies {
+    // Patrol 的测试编排器（配合上面的 testOptions.execution 使用）
+    androidTestUtil("androidx.test:orchestrator:1.5.1")
 }
 
 flutter {

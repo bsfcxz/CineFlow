@@ -21,6 +21,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../core/theme.dart';
+import 'danmaku_config.dart';
 import 'danmaku_layout.dart';
 import 'danmaku_models.dart';
 
@@ -35,6 +36,10 @@ class DanmakuOverlay extends StatefulWidget {
     this.fontScale = 1.0,
     this.blockedWords = const [],
     this.showArea = 1.0,
+    this.modes = DanmakuDisplayModes.all,
+    this.speed = 1.0,
+    this.bold = false,
+    this.avoidSubtitle = true,
   });
 
   /// 已按时间排序的弹幕（由 `DanmakuBatch.sorted()` 保证）
@@ -57,6 +62,18 @@ class DanmakuOverlay extends StatefulWidget {
   /// 显示区域比例（1.0 = 全屏；0.5 = 只占上半屏）
   final double showArea;
 
+  /// 显示模式分类开关（滚动 / 顶部 / 底部）—— 对照 B 站的弹幕类型开关。
+  final DanmakuDisplayModes modes;
+
+  /// 弹幕速度倍率（1.0 = 默认；越大飞得越快、同屏越少）
+  final double speed;
+
+  /// 是否加粗（B 站的"弹幕加粗"）
+  final bool bold;
+
+  /// 是否避开字幕区（B 站的"防挡字幕"）
+  final bool avoidSubtitle;
+
   @override
   State<DanmakuOverlay> createState() => _DanmakuOverlayState();
 }
@@ -77,8 +94,15 @@ class _DanmakuOverlayState extends State<DanmakuOverlay> {
         fontSize: 16 * widget.fontScale,
         laneHeight: 26 * widget.fontScale,
         screenWidth: c.maxWidth,
-        screenHeight: c.maxHeight * widget.showArea.clamp(0.2, 1.0),
+        // 防挡字幕：给底部字幕留出一行（B 站"防挡字幕"的作用）
+        // 关闭时弹幕可铺满整屏
+        screenHeight: c.maxHeight *
+            widget.showArea.clamp(0.2, 1.0) *
+            (widget.avoidSubtitle ? 0.88 : 1.0),
         opacity: widget.opacity,
+        // 速度倍率直接作用于"弹幕飞过屏幕的时长"
+        speed: widget.speed,
+        bold: widget.bold,
       );
 
   @override
@@ -138,7 +162,11 @@ class _DanmakuPainter extends CustomPainter {
 
   static TextPainter _painterFor(
       String text, TextStyle style, Color color) {
-    final key = '$text|${style.fontSize}|${color.toARGB32()}';
+    // ⚠️ key 必须含 **fontWeight**：否则"弹幕加粗"开关切换后，
+    // 已缓存的同文本弹幕仍会用旧的细体渲染器 → 开关看似无效。
+    // （实测隐患：一条弹幕只要出现过一次，加粗就对它不生效。）
+    final key = '$text|${style.fontSize}|${style.fontWeight?.value}|'
+        '${color.toARGB32()}';
     final hit = _textPainters[key];
     if (hit != null) return hit;
     final tp = TextPainter(
@@ -166,7 +194,8 @@ class _DanmakuPainter extends CustomPainter {
       final style = TextStyle(
         fontSize:
             config.fontSize * (v.danmaku.fontSize / 25.0).clamp(0.6, 1.6),
-        fontWeight: FontWeight.w600,
+        // 用户开了「弹幕加粗」用 w800，否则 w600（B 站同款选项）
+        fontWeight: config.bold ? FontWeight.w800 : FontWeight.w600,
         height: 1.2,
       );
       final color = readableColor(v.danmaku.color, opacity: v.opacity);
@@ -189,7 +218,9 @@ class _DanmakuPainter extends CustomPainter {
     final lum = 0.299 * fillColor.r + 0.587 * fillColor.g + 0.114 * fillColor.b;
     final strokeColor =
         lum > 0.55 ? const Color(0xCC000000) : const Color(0xCCFFFFFF);
-    final key = '$text|${style.fontSize}|s${strokeColor.toARGB32()}';
+    // 同 _painterFor：key 必须含 fontWeight，否则加粗开关对已缓存项无效
+    final key = '$text|${style.fontSize}|${style.fontWeight?.value}|'
+        's${strokeColor.toARGB32()}';
     final hit = _strokePainters[key];
     if (hit != null) return hit;
     final tp = TextPainter(
@@ -261,7 +292,7 @@ class DanmakuToggleButton extends StatelessWidget {
               enabled
                   ? Icons.subtitles_rounded
                   : Icons.subtitles_off_rounded,
-              size: 19,
+              size: 20,
               color: enabled ? Cf.accent : Cf.text3,
             ),
           if (pending && progressText != null) ...[

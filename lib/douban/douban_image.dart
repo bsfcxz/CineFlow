@@ -85,7 +85,7 @@ class _DoubanImageState extends State<DoubanImage> {
         child: _bytes != null
             ? Image.memory(_bytes!, fit: widget.fit,
                 width: widget.width, height: widget.height)
-            : Icon(Icons.movie_outlined, size: 18, color: Color(0xFF5A6F99)),
+            : Icon(Icons.movie_outlined, size: 20, color: Color(0xFF5A6F99)),
       ),
     );
   }

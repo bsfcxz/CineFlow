@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # CineFlow release 构建脚本（Git Bash / 项目根目录运行）
-# 按架构拆分 + 混淆精简：91.6MB（三架构合并）-> ~30MB（arm64 单架构）
+# 按架构拆分 + 混淆精简
 # 产物: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
 #       （同时复制为 app-release.apk 方便固定路径取用）
-# 注意：media_kit 的 libmpv 三架构库必须靠 --split-per-abi 拆出，
-#       --target-platform / ndk.abiFilters 对它不生效。
+#
+# 为什么必须 --split-per-abi：
+#   自持的 libmpv.so（arm64-v8a，11.8MB）与 libcineflow_go.so 都只提供 arm64，
+#   拆包后 arm64 单包约 38MB；不拆则会把三架构的空壳一起带上。
+#
+# ⚠️ 发版前必读 docs/AI-DISTRIBUTION.md：
+#   本脚本只**构建**，不上传。上传必须经用户审批，走 release.yml（唯一通道）。
 set -e
 flutter build apk --release \
   --split-per-abi \
@@ -12,3 +17,12 @@ flutter build apk --release \
 
 cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
    build/app/outputs/flutter-apk/app-release.apk
+
+echo ""
+echo "产物："
+ls -lh build/app/outputs/flutter-apk/*.apk
+echo ""
+echo "下一步（需用户审批，见 docs/AI-DISTRIBUTION.md §3）："
+echo "  1) docs/changelog/v\$(cat VERSION).md 写好"
+echo "  2) scripts/check-dev.ps1 退出码 0"
+echo "  3) git tag v\$(cat VERSION) && git push origin v\$(cat VERSION)"

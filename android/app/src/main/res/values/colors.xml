@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用品牌色（与 lib/core/theme.dart 的 Cf 令牌保持一致）
+     改这里必须同步改 theme.dart，否则启动页与 Flutter UI 会出现色差。 -->
+<resources>
+    <!-- Cf.bg —— 全局背景（深海军蓝） -->
+    <color name="cf_bg">#FF0B1020</color>
+    <!-- 图标底板（浅一档，与 icon_template.svg.frag 的 #171329 对齐） -->
+    <color name="cf_icon_bg">#FF171329</color>
+</resources>

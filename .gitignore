@@ -71,6 +71,17 @@ config.local.yaml
 # 临时排查产物（门禁脚本自身产生的报告等）
 scripts/_probe_*
 
+# ★ 分发审批凭据（tool/release_ticket.ps1 签发）——**绝不入库**
+#   它是"用户已批准发版"的机器可读凭据，含批准时间与备注。
+#   仓库是公开的，凭据进仓库等于把内部流程状态对外公开。
+#   见 docs/AI-DISTRIBUTION.md §3。
+.release-approval.json
+
+# ★ 发布暂存目录（release.yml 把 APK 组装到这里再上传）
+#   APK 是 30MB+ 二进制，**绝不入库**（AI-DISTRIBUTION.md §1 D7：
+#   二进制进 git 会永久撑大历史且无法真正删除）。二进制的归宿是 Release 附件。
+dist/
+
 
 # ---- 本地工作流资产（不入库）----
 .github/skills/
@@ -84,3 +95,10 @@ docs/TECH-NOTES.md
 docs/local/
 tool/_*
 tool/scrub_*.py
+
+# ---- Patrol 真机 UI 测试（Patrol 官方要求忽略）----
+#   test_bundle.dart 由 patrol_cli 在运行时生成（每次构建内容都变），
+#   .patrol.env 存 --dart-define 凭据（可能含服务器地址/口令）——
+#   两者都绝不入库。
+**/test_bundle.dart
+.patrol.env

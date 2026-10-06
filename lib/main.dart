@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart';
 
 import 'core/go_core.dart';
 import 'core/router.dart';
@@ -12,7 +11,9 @@ import 'data/session_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
+  // 注：播放内核已从 media_kit 迁移到"安卓原生 mpv"（K0–K4）。
+  // 新内核不需要全局 ensureInitialized：mpv 实例由 PlayerChannel
+  // 在第一次起播时按需创建（且必须先拿到 Flutter 纹理的 Surface）。
 
   // 恢复主题色偏好（外观页四选一；默认 0 = 青）
   try {

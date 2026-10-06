@@ -51,8 +51,10 @@ class HomePage extends ConsumerWidget {
                   CfSection(
                     title: '继续观看',
                     trailing: '全部 ›',
-                    onTrailing: () =>
-                        showComingSoon(context, '播放历史'),
+                    // ★ 原为 showComingSoon('播放历史') —— 但 HistoryPage 早就实现好了
+                    //（`lib/pages/history_page.dart`）。"做好了却没接上"比没做更糟：
+                    //   用户以为这功能不存在。实测发现于 2026-10 的按钮审查。
+                    onTrailing: () => context.push(Routes.history),
                     child: SizedBox(
                       height: 165,
                       child: ListView.separated(
@@ -138,14 +140,26 @@ class _HomeTopBar extends ConsumerWidget {
       ),
       child: Row(children: [
         const Spacer(),
-        GestureDetector(
-          onTap: () => context.push(Routes.search),
-          child: Icon(Icons.search_rounded, size: 22, color: Cf.text2),
+        // ⚠️ 原先是裸 `GestureDetector` + 22px 图标 —— **可点区域只有图标本身**
+        // （22×22，约为标准的 1/5），且没有任何按压反馈。
+        // 这是实打实的可用性缺陷（LinPlayer 的已知陷阱表里就有
+        // 「触摸目标点不中 → 必须 ≥48dp」这一条，Material 同要求）。
+        // 改用 IconButton：theme 里已约束 minimumSize 48×48，
+        // 并自带涟漪反馈，视觉尺寸仍是 22。
+        IconButton(
+          tooltip: '搜索',
+          onPressed: () => context.push(Routes.search),
+          icon: const Icon(Icons.search_rounded, size: 24),
+          color: Cf.text2,
+          visualDensity: VisualDensity.compact,
         ),
-        SizedBox(width: 16),
-        GestureDetector(
-          onTap: () => ref.read(homeTabProvider.notifier).set(2),
-          child: Icon(Icons.settings_rounded, size: 21, color: Cf.text2),
+        IconButton(
+          tooltip: '我的',
+          // 图标按钮必须有无障碍名称（tooltip 即 semantics label）
+          onPressed: () => ref.read(homeTabProvider.notifier).set(2),
+          icon: const Icon(Icons.settings_rounded, size: 20),
+          color: Cf.text2,
+          visualDensity: VisualDensity.compact,
         ),
       ]),
     );
@@ -194,8 +208,19 @@ class _CarouselState extends State<_Carousel> {
 
   @override
   Widget build(BuildContext context) {
+    // ⚠️ 原先是写死的 `height: 270`。
+    //
+    // 问题：270 在 1080×2400 这类长屏上只占屏高 **11%** —— 主视觉被压成一条，
+    // 海报细节看不清；而在矮屏/横屏上又偏大。
+    //
+    // 参考项目（Best-Flutter-UI-Templates 的 hero、LinPlayer 的 HomePage）
+    // 都用**相对屏高的比例**，而不是固定像素。这里取 34%，并夹在
+    // [230, 420] 之间：下限保证矮屏仍能看清标题与简介，
+    // 上限避免大屏上主视觉占掉整屏、把下方内容全推出视野。
+    final screenH = MediaQuery.sizeOf(context).height;
+    final heroH = (screenH * 0.34).clamp(230.0, 420.0);
     return SizedBox(
-      height: 270,
+      height: heroH,
       width: double.infinity,
       child: PageView.builder(
         controller: _controller,
@@ -273,39 +298,35 @@ class _Slide extends ConsumerWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                      fontSize: 23,
+                      fontSize: 24,
                       fontWeight: FontWeight.w900,
                       letterSpacing: -1,
                       height: 1.15,
                       shadows: [
                         Shadow(blurRadius: 20, color: Colors.black54)
                       ])),
-              if (tags.isNotEmpty) SizedBox(height: 9),
+              if (tags.isNotEmpty) SizedBox(height: Cf.gap2),
               Wrap(spacing: 7, runSpacing: 5, children: [
                 for (final t in tags)
                   Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 9, vertical: 2),
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(6),
+                      borderRadius: BorderRadius.circular(Cf.radiusSm),
                       color: const Color(0x1FFFFFFF),
                       border:
                           Border.all(color: const Color(0x26FFFFFF)),
                     ),
-                    child: Text(t,
-                        style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                            color: Cf.text)),
+                    child: Text(t, style: Cf.micro.copyWith(
+                        fontWeight: FontWeight.w600, color: Cf.text)),
                   ),
               ]),
               if (item.overview case final ov? when ov.isNotEmpty) ...[
-                SizedBox(height: 9),
+                SizedBox(height: Cf.gap2),
                 Text(ov,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 10.5,
+                    style: Cf.caption.copyWith(
                         height: 1.65,
                         color: Cf.text2,
                         shadows: [

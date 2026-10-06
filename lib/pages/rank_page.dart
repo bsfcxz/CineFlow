@@ -14,6 +14,7 @@ import '../douban/douban_image.dart';
 import '../douban/douban_models.dart';
 import '../state/douban_providers.dart';
 import '../widgets/douban_detail_sheet.dart';
+import '../widgets/media_cards.dart';
 
 class RankPage extends ConsumerStatefulWidget {
   const RankPage({super.key});
@@ -37,17 +38,18 @@ class _RankPageState extends ConsumerState<RankPage> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
             child: Row(children: [
-              Text('排行榜',
-                  style: TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w800)),
-              SizedBox(width: 8),
-              Text('数据来自豆瓣',
-                  style: TextStyle(fontSize: 9.5, color: Cf.text3)),
+              Text('排行榜', style: Cf.section),
+              const SizedBox(width: Cf.gap2),
+              Text('数据来自豆瓣', style: Cf.micro),
               const Spacer(),
-              GestureDetector(
-                onTap: () => context.push(Routes.search),
-                child:
-                    Icon(Icons.search_rounded, size: 22, color: Cf.text2),
+              // 与首页顶栏同一处缺陷：裸 GestureDetector 的可点区域
+              // 只有图标本身（22×22），远小于 48dp，且无按压反馈。
+              IconButton(
+                tooltip: '搜索',
+                onPressed: () => context.push(Routes.search),
+                icon: const Icon(Icons.search_rounded, size: 24),
+                color: Cf.text2,
+                visualDensity: VisualDensity.compact,
               ),
             ]),
           ),
@@ -71,7 +73,7 @@ class _RankPageState extends ConsumerState<RankPage> {
                     child: Column(children: [
                       Text(g.label,
                           style: TextStyle(
-                              fontSize: 13.5,
+                              fontSize: 14,
                               fontWeight: _group == g
                                   ? FontWeight.w800
                                   : FontWeight.w600,
@@ -113,17 +115,16 @@ class _RankPageState extends ConsumerState<RankPage> {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(8),
                       color: active
-                          ? const Color(0x1F00D4FF)
+                          ? Cf.accent.withValues(alpha: 0.12)
                           : Cf.surface2,
                       border: Border.all(
                           color: active ? Cf.accent : Cf.border),
                     ),
                     child: Text(c.label,
-                        style: TextStyle(
-                            fontSize: 11.5,
+                        style: Cf.label.copyWith(
                             fontWeight: active
-                                ? FontWeight.w800
-                                : FontWeight.w600,
+                                ? FontWeight.w700
+                                : FontWeight.w500,
                             color:
                                 active ? Cf.accent : Cf.text2)),
                   ),
@@ -133,10 +134,10 @@ class _RankPageState extends ConsumerState<RankPage> {
           ),
           Expanded(child: _list()),
           Padding(
-            padding: EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.only(bottom: Cf.gap2),
             child: Center(
               child: Text('数据来自豆瓣公开接口 · 仅供学习与个人使用',
-                  style: TextStyle(fontSize: 9, color: Cf.text3)),
+                  style: Cf.micro),
             ),
           ),
         ]),
@@ -158,7 +159,7 @@ class _RankPageState extends ConsumerState<RankPage> {
             Text('$e',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                    fontSize: 11.5, color: Cf.text2, height: 1.6)),
+                    fontSize: 12, color: Cf.text2, height: 1.6)),
             SizedBox(height: 16),
             OutlinedButton(
               onPressed: () =>
@@ -174,9 +175,12 @@ class _RankPageState extends ConsumerState<RankPage> {
       ),
       data: (list) {
         if (list.isEmpty) {
-          return Center(
-              child: Text('该榜单暂无数据',
-                  style: TextStyle(fontSize: 12, color: Cf.text3)));
+          // 统一空态：给说明 + 可能的下一步，而不是一行冷灰字
+          return const CfEmptyView(
+            icon: Icons.leaderboard_outlined,
+            message: '该榜单暂无数据',
+            hint: '换个榜单分组试试，或稍后再来',
+          );
         }
         return NotificationListener<ScrollNotification>(
           onNotification: (n) {
@@ -263,7 +267,7 @@ class _RankRow extends StatelessWidget {
               Row(children: [
                 if (entry.ratingText case final r?) ...[
                   Icon(Icons.star_rounded,
-                      size: 13, color: Cf.warn),
+                      size: 16, color: Cf.warn),
                   SizedBox(width: 2),
                   Text(r,
                       style: TextStyle(
@@ -288,7 +292,7 @@ class _RankRow extends StatelessWidget {
                   ),
                   child: Text('豆瓣',
                       style: TextStyle(
-                          fontSize: 8.5,
+                          fontSize: 9,
                           fontWeight: FontWeight.w700,
                           color: Cf.emby)),
                 ),

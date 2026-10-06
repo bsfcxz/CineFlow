@@ -26,6 +26,20 @@ $required = @(
     'CHANGELOG.md'
     'VERSION'
     '.gitignore'
+    # ★ AI 记忆库：每轮开发前必读、结束后必写（是 AI 协作的交接凭据）
+    'docs/AI-MEMORY.md'
+    # ★ AI 分发规范：约束一切对外分发（不得自增版本、不得删旧 Release、须审批）
+    'docs/AI-DISTRIBUTION.md'
+    # ★ 计划与进度报告（给人看的快照；每轮进度以 AI-MEMORY.md 为准）
+    'docs/PROJECT-STATUS.md'
+    # ★ 开发计划书（前瞻：往哪走、先做什么、什么卡住了；与 PROJECT-STATUS 分工明确）
+    'docs/DEVELOPMENT-PLAN.md'
+    # ★ UI 设计规范（令牌体系 / 对比度实测 / 交互纪律；AGENTS §6.4.1 的细节出处）
+    'docs/UI-DESIGN.md'
+    # ★ 目录地图（从 AGENTS §4 外移而来 —— AGENTS 有指令体积预算，超出会被截断）
+    'docs/DIRECTORY-MAP.md'
+    # ★ 开源参考清单（借鉴了什么、许可能不能抄；新增引用前必看）
+    'docs/OSS-REFERENCES.md'
     'docs/UPDATE-WORKFLOW.md'
     'docs/task-board.md'
     'docs/architecture.md'
@@ -38,6 +52,7 @@ $required = @(
     'docs/lessons/README.md'
     'scripts/check-secrets.ps1'
     'scripts/check-docs.ps1'
+    'scripts/check-dev.ps1'
 )
 
 Write-Host '== 必需文档 =='

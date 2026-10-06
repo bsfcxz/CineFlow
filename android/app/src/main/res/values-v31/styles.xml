@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CineFlow 启动主题（Android 12+ / API ≥ 31）。
+
+  ## 为什么需要单独一份
+  Android 12 起，**系统接管了冷启动画面**：它会用 `android:windowSplashScreen*`
+  自己绘制一张启动图，绘制完成前**根本轮不到** `android:windowBackground`。
+
+  本工程原先没有声明这些属性 → 系统**回落用 `android:icon`**（自适应应用图标）
+  绘制启动图，而 Flutter 侧又在之后用 `launch_background` 画一次。
+  两次绘制的内容**尺寸与位置不同** → 用户看到的就是"启动会闪一下之前的图标"。
+
+  ## 这里做了什么
+  1. `windowSplashScreenBackground` = 品牌深蓝，与 Cf.bg 一致（不再有底色跳变）
+  2. `windowSplashScreenAnimatedIcon` = `@drawable/launch_logo`
+     —— 与 `launch_background.xml` **用同一张图**，两次绘制视觉连续
+  3. `postSplashScreenTheme` 指向 NormalTheme，启动图消失后交回 Flutter
+
+  ⚠️ 图标必须是**紧密裁切**的（`tool/gen_splash_logo.py` 生成的即是）。
+     若用自适应前景图（88% 是透明安全区），系统会再套一层圆形遮罩，
+     视觉上图标会缩得很小。
+-->
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <!-- 启动图背景：品牌深蓝（values/colors.xml 的 cf_bg） -->
+        <item name="android:windowSplashScreenBackground">@color/cf_bg</item>
+        <!-- 启动图图标：与 launch_background.xml 同一张，保证视觉连续 -->
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/launch_logo</item>
+        <!-- ⚠️ 这里**不要**写 `postSplashScreenTheme`：
+             它来自 androidx.core:core-splashscreen 库，本工程没引该依赖，
+             AAPT 会报 "style attribute 'attr/postSplashScreenTheme' not found"
+             （实测踩过：写成 android: 前缀同样报错）。
+             启动图消失后切回普通主题这件事，Flutter embedding 已通过
+             manifest 里的 `io.flutter.embedding.android.NormalTheme` meta-data 处理，
+             无需在此声明。 -->
+        <!-- 兼容 Flutter embedding：首帧绘制前仍用这张背景 -->
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+</resources>

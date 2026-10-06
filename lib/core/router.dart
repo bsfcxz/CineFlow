@@ -25,6 +25,7 @@ import 'package:go_router/go_router.dart';
 
 import '../data/models.dart';
 import '../pages/detail_page.dart';
+import '../pages/history_page.dart';
 import '../pages/home_shell.dart';
 import '../pages/login_page.dart';
 import '../pages/search_page.dart';
@@ -41,6 +42,7 @@ abstract final class Routes {
   static const home = '/';
   static const search = '/search';
   static const detail = '/detail';
+  static const history = '/history';
   static const player = '/play';
 
   /// `/detail/:id`
@@ -175,7 +177,7 @@ GoRouter buildRouter({required SessionGate gate, String? initialLocation}) {
         path: Routes.splash,
         builder: (context, state) => const Scaffold(
           backgroundColor: Cf.bg,
-          body: Center(child: CfLogo(size: 56, radius: 16, fontSize: 28)),
+          body: Center(child: CfLogo(size: 56, radius: 16)),
         ),
       ),
 
@@ -198,6 +200,16 @@ GoRouter buildRouter({required SessionGate gate, String? initialLocation}) {
           // 支持 ?q= 预填（豆瓣榜单「在媒体库中搜索」用）
           initialQuery: state.uri.queryParameters['q'],
         ),
+      ),
+
+      // 播放历史
+      //
+      // ★ 2026-10 补：`HistoryPage` 早就实现好了，但**既没注册路由、
+      //   首页「继续观看 → 全部 ›」还弹的是「即将推出」** ——
+      //   属于"功能做好了却没接上"：用户点"全部"看不到本该能看到的历史列表。
+      GoRoute(
+        path: Routes.history,
+        builder: (context, state) => const HistoryPage(),
       ),
 
       // 详情：/detail/:id

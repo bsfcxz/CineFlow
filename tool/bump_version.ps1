@@ -10,14 +10,26 @@
 #   - 代码里不得再出现硬编码的版本字面量（除 version.dart 本身）
 #
 # 用法：
-#   powershell -File tool/bump_version.ps1 -Check              # 只校验（CI/收工前跑）
-#   powershell -File tool/bump_version.ps1 -Version 0.3.0      # 改齐三处
+#   powershell -File tool/bump_version.ps1 -Check                    # 只校验（CI/收工前跑）
+#   powershell -File tool/bump_version.ps1 -Version 0.3.0            # 改齐三处 + build 自动 +1
+#   powershell -File tool/bump_version.ps1 -Version 0.3.0 -Build 5   # 显式指定 build（须递增）
+#   powershell -File tool/bump_version.ps1 -BumpBuild                # 只 +1，不动 semver
+#
+# ★ build number（Android versionCode）**只增不减**：
+#   它决定能否覆盖安装。曾经恒为 1，导致设备上装的 2001 永远更大，
+#   `adb install -r` 报 INSTALL_FAILED_VERSION_DOWNGRADE —— 而**用户没有 -d**，
+#   他们只会看到「应用未安装」。所以每次出包都必须让它变大。
 #
 # 退出码：0 = 一致；1 = 不一致或用法错误。
 
 [CmdletBinding()]
 param(
     [string]$Version,
+    # build number（Android versionCode）—— 只增不减。
+    # 不传时：改版本号则 +1，纯校验则不动。
+    [int]$Build = 0,
+    # 只递增 build number，不改 semver（例：0.3.0 -> 0.3.0+2 重新出包）
+    [switch]$BumpBuild,
     [switch]$Check
 )
 
@@ -48,6 +60,31 @@ function Write-Utf8([string]$p, [string]$text) {
     [System.IO.File]::WriteAllText($p, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+# ---- 只递增 build number 模式 ----
+#
+# 为什么需要它：Android 的 versionCode 决定"能否覆盖安装"。
+# 版本号恒为 +1（实测踩过）会导致设备上装的 2001 永远比新包大，
+# `adb install -r` 报 INSTALL_FAILED_VERSION_DOWNGRADE，只能靠 -d 强装 —— 而
+# **用户没有 -d**，他们只会看到"应用未安装"。
+if ($BumpBuild -and -not $Version) {
+    $ps = Read-Utf8 $pubspecFile
+    if ($ps -notmatch '(?m)^version:\s*([\d.]+)\+(\d+)') {
+        Write-Host '[失败] pubspec.yaml 的 version: 不是 "<X.Y.Z>+<build>" 形式'
+        exit 1
+    }
+    $curVer = $Matches[1]; $curBuild = [int]$Matches[2]
+    $newBuild = if ($Build -gt 0) { $Build } else { $curBuild + 1 }
+    if ($newBuild -le $curBuild) {
+        Write-Host "[失败] 新 build（$newBuild）必须大于当前（$curBuild）——versionCode 只增不减"
+        exit 1
+    }
+    $ps = [regex]::Replace($ps, '(?m)^version: .*$', "version: $curVer+$newBuild")
+    Write-Utf8 $pubspecFile $ps
+    Write-Host "[完成] build number $curBuild -> $newBuild（版本号 $curVer 不变）"
+    Write-Host "       这样设备才能用 -r 直接覆盖安装（无需 -d 强装）"
+    exit 0
+}
+
 # ---- 改齐模式 ----
 if ($Version) {
     if ($Version -notmatch '^\d+\.\d+\.\d+$') {
@@ -59,15 +96,31 @@ if ($Version) {
     Write-Utf8 $versionFile "$Version`n"
 
     $ps = Read-Utf8 $pubspecFile
-    $build = if ($ps -match '(?m)^version:\s*[\d.]+\+(\d+)') { $Matches[1] } else { '1' }
-    $ps = [regex]::Replace($ps, '(?m)^version: .*$', "version: $Version+$build")
+    if ($ps -notmatch '(?m)^version:\s*[\d.]+\+(\d+)') {
+        Write-Host '[失败] pubspec.yaml 的 version: 不是 "<X.Y.Z>+<build>" 形式'
+        exit 1
+    }
+    $oldBuild = [int]$Matches[1]
+    # build number 语义：**只增不减**
+    #   · 显式传 -Build → 用它（并校验递增）
+    #   · 换了 semver → 自动 +1（保证一定比上一版大）
+    if ($Build -gt 0) {
+        if ($Build -le $oldBuild) {
+            Write-Host "[失败] -Build($Build) 必须大于当前 build($oldBuild)（versionCode 只增不减）"
+            exit 1
+        }
+        $newBuild = $Build
+    } else {
+        $newBuild = $oldBuild + 1
+    }
+    $ps = [regex]::Replace($ps, '(?m)^version: .*$', "version: $Version+$newBuild")
     Write-Utf8 $pubspecFile $ps
 
     $dart = Read-Utf8 $dartFile
     $dart = [regex]::Replace($dart, "const String kAppVersion = '[^']*';", "const String kAppVersion = '$Version';")
     Write-Utf8 $dartFile $dart
 
-    Write-Host "[完成] VERSION $old -> $Version（pubspec 与 lib/core/version.dart 已同步，build=$build）"
+    Write-Host "[完成] VERSION $old -> $Version（pubspec 与 lib/core/version.dart 已同步，build=$oldBuild -> $newBuild）"
     Write-Host "       别忘了：CHANGELOG.md 补该版本条目 + git tag v$Version"
     exit 0
 }

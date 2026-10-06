@@ -189,15 +189,21 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
           margin: const EdgeInsets.fromLTRB(12, 10, 12, 4),
           padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
           decoration: BoxDecoration(
-            color: on ? const Color(0x1400D4FF) : const Color(0x1AFFB347),
+            // 「已启用」侧原为硬编码青色 → 改随主题；「已停用」侧用 warn 语义色
+            // （停用是**警示**状态，不该跟着主题变绿/变紫）。
+            color: on
+                ? Cf.accent.withValues(alpha: 0.08)
+                : Cf.warn.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-                color: on ? const Color(0x3300D4FF) : const Color(0x55FFB347)),
+                color: on
+                    ? Cf.accent.withValues(alpha: 0.20)
+                    : Cf.warn.withValues(alpha: 0.33)),
           ),
           child: Row(children: [
             Icon(
               on ? Icons.power_settings_new_rounded : Icons.power_off_rounded,
-              size: 15,
+              size: 16,
               color: on ? Cf.accent : const Color(0xFFFFB347),
             ),
             SizedBox(width: 8),
@@ -218,7 +224,7 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
                     on
                         ? '今日请求 $used/$cap（达上限会自动暂停）'
                         : '当前不会向 115 发送任何请求',
-                    style: TextStyle(fontSize: 10.5, color: Cf.text3),
+                    style: TextStyle(fontSize: 11, color: Cf.text3),
                   ),
                 ],
               ),
@@ -245,7 +251,7 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
             context: context,
             builder: (ctx) => AlertDialog(
               backgroundColor: Cf.surface,
-              title: Text('退出 115 登录？', style: TextStyle(fontSize: 15)),
+              title: Text('退出 115 登录？', style: TextStyle(fontSize: 16)),
               content: Text('将清除本机保存的凭据。',
                   style: TextStyle(fontSize: 13, color: Cf.text2)),
               actions: [
@@ -275,7 +281,7 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
           itemCount: _stack.length,
           separatorBuilder: (_, _) => Padding(
             padding: EdgeInsets.symmetric(horizontal: 4),
-            child: Icon(Icons.chevron_right_rounded, size: 14, color: Cf.text3),
+            child: Icon(Icons.chevron_right_rounded, size: 16, color: Cf.text3),
           ),
           itemBuilder: (_, i) {
             final last = i == _stack.length - 1;
@@ -335,7 +341,7 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
-          fontSize: 13.5,
+          fontSize: 14,
           color: isVideo || f.isDir ? Cf.text : Cf.text3,
         ),
       ),
@@ -397,7 +403,7 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
           Icon(Icons.cloud_off_rounded, size: 40, color: Cf.text3),
           SizedBox(height: 12),
           Text('尚未登录 115 网盘',
-              style: TextStyle(fontSize: 13.5, color: Cf.text2)),
+              style: TextStyle(fontSize: 14, color: Cf.text2)),
           SizedBox(height: 14),
           FilledButton.icon(
             onPressed: () async {
@@ -406,7 +412,7 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
               );
               if (ok == true) ref.invalidate(pan115SessionProvider);
             },
-            icon: Icon(Icons.qr_code_rounded, size: 18),
+            icon: Icon(Icons.qr_code_rounded, size: 20),
             label: Text('扫码登录'),
             style: FilledButton.styleFrom(backgroundColor: Cf.accent),
           ),

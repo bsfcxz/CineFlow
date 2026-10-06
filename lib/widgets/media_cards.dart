@@ -155,7 +155,7 @@ class PosterCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                          fontSize: 10.5,
+                          fontSize: 11,
                           fontWeight: FontWeight.w700,
                           height: 1.3,
                           color: Colors.white,
@@ -175,7 +175,7 @@ class PosterCard extends StatelessWidget {
           ].join(' · '),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 9.5, color: Cf.text3),
+          style: TextStyle(fontSize: 10, color: Cf.text3),
         ),
       ]),
     );
@@ -184,7 +184,7 @@ class PosterCard extends StatelessWidget {
   Widget _ph() => Container(
         color: Cf.surface2,
         alignment: Alignment.center,
-        child: Icon(Icons.movie_outlined, size: 26, color: Cf.text3),
+        child: Icon(Icons.movie_outlined, size: 24, color: Cf.text3),
       );
 }
 
@@ -202,22 +202,40 @@ class PosterGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: items.length,
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
-          mainAxisSpacing: 10,
-          crossAxisSpacing: 10,
-          childAspectRatio: 2 / 3.45,
+    return LayoutBuilder(builder: (context, box) {
+      // ⚠️ 原先是写死的 `crossAxisCount: 3`。
+      //
+      // 问题：3 列只在"标准手机宽度"下好看。实测换算：
+      //   · 1080px 宽 → 每张海报约 330px（偏大，一屏信息量少）
+      //   · 720px 宽  → 约 220px（偏小，文字挤）
+      //   · 平板/横屏 → 海报被拉得极大
+      //
+      // 参考项目（Best-Flutter-UI-Templates 的 grid）都用**按可用宽度算列数**。
+      // 这里取"目标海报宽 112px，列数夹在 3–6 之间"：
+      // 下限 3 保证手机上不会小到看不清，上限 6 避免超宽屏变得密密麻麻。
+      const targetW = 112.0;
+      final usable = box.maxWidth - 32; // 减去左右各 16 的 padding
+      final cols = (usable / targetW).floor().clamp(3, 6);
+
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: items.length,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cols,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: 2 / 3.45,
+          ),
+          itemBuilder: (context, i) => PosterCard(
+              item: items[i],
+              api: api,
+              onTap: onItemTap == null ? null : () => onItemTap!(items[i])),
         ),
-        itemBuilder: (context, i) =>
-            PosterCard(item: items[i], api: api, onTap: onItemTap == null ? null : () => onItemTap!(items[i])),
-      ),
-    );
+      );
+    });
   }
 }
 
@@ -280,11 +298,12 @@ class ContinueCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(5),
                           color: const Color(0xB3000000),
                           border:
-                              Border.all(color: const Color(0x4D00D4FF)),
+                              // 原为硬编码 0x4D00D4FF：外观页切主题时此描边不变色（实测 bug）。
+                              Border.all(
+                                  color: Cf.accent.withValues(alpha: 0.30)),
                         ),
                         child: Text(se,
-                            style: TextStyle(
-                                fontSize: 9.5,
+                            style: Cf.micro.copyWith(
                                 fontWeight: FontWeight.w700,
                                 color: Cf.accent)),
                       ),
@@ -314,7 +333,7 @@ class ContinueCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style:
-                  TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700)),
+                  TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
           SizedBox(height: 3),
           Text(
             remain != null ? '剩余 $remain 分钟' : '继续播放',
@@ -332,11 +351,14 @@ class ContinueCard extends StatelessWidget {
         ),
         alignment: Alignment.center,
         child: Icon(Icons.movie_creation_outlined,
-            size: 30, color: Cf.text3),
+            size: 24, color: Cf.text3),
       );
 }
 
-/// 加载失败视图
+/// 加载失败视图。
+///
+/// 契约（缺陷 §7.8 的回归线）：**失败必须显示失败**，
+/// 不允许把「加载失败」伪装成「暂无内容」。
 class CfErrorView extends StatelessWidget {
   const CfErrorView({super.key, required this.message, required this.onRetry});
   final String message;
@@ -349,23 +371,98 @@ class CfErrorView extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 40),
         child:
             Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(Icons.cloud_off_rounded, size: 44, color: Cf.text3),
-          SizedBox(height: 14),
+          // 错误用 danger 而非 text3：颜色承载语义（不能只用形状暗示）
+          Icon(Icons.cloud_off_rounded, size: 40, color: Cf.danger.withValues(alpha: 0.85)),
+          const SizedBox(height: Cf.gap4),
           Text(message,
               textAlign: TextAlign.center,
-              style: TextStyle(
-                  fontSize: 12.5, color: Cf.text2, height: 1.6)),
-          SizedBox(height: 18),
-          OutlinedButton(
+              style: Cf.label.copyWith(color: Cf.text2, height: 1.6)),
+          const SizedBox(height: Cf.gap5),
+          OutlinedButton.icon(
             onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded, size: 20),
+            label: const Text('重试'),
             style: OutlinedButton.styleFrom(
               foregroundColor: Cf.accent,
-              side: BorderSide(color: Cf.accent),
-              shape:
-                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+              side: BorderSide(color: Cf.accent.withValues(alpha: 0.6)),
+              minimumSize: const Size(120, 44), // 触控目标 ≥44dp
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(Cf.radiusMd)),
             ),
-            child: Text('重试'),
           ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// 空态视图（统一出口）。
+///
+/// ## 为什么要有它
+///
+/// 改造前各页各写各的空态：`'该榜单暂无数据'`、`'暂无相似推荐'`、
+/// `'暂无内容'`…… 文案与视觉都不统一，且**大多只有一行灰字**，
+/// 没有引导用户"下一步能做什么"。
+///
+/// ui-ux-pro-max 的 `empty-states` 要求：空态要给**有用的说明 + 行动入口**，
+/// 而不是一句冷冰冰的"暂无数据"。
+///
+/// 与 [CfErrorView] 的分工要严格区分（缺陷 §7.8）：
+///   · 「真的没有内容」→ 本组件
+///   · 「加载失败了」  → [CfErrorView]
+///   **绝不能把失败画成空态**——那会让用户以为"这个库是空的"。
+class CfEmptyView extends StatelessWidget {
+  const CfEmptyView({
+    super.key,
+    required this.message,
+    this.icon = Icons.inbox_rounded,
+    this.hint,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  final String message;
+  final IconData icon;
+
+  /// 补充说明（可选）：告诉用户为什么空、或下一步怎么做。
+  final String? hint;
+
+  /// 行动按钮（可选）：如「去登录」「换个筛选」。
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child:
+            Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(icon, size: 40, color: Cf.text3.withValues(alpha: 0.7)),
+          const SizedBox(height: Cf.gap4),
+          Text(message,
+              textAlign: TextAlign.center,
+              style: Cf.label.copyWith(color: Cf.text2, height: 1.6)),
+          if (hint case final h?) ...[
+            const SizedBox(height: Cf.gap2),
+            Text(h,
+                textAlign: TextAlign.center,
+                style: Cf.caption.copyWith(height: 1.5)),
+          ],
+          if (actionLabel case final a?) ...[
+            const SizedBox(height: Cf.gap5),
+            OutlinedButton(
+              onPressed: onAction,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Cf.accent,
+                side: BorderSide(color: Cf.accent.withValues(alpha: 0.6)),
+                minimumSize: const Size(120, 44),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(Cf.radiusMd)),
+              ),
+              child: Text(a),
+            ),
+          ],
         ]),
       ),
     );

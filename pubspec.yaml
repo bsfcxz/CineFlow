@@ -1,5 +1,5 @@
 name: cineflow
-description: "CineFlow 影流 —— Material 风格的 Emby 第三方播放器（Flutter + media_kit/libmpv）"
+description: "CineFlow 影流 —— Material 风格的 Emby 第三方播放器（Flutter + Go 核心层 + 安卓原生 mpv）"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.2.0+1
+version: 0.3.0+2
 
 environment:
   sdk: ^3.13.4
@@ -37,9 +37,6 @@ dependencies:
   dio: ^5.11.1
   flutter_riverpod: ^3.4.3
   flutter_secure_storage: ^11.2.0
-  media_kit: ^1.2.6
-  media_kit_video: ^2.0.1
-  media_kit_libs_video: ^1.0.7
   url_launcher: ^6.3.3
   screen_brightness: ^2.1.11
   ffi: ^2.2.0
@@ -70,6 +67,11 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
 
+  # 真机集成测试：用于验证原生 mpv 内核（K1/K2 的"真机打通"验收依据）。
+  # 跑法：flutter test integration_test/player_kernel_test.dart -d <device>
+  integration_test:
+    sdk: flutter
+
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
@@ -80,6 +82,21 @@ dev_dependencies:
   # drift 代码生成（`dart run build_runner build`）
   drift_dev: ">=2.28.0 <2.32.0"
   build_runner: ^2.4.0
+  # Patrol：Flutter-first 真机 UI 测试框架。相比 integration_test，它能操作
+  # 原生控件（系统权限弹窗、通知、其他 App），这是 integration_test 做不到的。
+  # 跑法：patrol test -t patrol_test/<file>.dart   （flutter test 跑不了 Patrol）
+  # 注意：Patrol 需要 patrol_cli，见 docs/DEVELOPMENT.md。
+  patrol: ^4.10.0
+
+# Patrol 配置（patrol_cli 读取）。
+# test_directory 用默认的 patrol_test/，与既有 integration_test/ 分开：
+#   - integration_test/  = 原生 mpv 内核链路验证（flutter test -d <device>）
+#   - patrol_test/       = 端到端 UI 流程验证（patrol test）
+# 两者职责不同，不合并。
+patrol:
+  app_name: CineFlow
+  android:
+    package_name: com.cineflow.app
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -91,6 +108,19 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # ★ 应用图标（品牌资产）
+  #
+  # 单一来源：工作区根的 `icon.png`（用户提供的成品图标，192×192）。
+  # 同一张图同时用于：① 桌面启动图标（`android/.../mipmap-*/ic_launcher.png`，
+  # 由 `tool/icon/gen_icons.sh` 按密度生成）；② 启动屏；③ 应用内 `CfLogo`。
+  #
+  # 变体按 Flutter 的「分辨率感知」约定：1x=64 / 2x=128 / 3x=192。
+  # 改图标时**三处都要换**，否则会出现"桌面图标换了、应用内没换"的不一致。
+  assets:
+    - assets/icon.png
+    - assets/2.0x/icon.png
+    - assets/3.0x/icon.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:
