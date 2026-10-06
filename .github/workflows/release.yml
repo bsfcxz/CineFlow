@@ -242,15 +242,29 @@ jobs:
           sha256sum *.apk > checksums.txt
           cat checksums.txt
 
-      - name: 上传构建产物（供排查）
+      # ⚠️ 只上传 **`dist/` 一个根**下的文件。
+      #
+      # upload-artifact 会把所有 path 的**最小公共祖先**作为 artifact 内的根。
+      # 若同时放 `dist/*.apk` 与 `build/symbols/*`，公共祖先是**仓库根**，
+      # 于是 artifact 里带上 `dist/` 这一层 → 下载到 `path: dist` 后变成
+      # **`dist/dist/*.apk`** → publish 里的 `dist/*.apk` 通配**匹配不到任何文件**
+      # → `gh release upload` 报错（实测踩过：这是 upload 一直失败的真正原因，
+      #    一开始误判成"多个同名草稿"）。
+      #
+      # 故符号表单独一个 artifact（它只是排查用的，不必和 APK 混在一起）。
+      - name: 上传构建产物（供发布）
         uses: actions/upload-artifact@v4
         with:
           name: cineflow-apk-${{ steps.v.outputs.ver }}
-          path: |
-            dist/*.apk
-            dist/checksums.txt
-            build/symbols/*
+          path: dist/*
           if-no-files-found: error
+
+      - name: 上传混淆符号表（供排查崩溃，不进 Release）
+        uses: actions/upload-artifact@v4
+        with:
+          name: cineflow-symbols-${{ steps.v.outputs.ver }}
+          path: build/symbols/*
+          if-no-files-found: warn
 
   publish:
     needs: build-apk
@@ -379,6 +393,19 @@ jobs:
             gh api repos/${GITHUB_REPOSITORY} --jq '.permissions' 2>&1 | head -3
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+
+          # ★ 先确认产物真的在，否则后面 `gh release upload` 会失败得莫名其妙。
+          #   （实测踩过：artifact 因多根路径带上了 `dist/` 前缀 → 下载后变成
+          #     dist/dist/*.apk → 通配匹配不到 → upload 报错，但看不出原因。）
+          echo "=== 待上传文件 ==="
+          ls -la dist/ || true
+          APKS="$(ls dist/*.apk 2>/dev/null | wc -l)"
+          echo "找到 $APKS 个 APK"
+          if [ "$APKS" -lt 1 ]; then
+            echo "::error::dist/ 下没有 APK —— 检查 upload-artifact/download-artifact 的路径映射"
+            find . -name '*.apk' -not -path './build/*' 2>/dev/null | head -10
+            exit 1
+          fi
 
           # ★ 用 guard 步骤给的结果，**不要**再用 `gh release view` 判断存在性：
           #   它对草稿返回 404（实测），是本工作流此前"越跑草稿越多"的根因。
