@@ -83,13 +83,23 @@ jobs:
             exit 1
           fi
           echo "keystore 自检通过（alias=$KEY_ALIAS）"
+          # ★ 写到 android/key.properties —— 即 Flutter 官方约定位置，
+          #   build.gradle.kts 用 **文件存在性** 找到它。
+          #
+          #   为什么不用环境变量：`System.getenv()` 读的是 **Gradle daemon 进程**
+          #   的环境，而 daemon 长驻、环境在启动那刻固定 → 后设的变量它看不到
+          #   （实测踩过两次：CF_KEY_PROPERTIES 写进 $GITHUB_ENV 也不生效）。
+          #   文件路径判定不受 daemon 影响，最可靠。
+          #   `android/key.properties` 已被 android/.gitignore 忽略，不会入库。
           {
             echo "storeFile=${KS}"
             echo "storePassword=${KEYSTORE_PASSWORD}"
             echo "keyPassword=${KEY_PASSWORD}"
             echo "keyAlias=${KEY_ALIAS}"
-          } > "${RUNNER_TEMP}/key.properties"
-          # 让 build.gradle.kts 找到它（见该文件的查找顺序，CF_KEY_PROPERTIES 优先）
+          } > android/key.properties
+          echo "已写 android/key.properties"
+          ls -la android/key.properties
+          # 同时设环境变量（本机/其它场景的兼容路径）
           echo "CF_KEY_PROPERTIES=${RUNNER_TEMP}/key.properties" >> "$GITHUB_ENV"
 
       - name: 解析 tag 并校验与 VERSION 一致
