@@ -44,6 +44,54 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # ---- 还原正式签名 keystore（来自 GitHub Secrets，**不在仓库里**）----
+      #
+      # ## 为什么必须这一步
+      # `android/app/build.gradle.kts` 在找不到 key.properties 时**回退 debug 签名**
+      # （只打印告警，不报错）。CI 上原本没有 keystore → 每次发布都产出
+      # debug 签名的包 —— v0.3.0 就是这么发出去的（实测附件含 "Android Debug"）。
+      #
+      # ## 密钥从哪来
+      # GitHub Secrets（加密存储，不随仓库分发）：
+      #   KEYSTORE_BASE64  —— keystore 文件的 base64
+      #   KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
+      # 写入到 `$RUNNER_TEMP`（**不是工作区**），避免被后续步骤误打包。
+      #
+      # ## 拿不到就**明确失败**，不回退
+      # 宁可让发布红掉，也不要再产出一个不可正式分发的包（D10）。
+      - name: 还原签名 keystore
+        id: ks
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -o pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 Secret KEYSTORE_BASE64 —— 不能用 debug 签名发布（AI-DISTRIBUTION D10）"
+            echo "::error::请在 Settings → Secrets and variables → Actions 配置签名四项"
+            exit 1
+          fi
+          KS="${RUNNER_TEMP}/cineflow-release.jks"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
+          # 自检：能用给定口令打开才继续（避免"到打包阶段才发现口令错"）
+          if ! keytool -list -keystore "$KS" -storetype PKCS12 \
+                 -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null 2>&1; then
+            echo "::error::keystore 无法用给定口令打开 —— 检查 KEYSTORE_PASSWORD / KEY_ALIAS"
+            exit 1
+          fi
+          echo "keystore 自检通过（alias=$KEY_ALIAS）"
+          {
+            echo "storeFile=${KS}"
+            echo "storePassword=${KEYSTORE_PASSWORD}"
+            echo "keyPassword=${KEY_PASSWORD}"
+            echo "keyAlias=${KEY_ALIAS}"
+          } > "${RUNNER_TEMP}/key.properties"
+          # 让 build.gradle.kts 找到它（见该文件的查找顺序，CF_KEY_PROPERTIES 优先）
+          echo "CF_KEY_PROPERTIES=${RUNNER_TEMP}/key.properties" >> "$GITHUB_ENV"
+
       - name: 解析 tag 并校验与 VERSION 一致
         id: v
         shell: bash
@@ -92,13 +140,55 @@ jobs:
           flutter analyze
           flutter test
 
-      - name: 构建 arm64 release APK（按架构拆分 + 混淆）
+      # 三个 ABI（arm64-v8a / armeabi-v7a / x86_64）。
+      #
+      # ## 三个 ABI 都**完整可用**（不是残包）
+      # `jniLibs/<abi>/` 下各有 **两个** 原生库：
+      #   libmpv.so          —— 播放内核（三 ABI 同源，来自 media_kit 的 android 库包）
+      #   libcineflow_go.so  —— Go 核心层（本地用 NDK 交叉编译三个 ABI）
+      # 缺任一者，该 ABI 的包要么播不了、要么连 Go 层都没有。
+      # 由 `tool/verify_abi.ps1` 与本地签名校验共同把关。
+      - name: 构建三 ABI release APK（按架构拆分 + 混淆 + 正式签名）
         run: |
           flutter build apk --release --split-per-abi \
             --obfuscate --split-debug-info=build/symbols
           mkdir -p dist
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
-             "dist/CineFlow-${{ steps.v.outputs.ver }}-arm64-v8a.apk"
+          VER="${{ steps.v.outputs.ver }}"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            src="build/app/outputs/flutter-apk/app-${abi}-release.apk"
+            [ -f "$src" ] || { echo "::error::缺少 $src"; exit 1; }
+            cp "$src" "dist/CineFlow-${VER}-${abi}.apk"
+          done
+          ls -la dist/
+
+      # ★ 关键守卫：**校验签名不是 debug**。
+      #
+      # 为什么必须有：`build.gradle.kts` 在缺 key.properties 时**静默回退 debug 签名**
+      # （只告警不报错）→ 构建"成功"但产出不可正式分发的包。
+      # v0.3.0 就是这样发出去的（实测附件含 "Android Debug"）。
+      # 这道检查让它**不可能**再发生（D10：不发布含阻塞缺陷的包）。
+      - name: 守卫 · 确认 APK 不是 debug 签名
+        shell: bash
+        run: |
+          set -o pipefail
+          FAIL=0
+          for f in dist/*.apk; do
+            echo "--- $f ---"
+            OUT="$(apksigner verify --verbose --print-certs "$f" 2>&1)"
+            DN="$(echo "$OUT" | grep -m1 'certificate DN:' || true)"
+            echo "  $DN"
+            if echo "$DN" | grep -q 'CN=Android Debug'; then
+              echo "::error::$f 是 **debug 签名** —— 不可正式分发（AI-DISTRIBUTION D10）"
+              FAIL=1
+            fi
+            if echo "$OUT" | grep -qE 'Verified using v2 scheme.*: true'; then
+              echo "  v2 签名 OK"
+            else
+              echo "::error::$f 缺 v2 签名"; FAIL=1
+            fi
+          done
+          [ "$FAIL" = "0" ] || exit 1
+          echo "全部 APK 签名校验通过"
 
       - name: 生成校验和
         shell: bash
