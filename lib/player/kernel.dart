@@ -18,6 +18,8 @@ library;
 
 import 'dart:async';
 
+import 'domain/player_constants.dart' show DecodeMode;
+
 /// 内核统一状态快照（对齐 media_kit `Player.state` 的使用面）
 class KernelState {
   final Duration position;
@@ -241,6 +243,27 @@ class KernelSelection {
 ///   2. 所有 stream 都是 broadcast（UI 可能多处订阅）；
 ///   3. 错误只经 [errorStream] 暴露，**不抛异常给 UI**
 ///      （播放失败不该让整个页面炸掉）。
+/// 内核能力项 —— UI 据此禁用做不到的功能（见 [PlayerKernel.supports]）。
+enum EngineFeature {
+  /// 画面滤镜：亮度 / 对比度 / 饱和度 / 色相。
+  videoFilters,
+
+  /// 音频延迟调节。
+  audioDelay,
+
+  /// 字幕延迟调节。
+  subtitleDelay,
+
+  /// 切换硬解/软解。
+  decodeMode,
+
+  /// 外挂字幕文件。
+  externalSubtitle,
+
+  /// 画面比例模式（裁剪/拉伸等；只有 `contain` 时也算支持）。
+  aspectMode,
+}
+
 abstract class PlayerKernel {
   /// 引擎标识（'native'）
   String get engine;
@@ -268,6 +291,49 @@ abstract class PlayerKernel {
   Future<void> setVolume(double volume);
   Future<void> setAudioTrack(String id);
   Future<void> setSubtitleTrack(String id);
+
+  // ---------------- 引擎能力协商（双内核的关键）----------------
+  //
+  // ## 为什么需要"能力声明"
+  //
+  // 本项目有**两个内核**：自持 mpv（`NativeKernel`）与 androidx.media /
+  // Media3（`Media3Kernel`）。两者能力**不等价**：
+  //
+  // | 能力 | mpv | Media3 |
+  // |---|---|---|
+  // | 视频滤镜（亮度/对比度/饱和度/色相） | ✅ 原生 property | ❌ 需自叠 GL 层 |
+  // | 音视频延迟 | ✅ `audio-delay`/`sub-delay` | ⚠️ 无等价属性，需时间戳偏移 |
+  // | 换解码方式（硬/软） | ✅ | ⚠️ 仅部分支持 |
+  //
+  // UI 必须**据此禁用**做不到的项 —— 否则用户点了没反应，
+  // 会以为"功能坏了"（这比"功能不存在"更糟，本项目已踩过：
+  // `default_rate` 有读无写，用户设了倍速却没生效）。
+  //
+  // 规格要求"UI 不直接依赖具体播放器实现"，能力协商正是这条约束的落点：
+  // UI 只问 `kernel.supports(EngineFeature.videoFilters)`，
+  // 不关心背后是 mpv 还是 Media3。
+  bool supports(EngineFeature feature);
+
+  /// 设置画面滤镜（亮度/对比度/饱和度/色相）。
+  ///
+  /// 取值范围按规格 §7.6：前三个 −100…+100、色相 −180…+180。
+  /// 不支持的内核应**静默忽略**（而非抛异常）——
+  /// UI 已据 [supports] 禁用入口，万一真被调用也不该中断播放。
+  Future<void> setVideoFilters({
+    double? brightness,
+    double? contrast,
+    double? saturation,
+    double? hue,
+  });
+
+  /// 音频延迟（正 = 音频延后于画面）。
+  Future<void> setAudioDelay(Duration delay);
+
+  /// 字幕延迟（正 = 字幕延后于画面）。
+  Future<void> setSubtitleDelay(Duration delay);
+
+  /// 设置解码方式（硬解/软解）。
+  Future<void> setDecodeMode(DecodeMode mode);
 
   KernelState get state;
   KernelTracks get tracks;

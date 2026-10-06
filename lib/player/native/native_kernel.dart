@@ -22,6 +22,7 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
+import '../domain/player_constants.dart' show DecodeMode;
 import '../kernel.dart';
 
 class NativeKernel implements PlayerKernel {
@@ -302,6 +303,92 @@ class NativeKernel implements PlayerKernel {
   @override
   Future<void> setSubtitleTrack(String id) =>
       _method.invokeMethod('setSubtitleTrack', id);
+
+  // ---------------- 引擎能力：mpv 全都支持 ----------------
+  //
+  // 实现方式：**直接走 mpv 的 property 接口**，不新增 Kotlin 代码 ——
+  // `PlayerChannel.kt` 已有通用的 `setProperty`（见其 when 分支），
+  // 传 `name` + `value` 即可。这样双内核改造对 Android 侧是零风险。
+
+  @override
+  bool supports(EngineFeature feature) => switch (feature) {
+        // mpv 原生提供这四组：画面滤镜、音频延迟、字幕延迟、硬/软解切换
+        EngineFeature.videoFilters => true,
+        EngineFeature.audioDelay => true,
+        EngineFeature.subtitleDelay => true,
+        EngineFeature.decodeMode => true,
+        EngineFeature.externalSubtitle => true,
+        EngineFeature.aspectMode => true,
+      };
+
+  /// 画面滤镜。
+  ///
+  /// ⚠️ 这是 **mpv 的 `brightness`/`contrast`/`saturation`/`hue` property**，
+  ///    取值范围是 **−100…100**（与规格 §7.6 一致），不是 0–1。
+  ///    mpv 文档里这几个默认值都是 0，作用在**视频输出阶段**（不改像素源）。
+  ///
+  /// 只下发非 null 的项 —— 避免"改亮度把用户设的对比度重置了"。
+  @override
+  Future<void> setVideoFilters({
+    double? brightness,
+    double? contrast,
+    double? saturation,
+    double? hue,
+  }) async {
+    // mpv 的 property 名与我们的参数名一一对应
+    if (brightness != null) {
+      await _setProperty('brightness', '${brightness.clamp(-100, 100)}');
+    }
+    if (contrast != null) {
+      await _setProperty('contrast', '${contrast.clamp(-100, 100)}');
+    }
+    if (saturation != null) {
+      await _setProperty('saturation', '${saturation.clamp(-100, 100)}');
+    }
+    if (hue != null) {
+      await _setProperty('hue', '${hue.clamp(-180, 180)}');
+    }
+  }
+
+  /// 音频延迟。mpv 的 `audio-delay` 单位是**秒**（浮点），正 = 音频延后。
+  @override
+  Future<void> setAudioDelay(Duration delay) =>
+      _setProperty('audio-delay', _seconds(delay));
+
+  /// 字幕延迟。mpv 的 `sub-delay` 单位是**秒**（浮点），正 = 字幕延后。
+  @override
+  Future<void> setSubtitleDelay(Duration delay) =>
+      _setProperty('sub-delay', _seconds(delay));
+
+  /// 解码方式。
+  ///
+  /// mpv 用 `hwdec` 控制硬解：
+  ///   · 硬解 → `auto-safe`（自动挑安全的硬解后端）
+  ///   · 软解 → `no`
+  ///
+  /// ⚠️ 用 `auto-safe` 而不是 `auto`：`auto` 会尝试所有后端（含不稳定的），
+  ///    `auto-safe` 只挑已知安全的 —— 这是 mpv 官方推荐给普通播放器的值。
+  ///
+  /// ⚠️ 切换 `hwdec` **需要重新加载视频轨**才生效（mpv 的行为）：
+  ///    这里用 `video-reload` 命令强制重载，否则用户切了没反应。
+  @override
+  Future<void> setDecodeMode(DecodeMode mode) async {
+    final v = mode == DecodeMode.hardware ? 'auto-safe' : 'no';
+    await _setProperty('hwdec', v);
+    // 重载视频轨让 hwdec 生效（不重新打开文件，播放位置保持）
+    await _method.invokeMethod('command', ['video-reload']);
+  }
+
+  /// 秒数的字符串形式（mpv property 是字符串接口）。
+  ///
+  /// 保留 3 位小数（毫秒精度）：0.1s 步进需要精确到 0.1，
+  /// 而用户可能把延迟调到 0.1 的整数倍，3 位足够且不会出现浮点噪声。
+  String _seconds(Duration d) =>
+      (d.inMicroseconds / Duration.microsecondsPerSecond)
+          .toStringAsFixed(3);
+
+  Future<void> _setProperty(String name, String value) =>
+      _method.invokeMethod('setProperty', {'name': name, 'value': value});
 
   @override
   KernelState get state => _state;
