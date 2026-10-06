@@ -529,3 +529,51 @@ class CfLogo extends StatelessWidget {
     );
   }
 }
+
+
+/// M3 窗口尺寸类断点（dp 判定，不判设备型号）。
+///
+/// 与 Material 3 官方 WindowSizeClass 对齐：
+///   Compact < 600 ≤ Medium < 840 ≤ Expanded
+/// 用法：
+///   final wc = CfBreakpoints.of(MediaQuery.sizeOf(context).width);
+///   if (wc >= CfBreakpoints.medium) ...
+abstract final class CfBreakpoints {
+  static const double compactMax = 600;
+  static const double mediumMax = 840;
+
+  static const int compact = 0;
+  static const int medium = 1;
+  static const int expanded = 2;
+
+  static int of(double widthDp) {
+    if (widthDp >= mediumMax) return expanded;
+    if (widthDp >= compactMax) return medium;
+    return compact;
+  }
+
+  /// 海报网格列数：按可用宽度 / 目标列宽推算，夹在 [min, max]。
+  /// 与 media_cards.dart 的实现统一（该处先落地，此为通用化）。
+  static int columnsFor(double usableWidth,
+      {double target = 112, int min = 3, int max = 6}) {
+    if (usableWidth <= 0) return min;
+    return (usableWidth / target).floor().clamp(min, max);
+  }
+
+  /// 是否 Expanded（侧栏/双栏布局启用点）
+  static bool isExpanded(double widthDp) => of(widthDp) == expanded;
+
+  /// 是否 Compact（<600dp）
+  static bool isCompact(double widthDp) => of(widthDp) == compact;
+}
+
+/// 字号缩放钳制：标题类元素在系统大字号下按 [maxFactor] 封顶，
+/// 正文不钳制（无障碍原则：正文始终跟随系统缩放）。
+///
+/// 用法：
+///   Text('标题', textScaler: clampTextScale(MediaQuery.textScalerOf(context)))
+TextScaler clampTextScale(TextScaler scaler, {double maxFactor = 1.3}) {
+  final f = scaler.scale(10) / 10; // 归一化基准倍率
+  if (f <= maxFactor) return scaler;
+  return TextScaler.linear(maxFactor);
+}
