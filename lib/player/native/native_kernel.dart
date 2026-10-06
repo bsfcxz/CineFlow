@@ -24,6 +24,7 @@ import 'package:flutter/services.dart';
 
 import '../domain/player_constants.dart' show DecodeMode;
 import '../kernel.dart';
+import '../kernel_event_parser.dart';
 
 class NativeKernel implements PlayerKernel {
   NativeKernel() {
@@ -197,39 +198,13 @@ class NativeKernel implements PlayerKernel {
   /// `aid=3 eac3 6ch`，两者 title 都为空）界面上两条完全一样的"音轨 开"，
   /// 用户无法区分。这里补齐 `codec` / `demux-channels` / `default` /
   /// `external` / `forced`，交给 `KernelTrack.displayName` 拼成可读名称。
-  KernelTracks _parseTracks(Object? data) {
-    try {
-      final decoded = data is String ? jsonDecode(data) : data;
-      final list = decoded as List? ?? const [];
-      final audio = <KernelTrack>[];
-      final subs = <KernelTrack>[];
-      for (final t in list.whereType<Map<String, dynamic>>()) {
-        final track = KernelTrack(
-          id: '${t['id']}',
-          title: t['title'] as String?,
-          language: t['lang'] as String?,
-          codec: t['codec'] as String?,
-          // mpv 的字段名就是 `demux-channels`（不是 `channels`）
-          channels: (t['demux-channels'] as num?)?.toInt(),
-          // ★ `ff-index` 才是与 Emby `MediaStream.Index` 同源的编号。
-          //   `id`（aid/sid）是每种类型独立从 1 开始的，不能拿来对齐
-          //   （详见 KernelTrack.ffIndex 注释）。
-          ffIndex: (t['ff-index'] as num?)?.toInt(),
-          isDefault: t['default'] == true,
-          isExternal: t['external'] == true,
-          isForced: t['forced'] == true,
-        );
-        if (t['type'] == 'audio') {
-          audio.add(track);
-        } else if (t['type'] == 'sub') {
-          subs.add(track);
-        }
-      }
-      return KernelTracks(audio: audio, subtitle: subs);
-    } catch (_) {
-      return const KernelTracks();
-    }
-  }
+  ///
+  /// ★ 2026-10：实现**已移到共用解析器** [KernelEventParser.parseTracks]，
+  ///   与 Media3 内核共用一份。原因：两边各写一份时，任何一处改字段名
+  ///   都会造成"其中一边静默解析出空轨道" —— 现象是"看不到音轨"，
+  ///   不报错、不崩溃，极难发现。保留本方法作为薄转发（不改调用点）。
+  KernelTracks _parseTracks(Object? data) =>
+      KernelEventParser.parseTracks(data);
 
   /// 建纹理（幂等）。必须在 open 之前完成，否则 mpv 没有渲染目标。
   Future<void> ensureTexture({int width = 1920, int height = 1080}) async {
