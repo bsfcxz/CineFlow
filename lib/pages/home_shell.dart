@@ -39,11 +39,100 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     ref.listen(homeTabProvider, (_, i) {
       if (mounted && i != _index) setState(() => _index = i);
     });
+
+    // ---- 响应式导航形态（审计 U9）----
+    //
+    // 真机实测：手机**横屏**时逻辑宽 = 2400px ÷ (440/160) = **872dp → Expanded**。
+    // 所以"侧栏导航"不是纸上谈兵 —— 用户把手机横过来就会看到。
+    //
+    // 为什么 Expanded 切侧栏：底栏在 872dp 宽下把三个图标摊得极开，
+    // 视觉上像"三个孤岛"；且横屏垂直空间本就紧张，底栏还要占掉 58dp。
+    // 侧栏（72dp 图标栏）是原型既定设计，也是 M3 对 Expanded 的推荐。
+    //
+    // ⚠️ Medium **仍用底部 Tab** —— 审计明确要求"不切侧栏，
+    //    避免本阶段引入导航重构"。
+    final wc = CfBreakpoints.of(MediaQuery.sizeOf(context).width);
+    final useRail = CfLayout.useSideRail(wc);
+
     return Scaffold(
-      body: IndexedStack(index: _index, children: _pages),
-      bottomNavigationBar: _TabBar(
-        index: _index,
-        onTap: _switchTab,
+      body: useRail
+          ? Row(children: [
+              _SideRail(index: _index, onTap: _switchTab),
+              Expanded(
+                child: IndexedStack(index: _index, children: _pages),
+              ),
+            ])
+          : IndexedStack(index: _index, children: _pages),
+      bottomNavigationBar:
+          useRail ? null : _TabBar(index: _index, onTap: _switchTab),
+    );
+  }
+}
+
+/// Expanded（≥840dp）下的**侧栏导航**（原型既定 72dp 图标栏）。
+///
+/// 与 [_TabBar] 共用同一份 [ShellKeys.tab] 键与命中区规范 ——
+/// 两种导航形态对**测试与无障碍语义完全一致**，切换形态不会让测试失效。
+///
+/// 选中态用「左侧 3dp 强调色竖条 + 图标变色」双重表达：
+/// 深色底上只靠变色不够醒目（与 §2.4 对比度问题同源）。
+class _SideRail extends StatelessWidget {
+  const _SideRail({required this.index, required this.onTap});
+  final int index;
+  final ValueChanged<int> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: CfLayout.sideRailWidth,
+      decoration: BoxDecoration(
+        color: const Color(0xF0111A33),
+        border: Border(right: BorderSide(color: Cf.border)),
+      ),
+      child: SafeArea(
+        right: false,
+        child: Column(children: [
+          const SizedBox(height: Cf.gap3),
+          for (var i = 0; i < _tabItems.length; i++)
+            Semantics(
+              button: true,
+              selected: i == index,
+              label: _tabItems[i].label,
+              child: CfTapTarget(
+                // ⚠️ 与底栏用**同一份键**（`keys.shell.tab(i)`）——
+                //    两种导航形态对测试与无障碍语义必须完全一致，
+                //    否则"横屏时测试找不到 Tab"这种问题会在切换形态后冒出来。
+                key: keys.shell.tab(i),
+                // 语义由外层 Semantics 提供（button+selected+label），
+                // 这里**不再**传 semanticLabel —— 否则会套出两层 Semantics 节点，
+                // 读屏要念两遍，且 selected 状态可能与外层不同步。
+                size: 56,
+                onTap: () => onTap(i),
+                child: Row(children: [
+                  // 左侧竖条：选中态的主要信号（不靠颜色差异单独承担）
+                  Container(
+                    width: 3,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      color: i == index ? Cf.accent : Colors.transparent,
+                      borderRadius: BorderRadius.circular(Cf.radiusXs),
+                    ),
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: Icon(
+                        i == index
+                            ? _tabItems[i].activeIcon
+                            : _tabItems[i].icon,
+                        size: Cf.iconLg,
+                        color: i == index ? Cf.accent : Cf.text3,
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+        ]),
       ),
     );
   }

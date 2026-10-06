@@ -749,6 +749,9 @@ class CfTapTarget extends StatelessWidget {
       child: Center(child: child),
     );
     if (onTap != null) {
+      // ⚠️ `HitTestBehavior.opaque` 是**必须的**：
+      //    子元素若只有 6×6（如弹幕开关的小圆点），默认的 `deferToChild`
+      //    会让命中判定只看子元素 → **撑出来的 48dp 命中区形同虚设**。
       t = GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: onTap,
@@ -761,4 +764,53 @@ class CfTapTarget extends StatelessWidget {
     return t;
   }
 }
+
+/// 分栏/自适应布局令牌（审计 U9：Medium / Expanded）。
+///
+/// ## 为什么需要它
+///
+/// U1–U8 已把 **Compact（<600dp）** 的缺陷清完。但真机实测：
+/// 手机**横屏**时逻辑宽 = 2400px ÷ (440/160) = **872dp → Expanded**。
+/// 也就是说"大屏"不是纸上谈兵 —— 用户把手机横过来就会进到这个分支。
+///
+/// 而收敛前各处页边距都是写死的 `16`：横屏 872dp 宽下左右只留 16dp，
+/// 内容**横贯整个屏幕**，行长过长极难阅读（Material 建议正文行长 ≤ 60 字符）。
+abstract final class CfLayout {
+  /// 页面左右边距：随窗口类加大。
+  ///
+  /// Compact 16（原值不变）/ Medium 24 / Expanded 32。
+  static double pageMarginFor(int windowClass) => switch (windowClass) {
+        CfBreakpoints.expanded => 32.0,
+        CfBreakpoints.medium => 24.0,
+        _ => 16.0, // Compact —— 保持原值，不动竖屏观感
+      };
+
+  /// 内容最大宽度（居中）。
+  ///
+  /// ## 为什么要有上限
+  /// Expanded 下若不限宽，一段简介会横贯 872dp ——
+  /// 眼睛从行尾回到行首容易串行，阅读体验比窄屏更差。
+  /// Material 的正文建议单行 ≤ 约 60 字符，本项目的 13sp 正文
+  /// 对应约 **760dp**；取 820 给标题留些余量。
+  static const double maxContentWidth = 820;
+
+  /// Expanded 下是否改用**侧栏导航**（原型的 72dp 图标栏）。
+  ///
+  /// Medium 仍用底部 Tab —— 审计明确要求"不切侧栏，避免本阶段引入导航重构"。
+  static bool useSideRail(int windowClass) => windowClass == CfBreakpoints.expanded;
+
+  /// 侧栏宽度（原型既定 72dp）。
+  static const double sideRailWidth = 72;
+
+  /// 详情页是否双栏（海报左 + 信息右）。
+  ///
+  /// 仅在 Expanded 启用：Medium（600–840）放双栏会让两边都太窄。
+  static bool detailTwoColumn(int windowClass) =>
+      windowClass == CfBreakpoints.expanded;
+
+  /// 依据可用宽直接给出边距（调用方少写一次 `CfBreakpoints.of`）。
+  static double pageMarginOf(BuildContext context) =>
+      pageMarginFor(CfBreakpoints.of(MediaQuery.sizeOf(context).width));
+}
+
 

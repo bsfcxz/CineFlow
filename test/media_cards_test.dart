@@ -135,6 +135,47 @@ void main() {
     });
   });
 
+  group('U9 · ContinueCard.heightFor —— 宽度涨了高度必须跟着涨', () {
+    // 这是 U9 widget 测试抓到的**真 bug**：U4 把宽度改成断点相关后，
+    // home_page 的容器高度仍是写死的 165，而缩略图是 16:9（高度随宽度涨）。
+    // 实测：Medium 溢出 11.4dp、Expanded 溢出 28.3dp ——
+    // 横屏直接报 `RenderFlex overflowed by 27 pixels on the bottom`。
+    test('★ 高度必须容得下 16:9 缩略图 + 两行文字（1.3x 字缩下）', () {
+      const lineHeight = 1.171875; // Roboto 默认行高系数
+      for (final wc in [
+        CfBreakpoints.compact,
+        CfBreakpoints.medium,
+        CfBreakpoints.expanded,
+      ]) {
+        final w = ContinueCard.widthForClass(wc);
+        final h = ContinueCard.heightForClass(wc);
+        // 1.3x = CfText 的钳制上限（标题/副标题都已 clamp）
+        final need = w * 9 / 16 + 9 + 13 * lineHeight * 1.3 + 3 + 10 * lineHeight * 1.3;
+        expect(
+          h,
+          greaterThanOrEqualTo(need),
+          reason: '窗口类 $wc：卡宽 $w 需要至少 ${need.toStringAsFixed(1)}dp，'
+              '但 heightFor 只给了 $h —— **会溢出**（横屏时文字被裁）。',
+        );
+      }
+    });
+
+    test('高度随断点单调不减，且 Compact 保持原值 165', () {
+      final c = ContinueCard.heightForClass(CfBreakpoints.compact);
+      final m = ContinueCard.heightForClass(CfBreakpoints.medium);
+      final e = ContinueCard.heightForClass(CfBreakpoints.expanded);
+      expect(c, 165.0, reason: 'Compact 应保持原值 —— 竖屏观感不能变');
+      expect(m, greaterThanOrEqualTo(c));
+      expect(e, greaterThanOrEqualTo(m));
+      expect(e, greaterThan(c), reason: 'Expanded 卡片更宽，高度必须更大');
+    });
+
+    test('高度有上限（防公式失控把容器撑到整屏）', () {
+      // 即使窗口类取值异常，也不该返回荒谬的大值
+      expect(ContinueCard.heightForClass(999), lessThanOrEqualTo(400.0));
+    });
+  });
+
   group('U4 · CfBreakpoints 本身', () {
     test('三档边界与 M3 WindowSizeClass 一致', () {
       expect(CfBreakpoints.of(359), CfBreakpoints.compact);
