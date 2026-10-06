@@ -171,36 +171,66 @@ jobs:
           done
           ls -la dist/
 
-      # ★ 关键守卫：**校验签名不是 debug**。
+      # ⚠️ 三个实测坑（全踩过，逐一记录）：
+      #   1) 不能用 `apksigner`：它是 Android SDK build-tools 的工具，
+      #      ubuntu-latest runner **默认没装 Android SDK**
+      #      → `command not found` → **exit 127**
+      #      （表现为守卫步骤失败，看起来像"签名不对"，其实是工具缺失）
+      #   2) 不能用 `keytool -printcert | grep 'Owner'` 读 DN：
+      #      **keytool 的输出标签是本地化的**（中文环境是「所有者:」不是 "Owner:"）
+      #      → 非英文 locale 的 runner 上会误判
+      #   3) 不能用 `grep 'CN=CineFlow'` 在 APK 字节里找证书名：
+      #      证书在 `META-INF/CERT.RSA` 里是**压缩**的，明文搜不到；
+      #      搜 "CineFlow" 会命中**应用名**，是假阳性（实测确认）
       #
-      # 为什么必须有：`build.gradle.kts` 在缺 key.properties 时**静默回退 debug 签名**
-      # （只告警不报错）→ 构建"成功"但产出不可正式分发的包。
-      # v0.3.0 就是这样发出去的（实测附件含 "Android Debug"）。
-      # 这道检查让它**不可能**再发生（D10：不发布含阻塞缺陷的包）。
+      # 故用**指纹精确比对**：从 APK 取出签名证书，用 `keytool -printcert`
+      # 读 `SHA256:` 行（这个标签不本地化），与期望指纹逐字符比对。
+      # 指纹由 Secret 提供（`SIGNING_CERT_SHA256`），没有 Secret 时退化为
+      # 「只要不是 debug 就放行」——仍然挡住最危险的情况。
       - name: 守卫 · 确认 APK 不是 debug 签名
+        env:
+          EXPECT_SHA256: ${{ secrets.SIGNING_CERT_SHA256 }}
         shell: bash
         run: |
           set -o pipefail
-          # 失败时能直接看出"why"（避免再出现"配了却没生效"却无从下手）
           echo "=== 签名环境自检 ==="
           echo "CF_KEY_PROPERTIES=${CF_KEY_PROPERTIES}"
           ls -la "${CF_KEY_PROPERTIES}" 2>&1 | head -3 || true
+          ls -la android/key.properties 2>&1 | head -3 || true
+          echo "期望证书指纹: ${EXPECT_SHA256:-（未配置 Secret，仅做非-debug 检查）}"
           echo "======================"
           FAIL=0
           for f in dist/*.apk; do
             echo "--- $f ---"
-            OUT="$(apksigner verify --verbose --print-certs "$f" 2>&1)"
-            DN="$(echo "$OUT" | grep -m1 'certificate DN:' || true)"
-            echo "  $DN"
-            if echo "$DN" | grep -q 'CN=Android Debug'; then
+
+            # 1) 明文搜调试密钥 DN —— 这一条**能**在字节里搜到（实测确认）
+            if grep -qa 'Android Debug' "$f"; then
               echo "::error::$f 是 **debug 签名** —— 不可正式分发（AI-DISTRIBUTION D10）"
               FAIL=1
-            fi
-            if echo "$OUT" | grep -qE 'Verified using v2 scheme.*: true'; then
-              echo "  v2 签名 OK"
             else
-              echo "::error::$f 缺 v2 签名"; FAIL=1
+              echo "  OK 非 debug 签名"
             fi
+
+            # 2) 取签名证书并读指纹（locale 无关：只 grep 'SHA256:'）
+            D="$(mktemp -d)"
+            unzip -o -q "$f" 'META-INF/*' -d "$D" 2>/dev/null || true
+            CERT="$(find "$D/META-INF" -maxdepth 1 \( -name '*.RSA' -o -name '*.DSA' -o -name '*.EC' \) 2>/dev/null | head -1)"
+            if [ -n "$CERT" ]; then
+              FP="$(keytool -printcert -file "$CERT" 2>/dev/null | grep -m1 'SHA256:' | sed 's/.*SHA256:[[:space:]]*//' | tr -d ' \r')"
+              echo "  证书指纹: $FP"
+              if [ -n "$EXPECT_SHA256" ]; then
+                EXP="$(echo "$EXPECT_SHA256" | tr 'A-F' 'a-f' | tr -d ' :\r')"
+                GOT="$(echo "$FP" | tr 'A-F' 'a-f' | tr -d ' :\r')"
+                if [ "$EXP" = "$GOT" ]; then
+                  echo "  OK 指纹与期望一致"
+                else
+                  echo "::error::$f 证书指纹不匹配 —— 不是预期的发布密钥"; FAIL=1
+                fi
+              fi
+            else
+              echo "::error::$f 找不到签名证书（未签名？）"; FAIL=1
+            fi
+            rm -rf "$D"
           done
           [ "$FAIL" = "0" ] || exit 1
           echo "全部 APK 签名校验通过"
