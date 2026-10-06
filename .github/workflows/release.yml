@@ -409,6 +409,19 @@ jobs:
 
           # ★ 用 guard 步骤给的结果，**不要**再用 `gh release view` 判断存在性：
           #   它对草稿返回 404（实测），是本工作流此前"越跑草稿越多"的根因。
+          #
+          # ★★ 创建/更新后**必须从响应里直接拿 id**，不能回头再查列表 ★★
+          #   实测日志铁证：
+          #       https://.../releases/tag/untagged-...     <- 草稿建成功
+          #       上传目标 release id=                        <- 查询返回**空**
+          #       release not found
+          #   原因：`gh release create` 之后仅 0.46s 就去 GET /releases 列表，
+          #   而 **Releases 列表 API 有最终一致性延迟** —— 刚建的 Release
+          #   还没出现在列表里 → 过滤结果为空 → `gh release upload ""` 失败。
+          #
+          #   正解：`gh release create`/`gh api ... releases` 的**响应体里就有 id**，
+          #   用 `--jq '.id'` 直接取，完全不依赖列表的最终一致性。
+          RID=""
           if [ -n "$KEEP_ID" ]; then
             echo "已存在草稿 id=$KEEP_ID —— 只改正文，不重建"
             if [ -f "$NOTES" ]; then
@@ -418,28 +431,43 @@ jobs:
               gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/$KEEP_ID" \
                 -f name="CineFlow v${VER}" >/dev/null
             fi
+            RID="$KEEP_ID"
           else
             if [ -f "$NOTES" ]; then
               echo "使用 $NOTES 作为 Release 正文"
-              gh release create "$TAG" --draft --title "CineFlow v${VER}" --notes-file "$NOTES"
+              RID="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+                     -f tag_name="$TAG" -f name="CineFlow v${VER}" \
+                     -F draft=true -F body="$(cat "$NOTES")" --jq '.id')"
             else
-              echo "::warning::缺少 $NOTES，退回自动生成正文（随后 release-notes.yml 会自动同步）"
-              gh release create "$TAG" --draft --title "CineFlow v${VER}" --generate-notes
+              echo "::warning::缺少 $NOTES，退回自动标题（随后 release-notes.yml 会自动同步）"
+              RID="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
+                     -f tag_name="$TAG" -f name="CineFlow v${VER}" \
+                     -F draft=true -F generate_release_notes=true --jq '.id')"
             fi
           fi
 
-          # 只上传 APK 与校验和；符号表留在构建产物里，不进 Release。
-          #
-          # ⚠️ 这里**故意用 release id 而不是 tag**：`gh release upload <tag>` 在
-          #    同名草稿不唯一时会失败；用 id 则永远指向确定的目标。
-          RID="$KEEP_ID"
+          # 兜底：万一响应里没拿到 id，再查一次列表（并允许短暂重试，
+          # 应对上面说的最终一致性延迟）。
           if [ -z "$RID" ]; then
-            RID=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-                  --jq "[.[] | select(.tag_name==\"$TAG\")][0].id")
+            echo "响应里没拿到 id，改用列表查询（最多重试 5 次）"
+            for i in 1 2 3 4 5; do
+              RID="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                     --jq "[.[] | select(.tag_name==\"$TAG\")][0].id // empty" 2>/dev/null || true)"
+              [ -n "$RID" ] && break
+              echo "  第 $i 次为空，等 3s 重试…"
+              sleep 3
+            done
+          fi
+          if [ -z "$RID" ]; then
+            echo "::error::拿不到 release id —— 无法上传"; exit 1
           fi
           echo "上传目标 release id=$RID"
+
+          # 只上传 APK 与校验和；符号表留在构建产物里，不进 Release。
+          # 用 id 而非 tag：同名草稿不唯一时 tag 无法解析，id 永远确定。
           # --clobber 仅用于**草稿重跑**覆盖自己的同名附件，绝不对已发布 Release 使用。
           gh release upload "$RID" dist/*.apk dist/checksums.txt --clobber
+          echo "已上传 $(ls dist/*.apk | wc -l) 个 APK + checksums.txt"
 
       - name: 校验产物齐全后转正
         env:
@@ -448,15 +476,23 @@ jobs:
         shell: bash
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          # 同上去草稿问题：用 id 查附件数
+          # 同上去草稿问题：用 id 查附件数（并容忍列表 API 的延迟）
           if [ -z "$KEEP_ID" ]; then
-            KEEP_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-                      --jq "[.[] | select(.tag_name==\"$TAG\")][0].id")
+            for i in 1 2 3 4 5; do
+              KEEP_ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                         --jq "[.[] | select(.tag_name==\"$TAG\")][0].id // empty" 2>/dev/null || true)"
+              [ -n "$KEEP_ID" ] && break
+              sleep 3
+            done
+          fi
+          if [ -z "$KEEP_ID" ]; then
+            echo "::error::拿不到 release id"; exit 1
           fi
           N=$(gh api "repos/${GITHUB_REPOSITORY}/releases/$KEEP_ID" --jq '.assets | length')
           echo "Release 附件数：$N"
-          if [ "$N" -lt 2 ]; then
-            echo "::error::产物不全（期望至少 APK + checksums），Release 保持草稿"
+          if [ "$N" -lt 4 ]; then
+            echo "::error::产物不全（期望 3 个 APK + checksums = 4），Release 保持草稿"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/$KEEP_ID" --jq '.assets[].name' || true
             exit 1
           fi
           # 转正同样用 id（草稿的 tag 解析不可靠，见上）
