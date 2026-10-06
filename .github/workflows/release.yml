@@ -171,6 +171,11 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          # 失败时能直接看出"why"（避免再出现"配了却没生效"却无从下手）
+          echo "=== 签名环境自检 ==="
+          echo "CF_KEY_PROPERTIES=${CF_KEY_PROPERTIES}"
+          ls -la "${CF_KEY_PROPERTIES}" 2>&1 | head -3 || true
+          echo "======================"
           FAIL=0
           for f in dist/*.apk; do
             echo "--- $f ---"
