@@ -463,10 +463,36 @@ jobs:
           fi
           echo "上传目标 release id=$RID"
 
-          # 只上传 APK 与校验和；符号表留在构建产物里，不进 Release。
-          # 用 id 而非 tag：同名草稿不唯一时 tag 无法解析，id 永远确定。
-          # --clobber 仅用于**草稿重跑**覆盖自己的同名附件，绝不对已发布 Release 使用。
-          gh release upload "$RID" dist/*.apk dist/checksums.txt --clobber
+          # ★★ 必须用 REST API 直接传，**不能用 `gh release upload`** ★★
+          #
+          # 实测铁证（CI 日志）：id 明明拿到了（404271856），仍然报
+          #     release not found
+          #
+          # 原因：`gh release upload <tag>` 的第一个参数是 **tag**，不是 release id；
+          # 它内部走 `GET /releases/tags/<tag>` 解析目标 ——
+          # 而 **该端点对草稿返回 404**（本工作流最早就是栽在这上面）。
+          # 于是：传 tag → 404；传 id → 被当成 tag → 也 "not found"。
+          # 结论：**gh release 子命令根本无法操作草稿**，必须走 REST API。
+          #
+          # REST 的 assets 上传端点用 **release id**，不受 tag 解析限制。
+          # 端点：POST https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets?name=<file>
+          # --clobber 的等价物：先删同名附件（**仅在草稿上**，符合 AI-DISTRIBUTION §4 例外）。
+          UP="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RID}/assets"
+          for f in dist/*.apk dist/checksums.txt; do
+            NAME="$(basename "$f")"
+            # 草稿重跑时可能已有同名附件 —— 先删（草稿对用户不可见，§4 例外条款）
+            OLD="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RID}/assets?per_page=100" \
+                   --jq "[.[] | select(.name==\"$NAME\")][0].id // empty" 2>/dev/null || true)"
+            if [ -n "$OLD" ]; then
+              echo "  删除已存在的同名附件 $NAME (id=$OLD)"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/$OLD" >/dev/null
+            fi
+            echo "  上传 $NAME ($(stat -c%s "$f") B) …"
+            gh api -X POST "$UP?name=$NAME" \
+              -H "Content-Type: application/octet-stream" \
+              --input "$f" --jq '.name + " (" + (.size|tostring) + " B)"' || {
+                echo "::error::上传 $NAME 失败"; exit 1; }
+          done
           echo "已上传 $(ls dist/*.apk | wc -l) 个 APK + checksums.txt"
 
       - name: 校验产物齐全后转正
