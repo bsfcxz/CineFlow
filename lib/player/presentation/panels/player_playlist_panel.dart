@@ -6,6 +6,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../../application/controllers/playlist_controller.dart';
+import '../../../core/theme.dart';
 import '../../../keys.dart';
 import '../player_ui_tokens.dart';
 import '../widgets/panel_widgets.dart';
@@ -154,29 +155,71 @@ class _PlaylistTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text(
-                      entry.title,
+                    // ---- 第一行：集数徽章 + 标题 ----
+                    //
+                    // 用户反馈："播放剧集和综艺时播放列表并没有显示当前
+                    // 集数"。修法对齐旧页选集的展示口径（第 N 集 + 剧名）。
+                    //
+                    // 集数用**独立徽章**而非拼进标题：扫列表时用户最先要看
+                    // 的是"播到第几集"，单独着色加粗比埋在长标题里易读。
+                    Row(
+                      children: [
+                        if (entry.episodeLabel case final e?
+                            when e.isNotEmpty) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: active
+                                  ? PlayerUi.tabActiveBg
+                                  : PlayerUi.divider,
+                              borderRadius: BorderRadius.circular(Cf.radiusXs),
+                            ),
+                            child: Text(
+                              e,
+                              style: TextStyle(
+                                color: active
+                                    ? PlayerUi.tabActiveText
+                                    : PlayerUi.valueColor,
+                                fontSize: PlayerUi.hintSize,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        Expanded(
+                          child: Text(
+                            entry.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: active
+                                  ? PlayerUi.tabActiveText
+                                  : PlayerUi.labelColor,
+                              fontSize: PlayerUi.valueSize,
+                              fontWeight:
+                                  active ? FontWeight.w600 : FontWeight.w400,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    // ---- 第二行：进度优先，回退副标题 ----
+                    //
+                    // 进度优先的理由：用户更关心"这集看过没、看到哪"，
+                    // 而副标题（剧名/容量）扫列表时信息量更低。
+                    if (_secondLine(entry) case final sl?) Text(
+                      sl,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: active
+                        color: entry.progressLabel != null && active
                             ? PlayerUi.tabActiveText
-                            : PlayerUi.labelColor,
-                        fontSize: PlayerUi.valueSize,
-                        fontWeight:
-                            active ? FontWeight.w600 : FontWeight.w400,
+                            : PlayerUi.hintColor,
+                        fontSize: PlayerUi.hintSize,
                       ),
                     ),
-                    if (entry.subtitle case final s? when s.isNotEmpty)
-                      Text(
-                        s,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: PlayerUi.hintColor,
-                          fontSize: PlayerUi.hintSize,
-                        ),
-                      ),
                   ],
                 ),
               ),
@@ -185,5 +228,12 @@ class _PlaylistTile extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// 第二行显示什么：进度优先，其次副标题，都没有则不显示。
+  static String? _secondLine(PlaylistEntry entry) {
+    if (entry.progressLabel case final p? when p.isNotEmpty) return p;
+    if (entry.subtitle case final s? when s.isNotEmpty) return s;
+    return null;
   }
 }

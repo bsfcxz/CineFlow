@@ -37,6 +37,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../../../core/theme.dart';
 import '../../domain/models/gesture_state.dart';
 import '../player_ui_tokens.dart';
 
@@ -64,27 +65,37 @@ class PlayerFeedbackLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ⚠️ `IgnorePointer` 必须在**最外层**（见文件头的事故说明）。
+    // 外层 `IgnorePointer` 是**唯一入口**：里面的分支只管"显示什么"，
+    // 结构上不可能绕过命中过滤。新增分支时也不会漏。
     //
-    // 曾经的写法是「长按分支直接 return，其他分支才包 IgnorePointer」——
-    // 结果长按分支返回的 `Center` 撑满全屏、吃掉所有指针事件，
-    // 而长按又因收不到 pointerUp 无法结束 → **UI 永久卡死**。
+    // ## 关于"是否必要"的更正（我先前写过两个错误理由，勿再沿用）
     //
-    // 现在改成：外层的 IgnorePointer 是**唯一入口**，
-    // 里面的分支只管"显示什么"，**不可能绕过**命中过滤。
-    // 新增分支时也不会再犯同样的错。
+    // 理由 A（已推翻）：「长按分支不包 IgnorePointer → `Center` 撑满全屏
+    //   吃掉指针 → UI 永久卡死」。**反证注入实验表明行为用例全绿** ——
+    //   因为 `_Pill`/`_LevelIndicator` 各自都自带 `IgnorePointer`，
+    //   且 `Center` 本身 `hitTestSelf=false`。故这不是"卡死"的成因。
+    //   提到最外层仍是**更好的结构**（不易漏），但属"防未来"而非"修现状"。
+    //
+    // 理由 B（已推翻）：「必须设 `ignoringSemantics: false`，否则丢语义」。
+    //   最小实验显示 `IgnorePointer(child: Semantics(…))` 的语义
+    //   **本来就能被读到**，不需要该参数；且它在 Flutter 3.8 后
+    //   **已废弃**（analyze 报 `deprecated_member_use`）。
+    //   故用默认值 —— 既不丢语义，也不依赖废弃 API。
     return IgnorePointer(child: _buildIndicator(context));
   }
 
   /// 只决定"显示哪个指示器"，**不负责**命中过滤（外层已统一处理）。
   Widget _buildIndicator(BuildContext context) {
-    // 长按倍速优先级最高：它需要"持续可见"让用户知道当前在快进
+    // 长按倍速：**透明小徽章 + 左上角**（用户要求：不遮挡视频）
+    //
+    // ⚠️ 不用 `_CenterSlot`（居中）—— 那会正好压住画面主体，
+    //    而长按是持续状态，遮挡时间最久。
     if (isLongPressing) {
-      return _CenterSlot(
-        child: _Pill(
-          icon: Icons.fast_forward,
-          text: '${longPressSpeed.toStringAsFixed(1)}x 快进中',
-          accent: true,
+      return Align(
+        alignment: Alignment.topLeft,
+        child: Padding(
+          padding: const EdgeInsets.only(left: 16, top: 56),
+          child: _LongPressBadge(speed: longPressSpeed),
         ),
       );
     }
@@ -139,16 +150,81 @@ class _CenterSlot extends StatelessWidget {
 }
 
 /// 胶囊型提示（快进/长按倍速）。
+/// 长按快进提示 —— **透明、小、不遮挡画面**（用户要求）。
+///
+/// ## 用户反馈（2026-10-07）
+/// "长按快进的显示应该也是透明且小的，不遮挡播放的视频"
+///
+/// ## 原来的问题
+/// 与 seek/亮度/音量共用 [_Pill]：`Color(0xCC000000)`（80% 黑）+ 16px 字 +
+/// **屏幕正中**。后果：
+///   · 一块近黑的牌子压在画面中央 → 看视频时正好挡住主体
+///   · 长按是**持续**状态（不像 seek 一闪而过），遮挡时间最长
+///
+/// ## 现在的设计
+/// | 维度 | 原 | 现 |
+/// |---|---|---|
+/// | 位置 | 屏幕正中 | **左上角**（避开画面主体） |
+/// | 底色 | `0xCC000000` 80% 黑 | `0x33FFFFFF` 20% 白（**很淡**） |
+/// | 字号 | 16 | 12 |
+/// | 图标 | 22 | 14 |
+/// | 内边距 | 18×12 | 8×4 |
+///
+/// ## 为什么底色用"淡白"而不是"更淡的黑"
+/// 视频画面可能是亮的也可能是暗的。黑色在暗画面上看不见（等于没提示），
+/// 淡白在亮画面上会被冲淡 —— 两者都不可靠。
+/// 折中：**20% 白 + 深色文字阴影**（阴影保证亮背景上可读，
+/// 白底保证暗背景上有对比）。这比纯黑在两种极端下都更稳。
+class _LongPressBadge extends StatelessWidget {
+  const _LongPressBadge({required this.speed});
+
+  final double speed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: PlayerUi.longPressBg,
+          borderRadius: BorderRadius.circular(Cf.radiusXs),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.fast_forward,
+                size: 14, color: PlayerUi.longPressText),
+            const SizedBox(width: 4),
+            Text(
+              '${speed.toStringAsFixed(1)}x',
+              style: const TextStyle(
+                color: PlayerUi.longPressText,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                fontFeatures: [FontFeature.tabularFigures()],
+                // 阴影让文字在**亮画面**上也读得到（淡白底挡不住亮背景）
+                shadows: [Shadow(blurRadius: 4, color: Colors.black87)],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// seek 反馈胶囊（快进/快退）。
+///
+/// ⚠️ 长按快进**不再用它** —— 长按有自己的 [_LongPressBadge]
+/// （更小、更透明、左上角）。本组件现在只服务 seek。
 class _Pill extends StatelessWidget {
   const _Pill({
     required this.icon,
     required this.text,
-    this.accent = false,
   });
 
   final IconData icon;
   final String text;
-  final bool accent;
 
   @override
   Widget build(BuildContext context) {
@@ -158,25 +234,20 @@ class _Pill extends StatelessWidget {
         decoration: BoxDecoration(
           color: PlayerUi.feedbackBg,
           borderRadius: BorderRadius.circular(PlayerUi.feedbackRadius),
-          border: Border.all(
-            color: accent ? PlayerUi.progressFilled : Colors.white24,
-            width: 0.8,
-          ),
+          border: Border.all(color: Colors.white24, width: 0.8),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon,
-                size: 22,
-                color: accent ? PlayerUi.progressFilled : Colors.white),
+            Icon(icon, size: 22, color: Colors.white),
             const SizedBox(width: 10),
             Text(
               text,
-              style: TextStyle(
-                color: accent ? PlayerUi.progressFilled : Colors.white,
+              style: const TextStyle(
+                color: Colors.white,
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
-                fontFeatures: const [FontFeature.tabularFigures()],
+                fontFeatures: [FontFeature.tabularFigures()],
               ),
             ),
           ],
@@ -206,48 +277,70 @@ class _LevelIndicator extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ratio = (value / max).clamp(0.0, 1.0);
-    return IgnorePointer(
-      child: Container(
-        width: PlayerUi.levelIndicatorSize,
-        height: PlayerUi.levelIndicatorSize,
-        decoration: const BoxDecoration(
-          color: PlayerUi.feedbackBg,
-          shape: BoxShape.circle,
-        ),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            SizedBox(
-              width: PlayerUi.levelIndicatorSize - 12,
-              height: PlayerUi.levelIndicatorSize - 12,
-              child: CircularProgressIndicator(
-                value: ratio,
-                strokeWidth: 4,
-                backgroundColor: Colors.white24,
-                valueColor: const AlwaysStoppedAnimation(Colors.white),
+    return Semantics(
+      // ## 为什么加语义（两个理由）
+      // 1. **无障碍**：读屏用户滑动调亮度/音量时，应听到"亮度 60"。
+      // 2. **可验证**：无 `Semantics` 时真机 `uiautomator` 读不到该节点 ——
+      //    自动化无法区分"手势没启动"与"指示器无标签"。
+      //
+      // ## ⚠️ 一条被实验推翻的错误认知（留此以免重犯）
+      // 我一度认为「`IgnorePointer` 会丢弃子树语义，所以 `Semantics`
+      // 必须在外层」。**实测推翻**：`IgnorePointer(child: Semantics)`
+      // 的语义同样能被找到（见 `_tmp_semantics_diag_test` 实验 3）。
+      //
+      // 真正让测试当初失败的是**匹配方式**：真实 label 是 `"亮度\n60"`
+      // （Flutter 把 label 与 value 合并），
+      // 而 `find.bySemanticsLabel('亮度')` 是精确匹配 → 恒 0。
+      //
+      // 现在写成 `Semantics(child: IgnorePointer(...))` 是**风格选择**
+      // （语义在外的可读性更好），**不是**强制约束。
+      liveRegion: true, // 值在滑动中持续变化 → 让读屏主动播报
+      label: label,
+      value: '${value.round()}',
+      child: IgnorePointer(
+        child: Container(
+          width: PlayerUi.levelIndicatorSize,
+          height: PlayerUi.levelIndicatorSize,
+          decoration: const BoxDecoration(
+            color: PlayerUi.feedbackBg,
+            shape: BoxShape.circle,
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: PlayerUi.levelIndicatorSize - 12,
+                height: PlayerUi.levelIndicatorSize - 12,
+                child: CircularProgressIndicator(
+                  value: ratio,
+                  strokeWidth: 4,
+                  backgroundColor: Colors.white24,
+                  valueColor: const AlwaysStoppedAnimation(Colors.white),
+                ),
               ),
-            ),
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 20, color: Colors.white),
-                const SizedBox(height: 2),
-                Text(
-                  '${value.round()}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    fontFeatures: [FontFeature.tabularFigures()],
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 20, color: Colors.white),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${value.round()}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
                   ),
-                ),
-                Text(
-                  label,
-                  style: const TextStyle(color: Colors.white60, fontSize: 10),
-                ),
-              ],
-            ),
-          ],
+                  Text(
+                    label,
+                    style:
+                        const TextStyle(color: Colors.white60, fontSize: 10),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

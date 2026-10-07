@@ -15,6 +15,8 @@ class PlaylistEntry {
     required this.id,
     required this.title,
     this.subtitle,
+    this.episodeLabel,
+    this.progressLabel,
   });
 
   final String id;
@@ -23,16 +25,40 @@ class PlaylistEntry {
   /// 副标题（大小 / 格式 / 时长等，由调用方决定内容）。
   final String? subtitle;
 
+  /// **集数标签**，如 `第 11 集` / `S1 E11`。
+  ///
+  /// ## 为什么单独一个字段（而不是让调用方拼进 title）
+  /// 用户反馈（2026-10-07）："播放剧集和综艺时播放列表并没有显示当前集数"。
+  /// 实测原因：流程页只填了 `title: e.name` + `subtitle: seriesName`，
+  /// **集号根本没进列表** —— 于是 5 集剧在列表里看起来是 5 个无编号的名字，
+  /// 用户无法判断"当前播到第几集"。
+  ///
+  /// 单独成字段的理由：
+  ///   · 面板可以**加粗/高亮**它（比混在 title 里更醒目）
+  ///   · 电影没有集号 → 传 null，面板自动不显示（不出现空行）
+  ///   · 与旧页「选集」的展示口径一致（`第 N 集` + 剧名 + 进度）
+  final String? episodeLabel;
+
+  /// **观看进度标签**，如 `已看` / `看到 37%`。
+  ///
+  /// 对齐旧页选集抽屉的 `sub:`（`player_page.dart` 的 `_sheetRow`）：
+  /// 让用户在列表里就能看出"哪几集看过、看到哪"，
+  /// 而不是只能看到一堆并列的名字。
+  final String? progressLabel;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is PlaylistEntry &&
           other.id == id &&
           other.title == title &&
-          other.subtitle == subtitle;
+          other.subtitle == subtitle &&
+          other.episodeLabel == episodeLabel &&
+          other.progressLabel == progressLabel;
 
   @override
-  int get hashCode => Object.hash(id, title, subtitle);
+  int get hashCode =>
+      Object.hash(id, title, subtitle, episodeLabel, progressLabel);
 }
 
 /// 播放模式（规格 §5 `PlayMode`）。

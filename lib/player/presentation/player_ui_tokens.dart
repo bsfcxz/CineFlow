@@ -36,34 +36,40 @@ abstract final class PlayerUi {
   static const double topBarFade = 120;
   static const double bottomBarFade = 200;
 
-  // ---- 底栏毛玻璃（用户明确要求："底部工具栏背景要求透明毛玻璃"）----
+  // ---- 底栏（用户要求：**完全透明**）----
   //
-  // ## 为什么与 `glassFill` 分开
-  // `glassFill = white12` 适合**小圆形按钮**（面积小，白色叠加不刺眼）。
-  // 底栏是**整条**（横跨全屏、高约 130dp），若也用 white12：
-  //   · 亮画面上会发白、按钮与背景对比度下降（按钮本身也是白的）
-  //   · 面积大时 12% 白叠加已经明显，不再是"透明玻璃"的观感
-  // 故底栏用**更低的白色不透明度 + 更强的模糊 + 竖向微渐变**：
-  //   · 模糊更强（22 vs 12）→ 背后画面被明显晕开，"毛玻璃"感才成立
-  //   · 白色更淡（0x14 ≈ 8%）→ 保持"透明"而不发白
-  //   · 底部稍深一点点（0x1F 在下方）→ 让文字与图标有落脚的层次
+  // ## 迭代过程（两次用户反馈）
+  // 1. 最初：背后垫 `BarScrim`（200dp 黑色渐变）→ 用户说"要透明毛玻璃"
+  // 2. 改为毛玻璃：白色 8%→12% + blur 22 + 上边描边
+  //    → 用户再说"**改成透明的**" ⇒ 那点白色叠加依然可见（亮画面上发白）
+  // 3. 现在：**填充全透明**，只保留模糊
   //
-  // ⚠️ 不再在底栏背后放 `BarScrim` 这类黑色渐变压暗 ——
-  //    那会让"透明"名不副实（用户看到的是黑色遮罩而非玻璃）。
-  //    可读性改由模糊 + 白色细描边 + 文字阴影保证。
+  // ## 为什么"全透明"仍需要 BackdropFilter.blur
+  // 模糊不是"上色"，它**不改变透出的颜色**，只是把背后的画面细节晕开。
+  // 效果是"看得见视频、但文字不会被高频细节淹没" —— 这才是真正的
+  // "透明毛玻璃"：**透明**（不叠色）与**可读**（晕开背景）同时成立。
+  //
+  // ⚠️ 若把 blur 也去掉（真·全无），白字压在亮画面上会完全看不清。
+  //    用户要的是"透明"，不是"读不到"。
 
-  /// 底栏玻璃的填充色（顶部→底部微渐变，避免整条死平）。
-  static const Color barGlassTop = Color(0x14FFFFFF); // ≈8%
-  static const Color barGlassBottom = Color(0x1FFFFFFF); // ≈12%
+  /// 底栏填充：**完全透明**（不叠任何颜色）。
+  ///
+  /// 保留这组常量（而不是直接删掉背景）是为了让"想调回一点点的白"
+  /// 只需改这一处 —— 历史上这个值反复调过两次。
+  static const Color barGlassTop = Color(0x00000000);
+  static const Color barGlassBottom = Color(0x00000000);
 
-  /// 底栏玻璃的模糊强度（比小按钮强，面积大需要更明显的晕开）。
+  /// 底栏模糊强度。
+  ///
+  /// 比小按钮（12）强：整条横跨全屏、面积大，弱模糊在 1080p 上几乎看不出，
+  /// 文字可读性不够；22 是"看得出晕开"与"中低端机不掉帧"的折中。
   static const double barGlassBlur = 22;
 
-  /// 底栏玻璃的描边（细白线，勾勒出玻璃的"边"）。
-  static const Color barGlassBorder = Color(0x1FFFFFFF); // 12%
+  /// 底栏描边：**不要**（用户要透明，一条白线会暴露"这里有个容器"）。
+  static const Color barGlassBorder = Color(0x00000000);
 
-  /// 底栏玻璃的圆角（顶边圆角，与画面形成卡片感）。
-  static const double barGlassRadius = 16;
+  /// 底栏圆角：填充透明后圆角已无视觉意义（留 0 避免 clip 产生锯齿边）。
+  static const double barGlassRadius = 0;
 
   // ---- 进度条（原型 `.progress-*`）----
   static const double progressTrackHeight = 3;
@@ -125,6 +131,17 @@ abstract final class PlayerUi {
   static const Color feedbackBg = Color(0xCC000000);
   static const Color feedbackText = Colors.white;
   static const double feedbackRadius = 12;
+
+  // ---- 长按快进提示（用户要求：透明 + 小 + 不遮挡画面）----
+  //
+  // 与 seek/亮度/音量**分开**（那两个仍用 `feedbackBg` 黑色半透明）：
+  // 长按是**持续状态**（松手才消失），遮挡时间最长，
+  // 而且它显示时用户正在看视频内容 —— 最不该挡视线的就是它。
+  //
+  // 用"淡白"而不是"更淡的黑"：视频可能是亮画面或暗画面，
+  // 纯黑在暗画面上等于没提示；淡白 + 深色文字阴影在两种极端下都读得到。
+  static const Color longPressBg = Color(0x33FFFFFF); // 20% 白
+  static const Color longPressText = Colors.white;
 
   /// 亮度/音量指示器尺寸（原型：圆形 + 进度环）。
   static const double levelIndicatorSize = 96;
