@@ -431,21 +431,22 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
       ),
 
       // 中部三键
+      // ⚠️ 探测必须只在按钮上（PlayerCenterControls 内部逐按钮包裹）——
+      // 曾在这里包过整行的 opaque Listener，吃掉行内全部按下事件（含
+      // 按钮间隙），手势层收不到 → 点显隐/滑动 seek/长按倍速失灵。
       Positioned.fill(
         child: Center(
-          child: UiElementDetector(
+          child: PlayerCenterControls(
             hitTest: _hitTest,
-            child: PlayerCenterControls(
-              isPlaying: playback.isPlaying,
-              onTogglePlay: widget.callbacks.onTogglePlay,
-              onSeekBack: () =>
-                  widget.callbacks.onSeekBy(-PlayerGestures.step),
-              onSeekForward: () =>
-                  widget.callbacks.onSeekBy(PlayerGestures.step),
-              playKey: keys.player.togglePlayButton,
-              backKey: keys.player.seekBackButton,
-              forwardKey: keys.player.seekForwardButton,
-            ),
+            isPlaying: playback.isPlaying,
+            onTogglePlay: widget.callbacks.onTogglePlay,
+            onSeekBack: () =>
+                widget.callbacks.onSeekBy(-PlayerGestures.step),
+            onSeekForward: () =>
+                widget.callbacks.onSeekBy(PlayerGestures.step),
+            playKey: keys.player.togglePlayButton,
+            backKey: keys.player.seekBackButton,
+            forwardKey: keys.player.seekForwardButton,
           ),
         ),
       ),
@@ -460,11 +461,24 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              BarScrim(height: PlayerUi.bottomBarFade, fromTop: false),
-              GlassPanel(
-                radius: 16,
+              // ---- 底栏：透明毛玻璃（用户明确要求）----
+              //
+              // ⚠️ 这里**不再**垫 `BarScrim` 黑色渐变压暗。
+              //    原先的结构是「BarScrim（黑渐变，200dp）+ 内部 GlassPanel」，
+              //    用户看到的是**黑色遮罩**而不是"透明玻璃" ——
+              //    因为在玻璃背后压了一层黑，透出来的自然是暗的。
+              //
+              //    现在改为：整条栏自身就是毛玻璃（`GlassBar`），
+              //    背后直接是视频画面，模糊 22 把画面晕开，
+              //    既"透明"又保证文字可读（可读性由模糊 + 文字阴影保证，
+              //    见 `PlayerBottomBar` 里 Text 的 shadows）。
+              //
+              //    内层不再套 GlassPanel（否则是"玻璃上再叠玻璃"，
+              //    两层半透明白叠加会发白，失去透明感）。
+              GlassBar(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 6),
+                  // 顶部留一点：进度条太贴玻璃上边缘会显得挤
+                  padding: const EdgeInsets.only(top: 8, bottom: 2),
                   child: PlayerBottomBar(
                     key: keys.player.controls,
                     progress: playback.progress,
@@ -520,8 +534,7 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
           ),
         ),
       ),
-    ];
-  }
+    ];  }
 
   SettingsPanelActions _settingsActions(PanelState panel) {
     final vid = ref.read(videoStateProvider.notifier);

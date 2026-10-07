@@ -121,8 +121,19 @@ class PlayerGestureLayer extends StatelessWidget {
         if (!enabled) return;
         // 本次序列起始时重置标记（上一次的 consume 不该影响这一次）
         hitTest.reset();
-        // ⚠️ UI 元素的 Listener 在命中测试中**先于**本层执行，
-        //    故这里读到的 consumed 已经反映了"是否点在 UI 上"。
+        // ⚠️ 这里读 `consumed` **只在[手势层不在最底层]时才有意义**。
+        //
+        // 正常布局下（本层是 Stack 第一个子节点）点在 UI 元素上时，
+        // `UiElementDetector` 的 `opaque` 会**截断命中路径**，
+        // 本层的 `onPointerDown` 根本不会被调用 —— 也就是走不到这一行。
+        //
+        // 所以这一句是**补充保险**（见 `UiElementHitTest` 的类注释）：
+        // 当某个 UI 元素用了 `translucent`（opaque 截断不成立），
+        // 本层会被派发，此时靠这个标记挡住。
+        //
+        // ❌ 曾经的错说法：「UI 元素的 Listener 先于本层执行，故 consumed 已置位」。
+        //    那是错的，且与文件头的机制说明自相矛盾 —— 已由
+        //    `test/player_gesture_mechanism_test.dart` 实证纠正。
         if (hitTest.consumed) return;
         onPointerDown(e.localPosition);
       },

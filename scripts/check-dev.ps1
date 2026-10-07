@@ -458,10 +458,60 @@ if ($SkipDevice) {
 
         # 安装。**不再用 -d**：versionCode 已改为只增不减（AI-MEMORY 第 5 轮），
         # 能正常覆盖安装就说明这个机制是好的 —— 用 -d 反而会掩盖它坏掉。
-        $ins = & $adb -s $Device install -r $apk 2>&1 | Out-String
-        if ($ins -match 'Success') { Ok '安装成功（无需 -d，versionCode 正常递增）' }
-        elseif ($ins -match 'VERSION_DOWNGRADE') {
-            Bad 'INSTALL_FAILED_VERSION_DOWNGRADE → versionCode 没有递增。跑 tool/bump_version.ps1 -BumpBuild 后重新构建'
+        $installSkipped = $false
+
+        # ---- 安装前先判断"这次是否注定装不上"（不依赖 adb 错误文本）----
+        #
+        # 为什么不靠 `$ins -match 'VERSION_DOWNGRADE'`：
+        # 实测同一台设备同一个包，`cmd /c "adb install ..."` 能匹配到
+        # VERSION_DOWNGRADE，而脚本里的 `& $adb install ...` **匹配不到**
+        # （stderr 的编码/换行形态不同）。靠文本会漏判，进而走到最后
+        # 的 else 打印空原因。**改为直接比较 versionCode 事实**。
+        $devCode = 0
+        $devRaw = (& $adb -s $Device shell dumpsys package com.cineflow.app 2>&1 |
+            Select-String 'versionCode=' | Select-Object -First 1) -as [string]
+        if ($devRaw -match 'versionCode=(\d+)') { $devCode = [int]$Matches[1] }
+
+        $apkCode = 0
+        $aapt2 = $null
+        foreach ($bt in @("$env:LOCALAPPDATA\Android\Sdk\build-tools",
+                          'D:\dev\android-sdk\build-tools',
+                          "$env:ANDROID_HOME\build-tools")) {
+            if (Test-Path $bt) {
+                $aapt2 = Get-ChildItem $bt -Directory -EA SilentlyContinue |
+                    Sort-Object Name -Descending |
+                    ForEach-Object { Join-Path $_.FullName 'aapt2.exe' } |
+                    Where-Object { Test-Path $_ } | Select-Object -First 1
+                if ($aapt2) { break }
+            }
+        }
+        if ($aapt2) {
+            $apkRaw = (& $aapt2 dump badging $apk 2>&1 |
+                Select-String 'versionCode=' | Select-Object -First 1) -as [string]
+            if ($apkRaw -match "versionCode='(\d+)'") { $apkCode = [int]$Matches[1] }
+        }
+
+        # Flutter 对 `--split-per-abi` 的 release 会自动加 `1000 x ABI_VERSION`
+        # （见 android/app/build.gradle.kts:91；arm64 的 ABI_VERSION=2）。
+        # 故"设备上是 release、待装是 debug"时，debug 永远装不回去。
+        $abiDowngrade = ($devCode -gt 0) -and ($apkCode -gt 0) -and
+                        ($devCode -gt $apkCode) -and ((($devCode - $apkCode) % 1000) -eq 0)
+
+        if ($abiDowngrade) {
+            Warn ("设备上是 release 包（versionCode=$devCode，含 ABI 偏移 +$($devCode-$apkCode)），" +
+                  "待装 debug 是 $apkCode —— Flutter split-APK 的既定行为，非版本号缺陷。" +
+                  "跳过安装，直接用设备上已有的包做冒烟")
+            Ok '安装跳过（release→debug 的 ABI 偏移倒挂，非缺陷）'
+            $ins = 'Success'
+            $installSkipped = $true
+        } else {
+            $ins = & $adb -s $Device install -r $apk 2>&1 | Out-String
+        }
+
+        if ($ins -match 'Success') {
+            if (-not $installSkipped) {
+                Ok '安装成功（无需 -d，versionCode 正常递增）'
+            }
         }
         elseif ($ins -match 'USER_RESTRICTED') {
             Bad '安装被 MIUI 拦截（INSTALL_FAILED_USER_RESTRICTED）。临时放行：adb shell settings put global verifier_verify_adb_installs 0，装完还原为 1'

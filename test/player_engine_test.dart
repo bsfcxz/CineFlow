@@ -25,6 +25,14 @@ class MinimalKernel implements PlayerKernel {
   String get engine => 'minimal';
   @override
   String? get viewType => null;
+  @override
+  int? get textureId => 7;
+  @override
+  double? get aspectRatio => 16 / 9;
+  @override
+  Stream<void> get videoSizeStream => const Stream.empty();
+  @override
+  Future<void> ensureTexture({int width = 1920, int height = 1080}) async {}
 
   @override
   bool supports(EngineFeature feature) => switch (feature) {

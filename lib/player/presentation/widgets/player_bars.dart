@@ -5,6 +5,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'player_gesture_layer.dart';
 
 import '../player_ui_tokens.dart';
 import 'glass.dart';
@@ -83,6 +84,7 @@ class PlayerCenterControls extends StatelessWidget {
     required this.onTogglePlay,
     required this.onSeekBack,
     required this.onSeekForward,
+    required this.hitTest,
     this.stepSeconds = 10,
     this.playKey,
     this.backKey,
@@ -98,34 +100,46 @@ class PlayerCenterControls extends StatelessWidget {
   final Key? backKey;
   final Key? forwardKey;
 
+  /// 命中标记（见 UiElementDetector 注释）。
+  ///
+  /// ⚠️ 探测必须包在**每个按钮**上，而不是整行：若包整行（更不能包
+  /// Positioned.fill），opaque Listener 会吃掉全屏的按下事件，
+  /// 底层手势层收不到任何指针 → "点视频区隐藏/滑动 seek/长按倍速"
+  /// 全部失效（2026-10-07 真机实测抓到，按钮却一切正常，极难排查）。
+  final UiElementHitTest hitTest;
+
   @override
   Widget build(BuildContext context) {
+    Widget detect(Widget child) => UiElementDetector(
+          hitTest: hitTest,
+          child: child,
+        );
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        GlassButton(
+        detect(GlassButton(
           key: backKey,
           icon: Icons.replay_10,
           onTap: onSeekBack,
           semanticLabel: '快退 $stepSeconds 秒',
-        ),
+        )),
         const SizedBox(width: 28),
         // 中央播放/暂停更大（72 vs 56）—— 它是最高频的操作
-        GlassButton(
+        detect(GlassButton(
           key: playKey,
           icon: isPlaying ? Icons.pause : Icons.play_arrow,
           onTap: onTogglePlay,
           size: PlayerUi.playButtonSize,
           iconSize: 36,
           semanticLabel: isPlaying ? '暂停' : '播放',
-        ),
+        )),
         const SizedBox(width: 28),
-        GlassButton(
+        detect(GlassButton(
           key: forwardKey,
           icon: Icons.forward_10,
           onTap: onSeekForward,
           semanticLabel: '快进 $stepSeconds 秒',
-        ),
+        )),
       ],
     );
   }

@@ -23,7 +23,9 @@
 /// 而不是"更好的默认选择"。
 library;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'kernel.dart';
+import 'kernel_auto_select.dart';
 import 'media3/media3_kernel.dart';
 import 'native/native_kernel.dart';
 
@@ -44,11 +46,19 @@ enum KernelType {
 
 /// 内核工厂。
 abstract final class PlayerKernelFactory {
+  /// 测试注入点：非 null 时替代默认构造。
+  ///
+  /// 仅 widget 测试使用（生产代码**不得**设置）—— 离线测试无法建
+  /// 原生纹理/通道，需要塞入 FakeKernel 验证接线层逻辑。
+  @visibleForTesting
+  static PlayerKernel Function()? debugFactory;
+
   /// 创建内核实例。
   ///
   /// ⚠️ 每次调用返回**新实例**（内核持有原生资源与 StreamController，
   /// 共享实例会导致 dispose 相互踩踏）。调用方负责 `dispose()`。
   static PlayerKernel create([KernelType type = KernelType.auto]) {
+    if (debugFactory != null) return debugFactory!();
     return switch (type) {
       KernelType.media3 => Media3Kernel(),
       // auto 与显式 mpv 都走 mpv（见文件头"默认必须是 mpv"）
@@ -61,36 +71,17 @@ abstract final class PlayerKernelFactory {
 
   /// 某个内核类型是否**在能力上**适合当前媒体。
   ///
-  /// 本方法目前只做静态判断（基于容器/编码的已知短板）。
-  /// 真正的"播不了就回退"需要运行时报错后重试 —— 那是更高的复杂度，
-  /// 暂不实现（诚实记录为未完成项，见 `docs/local/PLAYER-UI-REBUILD.md`）。
-  static bool canHandle(
-    KernelType type, {
-    required String path,
-  }) {
-    final ext = path.contains('.')
-        ? path.split('.').last.toLowerCase()
-        : '';
+  /// ⚠️ 已**委托**给 `KernelAutoSelect`（单一事实源）。
+  /// 原先这里有一份独立的扩展名清单，与自动选择逻辑重复 ——
+  /// 两处各改一半必然漂移，故收敛到一处。
+  static bool canHandle(KernelType type, {required String path}) {
+    final ext = path.contains('.') ? path.split('.').last.toLowerCase() : '';
     return switch (type) {
       // mpv 几乎通吃
       KernelType.auto || KernelType.mpv => true,
-      // Media3 依赖系统解码器：对冷门容器/编码（RMVB/WMV/部分 ASS 特效）
-      // 支持有限。这里列出**已知需要 mpv** 的扩展名。
-      KernelType.media3 => !_mpvOnlyExtensions.contains(ext),
+      // Media3 依赖系统解码器：冷门容器不支持
+      KernelType.media3 => !KernelAutoSelect.isMpvOnlyContainer(ext),
     };
   }
 
-  /// 只有 mpv 能可靠处理的扩展名（基于本项目实测与 mpv 的格式覆盖）。
-  ///
-  /// ⚠️ 这份清单是**保守估计**：Android 各版本自带的解码器不同，
-  /// 同一个文件在某些设备上 Media3 能播、另一些上不能。
-  /// 故只列出"几乎确定 Media3 不行"的。
-  static const Set<String> _mpvOnlyExtensions = {
-    'rmvb', 'rm', // RealMedia：Android 从不支持
-    'wmv', 'asf', // Windows Media：多数设备无解码器
-    'flv', // 部分设备无
-    'vob', // DVD
-    'ts', 'm2ts', // 依赖具体编码，Media3 支持不稳
-    'ape', 'wv', // 冷门无损音频
-  };
 }

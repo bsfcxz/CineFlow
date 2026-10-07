@@ -339,6 +339,8 @@ class MediaInfo {
     this.audioChannels,
     this.audioSampleRate,
     this.container,
+    this.kernelLabel,
+    this.kernelReason,
   });
 
   final String fileName;
@@ -355,6 +357,19 @@ class MediaInfo {
   final int? audioChannels;
   final int? audioSampleRate;
   final String? container;
+
+  /// 当前使用的**播放内核**名（如 `mpv 内核` / `Media3 内核`）。
+  ///
+  /// 为什么放进"媒体信息"：用户排查"播不了"时，第一件要知道的就是
+  /// "这次用的哪个内核" —— 两个内核能力不同（见 `kernel_auto_select.dart`），
+  /// 换一个往往就能播。
+  final String? kernelLabel;
+
+  /// 选这个内核的**理由**（自动适配的决策说明）。
+  ///
+  /// 显示出来是为了让用户理解"为什么这次不是我以为的那个内核"，
+  /// 而不是面对一个不可解释的结果。
+  final String? kernelReason;
 
   /// 分辨率文案（如 `3840 × 2160`）；缺失返回 null。
   String? get resolutionLabel =>
@@ -375,6 +390,8 @@ class MediaInfo {
     int? audioChannels,
     int? audioSampleRate,
     String? container,
+    String? kernelLabel,
+    String? kernelReason,
   }) =>
       MediaInfo(
         fileName: fileName ?? this.fileName,
@@ -391,5 +408,7 @@ class MediaInfo {
         audioChannels: audioChannels ?? this.audioChannels,
         audioSampleRate: audioSampleRate ?? this.audioSampleRate,
         container: container ?? this.container,
+        kernelLabel: kernelLabel ?? this.kernelLabel,
+        kernelReason: kernelReason ?? this.kernelReason,
       );
 }

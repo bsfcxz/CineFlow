@@ -338,7 +338,18 @@ class PlayerSettingsPanel extends StatelessWidget {
           ),
         ]),
         InfoSection(title: '封装', children: [
-          InfoRow(label: '容器', value: i.container, showDivider: false),
+          InfoRow(
+              label: '容器',
+              value: i.container,
+              showDivider: i.kernelLabel != null),
+          // 播放内核 + 选择理由 —— 排查"播不了"时最该看的两行
+          if (i.kernelLabel != null)
+            InfoRow(label: '播放内核', value: i.kernelLabel),
+          if (i.kernelReason != null)
+            InfoRow(
+                label: '选择理由',
+                value: i.kernelReason,
+                showDivider: false),
         ]),
       ],
     );

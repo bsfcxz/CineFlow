@@ -44,11 +44,13 @@ class NativeKernel implements PlayerKernel {
 
   /// Flutter 纹理 id（VideoView 用它渲染）；未创建时为 null
   int? _textureId;
+  @override
   int? get textureId => _textureId;
 
   /// 视频原始尺寸（宽高比）；未知时为 null，UI 侧回退 16:9
   int _videoWidth = 0;
   int _videoHeight = 0;
+  @override
   double? get aspectRatio =>
       (_videoWidth > 0 && _videoHeight > 0) ? _videoWidth / _videoHeight : null;
 
@@ -72,6 +74,7 @@ class NativeKernel implements PlayerKernel {
   final _videoSizeController = StreamController<void>.broadcast();
 
   /// 视频尺寸变化（UI 需要 setState 重算宽高比）
+  @override
   Stream<void> get videoSizeStream => _videoSizeController.stream;
 
   void _pushState(KernelState s) {
@@ -207,6 +210,7 @@ class NativeKernel implements PlayerKernel {
       KernelEventParser.parseTracks(data);
 
   /// 建纹理（幂等）。必须在 open 之前完成，否则 mpv 没有渲染目标。
+  @override
   Future<void> ensureTexture({int width = 1920, int height = 1080}) async {
     if (_textureId != null) return;
     final id = await _method.invokeMethod<int>('createTexture', {

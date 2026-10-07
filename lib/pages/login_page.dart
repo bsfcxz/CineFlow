@@ -1,6 +1,7 @@
 /// 登录 / 服务器管理页（对应原型 #page-login，手机端布局）
 /// 真实 Emby 认证：POST /Users/AuthenticateByName；凭据仅存手机安全存储。
 library;
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -9,6 +10,7 @@ import '../core/version.dart';
 import '../data/emby_provider.dart';
 import '../data/session_store.dart';
 import '../keys.dart';
+import '../player/debug_player_testbed.dart';
 import '../state/providers.dart';
 
 class LoginPage extends ConsumerStatefulWidget {
@@ -181,6 +183,23 @@ class _LoginPageState extends ConsumerState<LoginPage> {
           return _narrowLayout();
         }),
       ),
+      // 调试试验台入口（仅 debug 构建存在，release 编译期消除）：
+      // 不登录直接进播放器，用本地测试视频驱动新播放 UI 全功能自测。
+      bottomNavigationBar: kDebugMode
+          ? SafeArea(
+              child: Align(
+                alignment: Alignment.bottomLeft,
+                child: TextButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => const DebugPlayerTestbed()),
+                  ),
+                  child: const Text('播放器试验台 (debug)',
+                      style: TextStyle(fontSize: 11)),
+                ),
+              ),
+            )
+          : null,
     );
   }
 
