@@ -969,6 +969,29 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     for (final s in _subs) {
       s.cancel();
     }
+    // ---- 恢复系统 UI / 方向 / 应用内亮度（用户实测 bug，2026-10-07）----
+    //
+    // ## 为什么必须在 dispose 里（而不只在 `_finalizeAndExit`）
+    // 复位原来只挂在 **onBack 回调**上。但退出播放页的路径不止那一条：
+    //   · **系统返回手势**（横屏下从屏幕边缘滑，MIUI 上很常用）
+    //   · 路由被程序化弹出
+    //   · App 在后台被回收
+    // 这些都**不经过** `_finalizeAndExit`，于是方向残留横屏、
+    // 亮度残留很暗 —— 用户实测退出后"首页也是横的"。
+    //
+    // `dispose()` 是**所有退出路径的必经点**（unmount 必然发生），
+    // 旧页（`player_page.dart:1135`）正是在这里做的 —— 新页没对齐。
+    //
+    // ## 为什么这里能调 SystemChrome
+    // `SystemChrome` 是静态平台通道 API，**不依赖 `ref`** ——
+    // 与下面"dispose 里不能用 ref"的约束不冲突。
+    //
+    // ## 幂等性
+    // `_finalizeAndExit`（onBack 路径）也做一次同样的事，随后 `maybePop`
+    // 触发本 dispose 再做一次 —— 平台调用幂等，重复设置无副作用。
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    unawaited(ScreenBrightness().resetApplicationScreenBrightness());
     // ⚠️ 这里不能用 ref（Riverpod 禁止 unmount 后访问）：
     //  - playlistStateProvider.onSelect 已在 _finalizeAndExit 置空；
     //  - providers 里残留的播放状态/媒体信息由下一次进页时的 boot 全量覆盖。

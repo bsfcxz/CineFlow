@@ -172,6 +172,12 @@ class _DebugPlayerTestbedState extends ConsumerState<DebugPlayerTestbed> {
     for (final s in _subs) {
       s.cancel();
     }
+    // 恢复系统 UI / 方向 / 亮度 —— 与 PlayerFlowPage.dispose 同理：
+    // 不能只挂在 `_exit()`（onBack）上，系统返回手势不经过它。
+    // `SystemChrome` 是静态 API，不依赖 ref，可在 dispose 里调。
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    unawaited(ScreenBrightness().resetApplicationScreenBrightness());
     final k = _kernel;
     _kernel = null;
     if (k != null) {
