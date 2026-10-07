@@ -12,6 +12,27 @@
 /// ## 为什么全部忽略指针事件
 /// 它们盖在画面正中 —— 若吃掉手势，用户滑动到一半松手再滑会失效。
 /// 统一 `IgnorePointer`（本项目弹幕层也踩过同一个坑）。
+///
+/// ## ⚠️ 真实事故（2026-10-07 真机实测，**视频完全无法操作**）
+///
+/// 本文件曾**只在非长按分支**包 `IgnorePointer`：
+/// ```dart
+/// if (isLongPressing) {
+///   return _CenterSlot(...);        // ← 没有 IgnorePointer！
+/// }
+/// return IgnorePointer(child: ...);  // ← 只有这里有
+/// ```
+/// 而 `_CenterSlot` 是 `Center(child: ...)`，在 `Positioned.fill` 下会
+/// **撑满全屏并吃掉所有指针事件**。
+///
+/// 于是只要 `isLongPressing` 为 true，**整个播放页的点击/滑动全部失效** ——
+/// 而长按本身又因为收不到 `pointerUp` 无法结束 → 状态永久卡在长按 →
+/// **UI 从此再也点不动**（用户实测现象：屏幕常驻"3.0x 快进中"，
+/// 单击、双击、滑动、按钮**全部无反应**）。
+///
+/// **教训**：反馈层是"纯展示层"，它**任何分支**都不能参与命中测试。
+/// 故现在把 `IgnorePointer` 提到**最外层统一包**，而不是在各分支里各写一遍 ——
+/// 后者必然漏（本次就是漏在长按分支）。
 library;
 
 import 'package:flutter/material.dart';
@@ -20,6 +41,9 @@ import '../../domain/models/gesture_state.dart';
 import '../player_ui_tokens.dart';
 
 /// 反馈层容器：根据手势状态决定显示哪个指示器。
+///
+/// ⚠️ **根节点永远是 `IgnorePointer`**（见文件头的事故说明）——
+/// 任何新增分支都不要绕过它。
 class PlayerFeedbackLayer extends StatelessWidget {
   const PlayerFeedbackLayer({
     super.key,
@@ -40,6 +64,20 @@ class PlayerFeedbackLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // ⚠️ `IgnorePointer` 必须在**最外层**（见文件头的事故说明）。
+    //
+    // 曾经的写法是「长按分支直接 return，其他分支才包 IgnorePointer」——
+    // 结果长按分支返回的 `Center` 撑满全屏、吃掉所有指针事件，
+    // 而长按又因收不到 pointerUp 无法结束 → **UI 永久卡死**。
+    //
+    // 现在改成：外层的 IgnorePointer 是**唯一入口**，
+    // 里面的分支只管"显示什么"，**不可能绕过**命中过滤。
+    // 新增分支时也不会再犯同样的错。
+    return IgnorePointer(child: _buildIndicator(context));
+  }
+
+  /// 只决定"显示哪个指示器"，**不负责**命中过滤（外层已统一处理）。
+  Widget _buildIndicator(BuildContext context) {
     // 长按倍速优先级最高：它需要"持续可见"让用户知道当前在快进
     if (isLongPressing) {
       return _CenterSlot(
@@ -51,36 +89,34 @@ class PlayerFeedbackLayer extends StatelessWidget {
       );
     }
 
-    return IgnorePointer(
-      child: switch (gesture.mode) {
-        GestureMode.brightness => _CenterSlot(
-            child: _LevelIndicator(
-              icon: Icons.brightness_6,
-              value: gesture.currentBrightness,
-              max: 100,
-              label: '亮度',
-            ),
+    return switch (gesture.mode) {
+      GestureMode.brightness => _CenterSlot(
+          child: _LevelIndicator(
+            icon: Icons.brightness_6,
+            value: gesture.currentBrightness,
+            max: 100,
+            label: '亮度',
           ),
-        GestureMode.volume => _CenterSlot(
-            child: _LevelIndicator(
-              icon: Icons.volume_up,
-              value: gesture.currentVolume,
-              max: 100,
-              label: '音量',
-            ),
+        ),
+      GestureMode.volume => _CenterSlot(
+          child: _LevelIndicator(
+            icon: Icons.volume_up,
+            value: gesture.currentVolume,
+            max: 100,
+            label: '音量',
           ),
-        GestureMode.seek => _CenterSlot(
-            child: _Pill(
-              icon: gesture.deltaRatio >= 0
-                  ? Icons.fast_forward
-                  : Icons.fast_rewind,
-              text: _seekText(gesture),
-            ),
+        ),
+      GestureMode.seek => _CenterSlot(
+          child: _Pill(
+            icon: gesture.deltaRatio >= 0
+                ? Icons.fast_forward
+                : Icons.fast_rewind,
+            text: _seekText(gesture),
           ),
-        // none / dead：不显示任何东西（死区就该"什么都不发生"）
-        GestureMode.none || GestureMode.dead => const SizedBox.shrink(),
-      },
-    );
+        ),
+      // none / dead：不显示任何东西（死区就该"什么都不发生"）
+      GestureMode.none || GestureMode.dead => const SizedBox.shrink(),
+    };
   }
 
   /// `+35s` / `-12s`（原型用 `Math.round(deltaSeconds)`）。

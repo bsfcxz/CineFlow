@@ -53,12 +53,16 @@ class Media3Kernel implements PlayerKernel {
   StreamSubscription? _eventSub;
 
   int? _textureId;
+  @override
   int? get textureId => _textureId;
 
   int _videoWidth = 0;
   int _videoHeight = 0;
 
   /// 视频宽高比；未知时 null（UI 回退 16:9）。
+  @override
+  Stream<void> get videoSizeStream => const Stream.empty();
+  @override
   double? get aspectRatio => (_videoWidth > 0 && _videoHeight > 0)
       ? _videoWidth / _videoHeight
       : null;
@@ -149,6 +153,7 @@ class Media3Kernel implements PlayerKernel {
       };
 
   /// 建纹理（幂等）。Media3 也走 `setVideoSurface(Flutter Texture)`。
+  @override
   Future<void> ensureTexture({int width = 1920, int height = 1080}) async {
     if (_textureId != null) return;
     final id = await _method.invokeMethod<int>('createTexture', {

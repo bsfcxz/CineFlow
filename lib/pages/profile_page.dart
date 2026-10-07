@@ -11,6 +11,7 @@ import 'about_page.dart';
 import 'appearance_page.dart';
 import 'history_page.dart';
 import 'playback_settings_page.dart';
+import 'kernel_settings_page.dart';
 import '../data/emby_provider.dart';
 import '../data/models.dart';
 import '../pan115/pan115_browser_page.dart';
@@ -111,6 +112,17 @@ class ProfilePage extends ConsumerWidget {
                   context,
                   MaterialPageRoute(
                       builder: (_) => const PlaybackSettingsPage()),
+                ),
+              ),
+              _SettingItem(
+                icon: Icons.memory_rounded,
+                color: const Color(0xFF00B4D8),
+                title: '播放内核',
+                sub: '自动适配 · 或手动指定 mpv / Media3',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const KernelSettingsPage()),
                 ),
               ),
               _SettingItem(

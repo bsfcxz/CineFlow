@@ -28,6 +28,7 @@ import '../data/models.dart';
 import '../pages/detail_page.dart'
     show detailProvider, episodesProvider, seasonsProvider;
 import '../widgets/media_cards.dart';
+import 'player_flow_page.dart' show PlayerFlowPage, useNewPlayerUi;
 import 'player_page.dart';
 
 /// 播放器路由的 `extra` 载荷。
@@ -68,10 +69,18 @@ void openPlayer(BuildContext context, MediaItem item,
 }
 
 /// 播放器路由（供 router.dart 挂载）。
+///
+/// ## 双播放页渐进迁移
+/// `--dart-define=CF_NEW_PLAYER=true` 时走**新播放 UI**（PlayerFlowPage，
+/// 按 HTML 原型重构的那套，Emby 流程见 player_flow_page.dart）；
+/// 默认仍走旧页 —— 新页未经真实登录 E2E 验证前不接管主路径。
 GoRoute playerRoute() => GoRoute(
       path: '/play/:id',
       builder: (context, state) {
         final extra = state.extra;
+        if (useNewPlayerUi) {
+          return _flowArgs(state, extra);
+        }
         if (extra is PlayerRouteArgs) {
           return PlayerPage(
             item: extra.item,
@@ -88,12 +97,39 @@ GoRoute playerRoute() => GoRoute(
       },
     );
 
+/// 新播放 UI 的参数装配（extra 丢失时按 id 兜底拉详情）。
+Widget _flowArgs(GoRouterState state, Object? extra) {
+  if (extra is PlayerRouteArgs) {
+    return PlayerFlowPage(
+      item: extra.item,
+      episodes: extra.episodes,
+      index: extra.index,
+      mediaSourceId: extra.mediaSourceId,
+    );
+  }
+  return _PlayerDeepLink(
+    itemId: state.pathParameters['id'] ?? '',
+    index: int.tryParse(state.uri.queryParameters['index'] ?? '') ?? 0,
+    useNewUi: true,
+  );
+}
+
 /// 深链回退：按 id 拉详情，成功后替换为真正的播放器。
+///
+/// [useNewUi] = 跟随 CF_NEW_PLAYER 开关走新播放 UI（保持与主入口同一选择）。
 class _PlayerDeepLink extends ConsumerWidget {
-  const _PlayerDeepLink({required this.itemId, this.index = 0});
+  const _PlayerDeepLink({required this.itemId, this.index = 0, this.useNewUi = false});
 
   final String itemId;
   final int index;
+  final bool useNewUi;
+
+  Widget _player(MediaItem item, {List<MediaItem>? episodes}) {
+    if (useNewUi) {
+      return PlayerFlowPage(item: item, episodes: episodes, index: index);
+    }
+    return PlayerPage(item: item, episodes: episodes, index: index);
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -114,7 +150,7 @@ class _PlayerDeepLink extends ConsumerWidget {
         // 故先取季列表再按季号匹配（`episodesProvider` 的键是 (seriesId, seasonId)）。
         final seriesId = d.item.seriesId;
         if (seriesId == null) {
-          return PlayerPage(item: d.item, index: index);
+          return _player(d.item);
         }
         final seasons = ref.watch(seasonsProvider(seriesId));
         return seasons.when(
@@ -123,7 +159,7 @@ class _PlayerDeepLink extends ConsumerWidget {
             body: Center(child: CircularProgressIndicator(color: Cf.accent)),
           ),
           // 季列表失败不影响播放：退化为"无选集上下文"仍可起播
-          error: (_, _) => PlayerPage(item: d.item, index: index),
+          error: (_, _) => _player(d.item),
           data: (list) {
             final want = d.item.parentIndexNumber ?? 1;
             String? seasonId;
@@ -131,14 +167,10 @@ class _PlayerDeepLink extends ConsumerWidget {
               if (s.parentIndexNumber == want) seasonId = s.id;
             }
             if (seasonId == null) {
-              return PlayerPage(item: d.item, index: index);
+              return _player(d.item);
             }
             final eps = ref.watch(episodesProvider((seriesId, seasonId)));
-            return PlayerPage(
-              item: d.item,
-              episodes: eps.value,
-              index: index,
-            );
+            return _player(d.item, episodes: eps.value);
           },
         );
       },

@@ -36,6 +36,35 @@ abstract final class PlayerUi {
   static const double topBarFade = 120;
   static const double bottomBarFade = 200;
 
+  // ---- 底栏毛玻璃（用户明确要求："底部工具栏背景要求透明毛玻璃"）----
+  //
+  // ## 为什么与 `glassFill` 分开
+  // `glassFill = white12` 适合**小圆形按钮**（面积小，白色叠加不刺眼）。
+  // 底栏是**整条**（横跨全屏、高约 130dp），若也用 white12：
+  //   · 亮画面上会发白、按钮与背景对比度下降（按钮本身也是白的）
+  //   · 面积大时 12% 白叠加已经明显，不再是"透明玻璃"的观感
+  // 故底栏用**更低的白色不透明度 + 更强的模糊 + 竖向微渐变**：
+  //   · 模糊更强（22 vs 12）→ 背后画面被明显晕开，"毛玻璃"感才成立
+  //   · 白色更淡（0x14 ≈ 8%）→ 保持"透明"而不发白
+  //   · 底部稍深一点点（0x1F 在下方）→ 让文字与图标有落脚的层次
+  //
+  // ⚠️ 不再在底栏背后放 `BarScrim` 这类黑色渐变压暗 ——
+  //    那会让"透明"名不副实（用户看到的是黑色遮罩而非玻璃）。
+  //    可读性改由模糊 + 白色细描边 + 文字阴影保证。
+
+  /// 底栏玻璃的填充色（顶部→底部微渐变，避免整条死平）。
+  static const Color barGlassTop = Color(0x14FFFFFF); // ≈8%
+  static const Color barGlassBottom = Color(0x1FFFFFFF); // ≈12%
+
+  /// 底栏玻璃的模糊强度（比小按钮强，面积大需要更明显的晕开）。
+  static const double barGlassBlur = 22;
+
+  /// 底栏玻璃的描边（细白线，勾勒出玻璃的"边"）。
+  static const Color barGlassBorder = Color(0x1FFFFFFF); // 12%
+
+  /// 底栏玻璃的圆角（顶边圆角，与画面形成卡片感）。
+  static const double barGlassRadius = 16;
+
   // ---- 进度条（原型 `.progress-*`）----
   static const double progressTrackHeight = 3;
   static const double progressTrackHeightDragging = 6;

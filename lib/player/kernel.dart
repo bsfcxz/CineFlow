@@ -271,6 +271,24 @@ abstract class PlayerKernel {
   /// 原生视图标识（native 引擎返回 PlatformView 的 viewType）
   String? get viewType;
 
+  /// Flutter 纹理 id（纹理输出型内核）；null = 本内核不用纹理渲染。
+  ///
+  /// 纹理型内核（mpv / Media3）在 [ensureTexture] 之后可用。
+  /// 默认 null —— 未来的非纹理内核（如 PlatformView 型）无需理会。
+  int? get textureId => null;
+
+  /// 建纹理（纹理输出型内核覆盖；默认 no-op）。
+  ///
+  /// 必须在 [open] 之前完成，否则内核没有渲染目标。
+  Future<void> ensureTexture({int width = 1920, int height = 1080}) async {}
+
+  /// 视频宽高比（从流信息解析）；未知为 null（UI 回退 16:9）。
+  double? get aspectRatio => null;
+
+  /// 视频尺寸变化通知（分辨率切换/首帧解析时触发，UI 重算宽高比）。
+  /// 默认空流 —— 非纹理内核无需理会。
+  Stream<void> get videoSizeStream => const Stream.empty();
+
   /// 打开媒体。
   ///
   /// [headers] 是**必须原样透传**的 HTTP 头：
