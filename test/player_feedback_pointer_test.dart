@@ -191,6 +191,87 @@ void main() {
     });
   });
 
+  group('★ 指示器必须有语义标签（无障碍 + 可验证）', () {
+    // ⚠️ **必须显式开启语义树**（实测踩过，白费两轮）
+    //
+    // `find.bySemanticsLabel` 依赖语义树；widget 测试**默认不生成**它，
+    // 于是查找恒返回 0 —— 而 0 会被误读成"组件没写 Semantics"。
+    //
+    // 我正是这样误判了两次：先以为"嵌套顺序错"，改了代码；
+    // 又以为"外层 IgnorePointer 丢弃语义"，再改一次 —— **两次都不对**。
+    // 最后写最小实验（裸 Semantics / Center / IgnorePointer 各种套法）才查明：
+    // **所有结构都能找到，唯一区别是实验里调了 ensureSemantics**。
+
+    testWidgets('★ 亮度指示器带 Semantics 标签', (tester) async {
+      final semantics = tester.ensureSemantics();
+
+      await pumpStack(
+        tester,
+        gesture: const GestureState(
+          mode: GestureMode.brightness,
+          currentBrightness: 60,
+        ),
+        isLongPressing: false,
+      );
+
+      // ⚠️ 必须用 **RegExp** 而不是精确字符串（实测踩过，白费两轮）
+      //
+      // 真实语义树里 label 是 `"亮度\n60"` ——
+      // Flutter 把 `Semantics(label:…, value:…)` 的 label 与 value
+      // **合并成一个 label**（中间是换行）。
+      // 而 `find.bySemanticsLabel('亮度')` 是**精确匹配** → 恒返回 0。
+      //
+      // 三种查法实测对比（同一次运行）：
+      //   精确 '亮度'       -> 0 个
+      //   RegExp('亮度')    -> 1 个   ✅
+      //   RegExp('^亮度')   -> 1 个   ✅
+      expect(
+        find.bySemanticsLabel(RegExp('亮度')),
+        findsOneWidget,
+        reason: '亮度指示器应有语义标签 —— 读屏用户需要听到"亮度 60"，\n'
+            '同时真机 uiautomator 也靠它确认指示器确实显示了。',
+      );
+      // 值也要能被读到
+      expect(find.bySemanticsLabel(RegExp('60')), findsOneWidget,
+          reason: '语义里应含当前数值（合并进 label 了）');
+
+      // ⚠️ 必须**在测试体内**释放 —— 用 addTearDown 会晚于框架校验，
+      //    报 "A SemanticsHandle was active at the end of the test"。
+      semantics.dispose();
+    });
+
+    testWidgets('★ 音量指示器带 Semantics 标签', (tester) async {
+      final semantics = tester.ensureSemantics();
+
+      await pumpStack(
+        tester,
+        gesture: const GestureState(
+          mode: GestureMode.volume,
+          currentVolume: 40,
+        ),
+        isLongPressing: false,
+      );
+      expect(find.bySemanticsLabel(RegExp('音量')), findsOneWidget);
+      expect(find.bySemanticsLabel(RegExp('40')), findsOneWidget);
+
+      semantics.dispose();
+    });
+
+    testWidgets('无手势时不应出现亮度/音量语义（避免误报）', (tester) async {
+      final semantics = tester.ensureSemantics();
+
+      await pumpStack(
+        tester,
+        gesture: const GestureState(),
+        isLongPressing: false,
+      );
+      expect(find.bySemanticsLabel(RegExp('亮度')), findsNothing);
+      expect(find.bySemanticsLabel(RegExp('音量')), findsNothing);
+
+      semantics.dispose();
+    });
+  });
+
   group('结构性保证：IgnorePointer 在根节点', () {
     testWidgets('★ 根节点必须是 IgnorePointer（不依赖分支）', (tester) async {
       // 上一条 group 测"行为契约"，这条测"结构保证"——

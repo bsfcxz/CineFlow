@@ -64,6 +64,28 @@ const useNewPlayerUi =
 /// 播放流程页与调试试验台共用。
 double volumeToKernel(double v) => (v * 100).clamp(0.0, 100.0);
 
+/// 手势亮度（0–100）→ `ScreenBrightness` 的 0.0–1.0。
+///
+/// ## 为什么要有这个函数（真机 bug，2026-10-07）
+/// 用户反馈"亮度调不暗"。根因是**单位契约断层**：
+///   · 手势侧（`GestureController.onBrightness`）给的是 **0–100**
+///   · `setApplicationScreenBrightness` 要的是 **0.0–1.0**
+/// 原实现直接 `v.clamp(0.05, 1.0)`，于是：
+///   · 手指一动 v≈50 → clamp 后 **1.0 = 满亮度**
+///   · 往下滑 v=30 → 仍是 1.0（想变暗却更亮）
+/// 结果**只能最亮、无法调暗**。
+///
+/// ## 为什么要抽成函数而不是就地写
+/// 与 [volumeToKernel] 同理：换算散在各调用点，任何一处漏改就会重现
+/// 同类 bug（本项目已经因"单位在调用点各写一遍"栽过两次）。
+/// 抽出来后可以**单测**（见 `test/player_unit_conversion_test.dart`）。
+///
+/// ## 下限为什么是 0.05 而不是 0
+/// 系统亮度 0 会让屏幕**全黑**，用户看不到画面也划不动（无法划回来）。
+/// 留 5% 保底是 Android 播放器的通行做法。
+double brightnessToScreen(double v) =>
+    ((v / 100.0).clamp(0.0, 1.0)).clamp(0.05, 1.0);
+
 class PlayerFlowPage extends ConsumerStatefulWidget {
   const PlayerFlowPage({
     super.key,
@@ -184,6 +206,24 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
             id: e.id,
             title: e.name,
             subtitle: e.type == 'Episode' ? e.seriesName : null,
+            // ---- 集数 + 观看进度（用户反馈修复，2026-10-07）----
+            //
+            // 用户："播放剧集和综艺时播放列表并没有显示当前集数。
+            //       这个具体的内容可以参考之前的选集功能。"
+            //
+            // 参考旧页选集抽屉（`player_page.dart:2563-2573`）的口径：
+            //   label = ['第 N 集', 剧名].join(' ')
+            //   sub   = played ? '已看' : (progress > 0 ? '看到 N%' : null)
+            //
+            // ⚠️ 电影（无 indexNumber）传 null —— 面板会自动不显示徽章，
+            //    不会出现"第 null 集"或空行。
+            episodeLabel:
+                e.indexNumber == null ? null : '第 ${e.indexNumber} 集',
+            progressLabel: e.played
+                ? '已看'
+                : (e.progress > 0
+                    ? '看到 ${(e.progress * 100).round()}%'
+                    : null),
           ),
       ], startIndex: _index);
     }
@@ -1008,9 +1048,21 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       },
       // ⚠️ 单位换算：面板 0–1 → 内核 0–100（harness 实测约束，勿删）
       onVolumeChanged: (v) => _kernel?.setVolume(volumeToKernel(v)),
+      // ⚠️ **单位契约**：`onBrightnessChanged` 收的是**手势的 0–100**
+      //    （见 `GestureController.onBrightness`），
+      //    而 `ScreenBrightness.setApplicationScreenBrightness` 要 **0.0–1.0**。
+      //
+      // ## 这里曾有一个真机 bug（用户反馈"亮度调不暗"，2026-10-07）
+      // 原实现直接 `v.clamp(0.05, 1.0)` —— 把手势的 0–100 当成 0–1 用：
+      //   · 手指刚一动，v≈50 → clamp 后 **1.0 = 满亮度**
+      //   · 往下滑想变暗，v=30 → 仍是 1.0
+      //   结果：**只能最亮，无法调暗**（且任何滑动都会瞬间跳到最亮）。
+      //
+      // 正确做法是**先归一化再钳制**，并用同一个函数保证口径一致。
       onBrightnessChanged: (v) {
-        // 手势亮度 → 应用内亮度（失败静默，部分 ROM 不支持）
-        ScreenBrightness().setApplicationScreenBrightness(v.clamp(0.05, 1.0))
+        final normalized = brightnessToScreen(v);
+        ScreenBrightness()
+            .setApplicationScreenBrightness(normalized)
             .catchError((_) {});
       },
       onAspectModeChanged: (m) {

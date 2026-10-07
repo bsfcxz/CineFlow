@@ -35,6 +35,22 @@ class GestureController extends Notifier<GestureState> {
   void Function(Duration position)? onSeek;
   void Function(Duration delta)? onSeekPreview;
 
+  /// 亮度变化（0–100）—— 由调用方**真正应用到屏幕亮度**。
+  ///
+  /// ## 为什么必须有这个回调（真机 bug，2026-10-07）
+  /// 原先控制器只把算出的值写进 `state.currentBrightness`，
+  /// 而那个值**只被指示器用于绘制圆环** —— 没有人拿它去改屏幕亮度。
+  /// 现象：左右滑动时圆环数字在变，**画面亮度纹丝不动**。
+  ///
+  /// **状态 ≠ 效果**：状态负责"显示什么"，效果需要另一条通路出去。
+  /// 这两件事必须分开建模，但**不能只做前者忘了后者**。
+  void Function(double value)? onBrightness;
+
+  /// 音量变化（0–100）—— 由调用方**真正应用到系统音量**。
+  ///
+  /// 同 [onBrightness]：原先只更新 state，导致"圆环动、声音不变"。
+  void Function(double value)? onVolume;
+
   @override
   GestureState build() {
     ref.onDispose(_cancelLongPress);
@@ -209,6 +225,12 @@ class GestureController extends Notifier<GestureState> {
           currentBrightness: v,
           deltaRatio: -delta.dy / area.height,
         );
+        // ⚠️ **必须回调出去真正执行**（真机 bug，2026-10-07 用户反馈）
+        //
+        // 原先这里只更新 state —— 于是指示器圆环会动，但**屏幕亮度不变**，
+        // 用户看到的是"手势有反应、画面没变化"。
+        // 状态只是"要显示什么"，**应用效果需要另一条通路**。
+        onBrightness?.call(v);
       case GestureMode.volume:
         final v = volumeFor(
           start: state.startVolume,
@@ -220,6 +242,8 @@ class GestureController extends Notifier<GestureState> {
           currentVolume: v,
           deltaRatio: -delta.dy / area.height,
         );
+        // 同上：必须真的去改系统音量
+        onVolume?.call(v);
       case GestureMode.dead:
         state = state.copyWith(mode: mode);
       case GestureMode.none:

@@ -169,6 +169,23 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
     g.onSeek = (target) => widget.callbacks.onSeekTo(target);
     g.onSeekPreview = (_) {};
 
+    // ---- 亮度 / 音量：**真的去执行**（真机 bug 修复，2026-10-07）----
+    //
+    // ## 原来的问题（用户实测反馈）
+    // 手势控制器算出了 brightness/volume 并写进 state，
+    // 但那个值**只被指示器用于画圆环** —— 没有人应用到屏幕/系统。
+    // 现象：左右滑动时圆环数字在变，**画面亮度与声音纹丝不动**。
+    //
+    // ## 修法
+    // 组装页不直接调 Android API（那是宿主页的职责，见 `PlayerPageCallbacks`），
+    // 故这里转发给宿主提供的 `onBrightnessChanged` / `onVolumeChanged`。
+    //
+    // ⚠️ 单位：手势侧 0–100，`onVolumeChanged` 契约是 **0.0–1.0**
+    //    （见 `PlayerPageCallbacks` 注释与 `volumeToKernel` 的换算），
+    //    故这里除以 100。写错会导致"一滑就满音量"或"永远静音"。
+    g.onBrightness = (v) => widget.callbacks.onBrightnessChanged(v);
+    g.onVolume = (v) => widget.callbacks.onVolumeChanged(v / 100);
+
     // 视频参数变化 → 交给调用方落内核
     ref.read(videoStateProvider.notifier).onChanged = (v) {
       widget.callbacks.onVideoFilterChanged(

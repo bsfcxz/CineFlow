@@ -339,6 +339,82 @@ void main() {
       expect(c.read(playlistStateProvider).currentIndex, 2);
       expect(h.calls, contains('selectMedia:2'));
     });
+
+    // ★ 用户反馈（2026-10-07）：剧集/综艺的播放列表**没有显示集数**。
+    //    修法对齐旧页选集抽屉（`player_page.dart:2563-2573`）的口径：
+    //    `第 N 集` + 剧名 + 进度。
+    testWidgets('★ 剧集列表显示集数徽章（用户反馈回归）', (tester) async {
+      final (c, _) = await pumpPlayer(tester);
+      c.read(playlistStateProvider.notifier).setEntries(const [
+        PlaylistEntry(id: '1', title: '初入棋局', episodeLabel: '第 1 集'),
+        PlaylistEntry(id: '2', title: '宿敌相逢', episodeLabel: '第 2 集'),
+        PlaylistEntry(
+          id: '3',
+          title: '棋逢对手',
+          episodeLabel: '第 3 集',
+          progressLabel: '看到 37%',
+        ),
+      ]);
+      await tester.pump();
+
+      await tester.tap(find.byKey(keys.player.playlistButton));
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // 集数徽章必须存在 —— 这正是用户说"没有"的东西
+      expect(find.text('第 1 集'), findsOneWidget,
+          reason: '播放列表应显示集数（用户反馈它缺失）。\n'
+              '若这条红 → 集数又没被填进 PlaylistEntry。');
+      expect(find.text('第 2 集'), findsOneWidget);
+      expect(find.text('第 3 集'), findsOneWidget);
+
+      // 集数与剧名**同时**可见（旧页选集是"第 N 集 + 剧名"）
+      expect(find.text('初入棋局'), findsOneWidget);
+      expect(find.text('棋逢对手'), findsOneWidget);
+
+      // 观看进度
+      expect(find.text('看到 37%'), findsOneWidget,
+          reason: '对齐旧页选集的 sub：让用户看出"哪几集看过、看到哪"');
+    });
+
+    testWidgets('★ 电影（无集数）不显示空徽章', (tester) async {
+      final (c, _) = await pumpPlayer(tester);
+      c.read(playlistStateProvider.notifier).setEntries(const [
+        PlaylistEntry(id: 'a', title: '电影甲', subtitle: '24.6 GB · MKV'),
+        PlaylistEntry(id: 'b', title: '电影乙', subtitle: '12.4 GB · MKV'),
+      ]);
+      await tester.pump();
+
+      await tester.tap(find.byKey(keys.player.playlistButton));
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // 电影没有集号 → episodeLabel 为 null → 不应出现任何"第 N 集"
+      expect(find.textContaining('第 '), findsNothing,
+          reason: '电影不该出现"第 N 集"徽章（也不能出现"第 null 集"）');
+      // 但副标题要照常显示
+      expect(find.text('24.6 GB · MKV'), findsOneWidget);
+    });
+
+    testWidgets('★ 进度优先于副标题（信息密度取舍）', (tester) async {
+      final (c, _) = await pumpPlayer(tester);
+      c.read(playlistStateProvider.notifier).setEntries(const [
+        PlaylistEntry(
+          id: '1',
+          title: '已看过的',
+          episodeLabel: '第 1 集',
+          subtitle: '副标题不该出现的',
+          progressLabel: '已看',
+        ),
+      ]);
+      await tester.pump();
+
+      await tester.tap(find.byKey(keys.player.playlistButton));
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(find.text('已看'), findsOneWidget);
+      expect(find.text('副标题不该出现的'), findsNothing,
+          reason: '第二行只显示一条：进度优先于副标题。\n'
+              '若两者都显示 → 行高会变，列表可读性下降。');
+    });
   });
 
   group('§18 清单 8/9/10：设置面板的四个 Tab 内容', () {
