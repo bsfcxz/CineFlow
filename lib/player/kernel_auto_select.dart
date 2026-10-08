@@ -92,6 +92,7 @@ class MediaTraits {
     this.isHls = false,
     this.isTranscoding = false,
     this.hasExternalSubtitle = false,
+    this.videoRange,
   });
 
   /// 文件名或 URL（用于取扩展名）。
@@ -116,6 +117,36 @@ class MediaTraits {
 
   /// 是否有外挂字幕（mpv 对字幕编码/字体的支持更好）。
   final bool hasExternalSubtitle;
+
+  /// 视频动态范围（服务端 `VideoRange` / `VideoRangeType`）。
+  /// 取值如 `SDR` / `HDR10` / `HLG` / `DOVI` / `DolbyVision`。
+  ///
+  /// ## 为什么要进"内核决策"（借鉴 LinPlayer 的架构思路）
+  /// 参考项目 `zzzwannasleep/LinPlayer`（AGPL-3.0，**仅取思路不抄代码**）
+  /// 的能力表明确写着：**"HDR / 杜比视界自动切软解"**。
+  ///
+  /// 原理（不是照搬结论）：**杜比视界在安卓硬解路径上普遍失败或降级** ——
+  /// · MediaCodec 的 DV 支持**依设备/厂商而异**：多数机器只解出"基础层"
+  ///   （画面发灰/偏暗），少数直接解不了
+  /// · mpv 在 `hwdec=no` 时有**软件回退**（lavc 软解 + tone-mapping）
+  /// ⇒ 对 DV/HDR 片源，**宁可软解也不要硬解出错误画面**。
+  ///
+  /// 这与本文件既有的"冷门容器优先 mpv（能播 > 体验）"是**同一条原则**：
+  /// **画面正确 > 性能**。
+  final String? videoRange;
+
+  /// 是否杜比视界（DV）。见 [videoRange] 的说明。
+  bool get isDolbyVision {
+    final v = videoRange?.toLowerCase() ?? '';
+    return v.contains('dovi') || v.contains('dv') || v.contains('dolby');
+  }
+
+  /// 是否任意 HDR（含 DV）。用于"优先 mpv 的软解/tone-mapping 路径"。
+  bool get isHdr {
+    if (isDolbyVision) return true;
+    final v = videoRange?.toLowerCase() ?? '';
+    return v.contains('hdr') || v.contains('hlg') || v.contains('pq');
+  }
 
   /// 分辨率高度（取不到返回 null）。
   int? get shortSide {
@@ -220,6 +251,21 @@ abstract final class KernelAutoSelect {
   ///
   /// ## 规则顺序（**顺序即优先级**，改顺序会改变行为）
   ///
+  /// 0. **杜比视界 / HDR → mpv**（★ 2026-10-09 新增，借鉴 LinPlayer）
+  ///    理由：**DV 在安卓硬解路径上普遍失败或降级** ——
+  ///    MediaCodec 的 DV 支持依设备/厂商而异，多数机器只解出"基础层"
+  ///    （画面发灰/偏暗），少数直接解不了；而 mpv 在 `hwdec=no` 时
+  ///    有**软件回退 + tone-mapping**。
+  ///    ⇒ **画面正确 > 性能**（与本文件既有原则一致）。
+  ///
+  ///    ⚠️ 放在**最前面**（在 HLS 之前）：DV 片源若走 Media3 且设备
+  ///    不支持 DV 硬解，会得到**错误画面** —— 那比"用哪个内核"严重得多。
+  ///
+  ///    ## 来源说明
+  ///    参考 `zzzwannasleep/LinPlayer`（Apache/AGPL 项目，**仅取架构思路、
+  ///    未抄任何代码**）的能力表："mpv 播放内核 —— 全格式；
+  ///    **HDR / 杜比视界自动切软解**；PGS/SUP 图形字幕"。
+  ///
   /// 1. **HLS / 转码流 → Media3**
   ///    理由：Media3 对 HLS 的分片续播、码率切换支持更成熟。
   ///    这是**收益最明确**的一条（也是引入 Media3 的主要价值）。
@@ -238,6 +284,19 @@ abstract final class KernelAutoSelect {
   ///
   /// 5. **其余 → mpv**（保守：格式覆盖最全）
   static KernelDecision _selectAuto(MediaTraits t) {
+    // ---- 规则 0：杜比视界 / HDR → mpv（最高优先级，见方法注释）----
+    if (t.isHdr) {
+      return KernelDecision(
+        kernel: KernelType.mpv,
+        reason: t.isDolbyVision
+            ? '杜比视界（${t.videoRange}）走 mpv —— 系统硬解对 DV 支持'
+                '依机型而异，mpv 有软件回退与色调映射'
+            : 'HDR（${t.videoRange}）走 mpv —— 由 mpv 做色调映射，'
+                '避免硬解路径的偏色/过暗',
+        confidence: KernelConfidence.high,
+      );
+    }
+
     // ---- 规则 2 前置：冷门格式一律 mpv（播放优先于一切）----
     if (isMpvOnlyContainer(t.effectiveContainer)) {
       return KernelDecision(
