@@ -1,5 +1,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- 媒体会话（K3 / CF-P3-KERNEL-004）：通知栏控制 + 蓝牙耳机键 + 后台播放。
+         三条都缺一不可：
+         · FOREGROUND_SERVICE         —— 前台服务本身（API 28+ 必需）
+         · FOREGROUND_SERVICE_MEDIA_PLAYBACK —— **API 34+ 必需**的前台服务类型；
+           缺失时 startForeground 直接抛 SecurityException（本 App targetSdk 36）
+         · POST_NOTIFICATIONS         —— **API 33+ 必需**；不申请则通知栏控制
+           根本不显示（而且不报错，只在 logcat 有一行，极难排查） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="CineFlow"
         android:usesCleartextTraffic="true"
@@ -27,6 +38,22 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 媒体会话服务（K3）：通知栏 / 蓝牙耳机键 / 后台播放。
+             ⚠️ `foregroundServiceType="mediaPlayback"` 必须与 manifest 里的
+                FOREGROUND_SERVICE_MEDIA_PLAYBACK 权限**成对**出现 ——
+                只有权限没有类型、或有类型没权限，API 34+ 上都会崩。
+             ⚠️ `exported="true"` 是**必需**的：系统（SystemUI / 蓝牙栈）
+                要从外部绑定本服务来投递媒体键。 -->
+        <service
+            android:name=".player.CineFlowSessionService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService"/>
+                <action android:name="android.media.browse.MediaBrowserService"/>
+            </intent-filter>
+        </service>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

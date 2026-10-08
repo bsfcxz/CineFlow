@@ -129,7 +129,11 @@ void main() {
     test('★ initState 不得锁横屏（横屏只在点全屏时）', () {
       final fn = flow.indexOf('void initState()');
       expect(fn, greaterThanOrEqualTo(0), reason: '找不到 initState');
-      final body = flow.substring(fn, (fn + 2500).clamp(0, flow.length));
+      // ⚠️ 窗口要**够大**：`initState` 里除方向设置外还有启动埋点、
+      //    以及 K3 新增的媒体会话命令注册（约 60 行）。窗口太小会**截断**，
+      //    使 `portraitUp` 落在窗口外 ⇒ 误报"没锁竖屏"。
+      //    （实测：加 K3 后本用例从绿变红，原因就是窗口不够，不是回归。）
+      final body = flow.substring(fn, (fn + 6000).clamp(0, flow.length));
 
       expect(body.contains('landscapeLeft'), isFalse,
           reason: '★ 用户明确："播放页不锁横屏，我是手机使用，点击全屏时变成横屏"。\n'

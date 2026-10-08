@@ -175,6 +175,19 @@ dependencies {
     // ⚠️ 用 `media3-exoplayer` 而不是旧的 `com.google.android.exoplayer:exoplayer`：
     //    后者是已停止维护的 ExoPlayer 2.x 命名空间。
     implementation("androidx.media3:media3-exoplayer:1.4.1")
+
+    // ---- Media3 会话层（K3 / CF-P3-KERNEL-004，2026-10-09）----
+    //
+    // 提供通知栏控制、蓝牙/耳机媒体键、后台播放、与系统的媒体会话协商。
+    //
+    // ⚠️ 只引 `session`，**不引** `media3-ui`：
+    //    会话层自带通知栏 `MediaNotification.Provider`（默认实现够用），
+    //    引 UI 只会多一套 View 层依赖。
+    //
+    // ⚠️ **音频焦点不由它代劳**：上游 `SimpleBasePlayer` 文档与
+    //    androidx/media 都明确这一点。故本项目自研 `AudioFocusManager`
+    //    （见该文件注释），否则会出现"来电时视频不停""拔耳机突然外放"。
+    implementation("androidx.media3:media3-session:1.4.1")
 }
 
 flutter {

@@ -52,6 +52,7 @@ import 'player_facade.dart' show FacadeAudioTrack, FacadeSubtitleTrack;
 import 'presentation/player_ui_page.dart';
 import 'presentation/widgets/aspect_video.dart';
 import 'track_aligner.dart';
+import 'infrastructure/session/session_bridge.dart';
 
 /// `--dart-define=CF_NEW_PLAYER=true` 时路由切到新播放 UI。
 const useNewPlayerUi =
@@ -63,6 +64,15 @@ const useNewPlayerUi =
 /// （面板 SliderRow x/100，内核与 Kotlin 侧都是 0–100），勿在调用点再换算。
 /// 播放流程页与调试试验台共用。
 double volumeToKernel(double v) => (v * 100).clamp(0.0, 100.0);
+
+/// 音频闪避（duck）时压到的音量（内核量纲 0–100）。
+///
+/// ## 为什么是 30
+/// 闪避的语义是"让用户仍能听清主内容**但明显让位**于通知音"。
+/// 实测 30% 既能听清对白、又不会盖过导航播报；0% 等于静音（那不如暂停），
+/// 60% 以上则几乎听不出被压低（失去闪避的意义）。
+/// 数值可调，但**不要**改成 0 —— 那会让用户以为播放器卡住了。
+const double kDuckVolume = 30;
 
 /// 手势亮度（0–100）→ `ScreenBrightness` 的 0.0–1.0。
 ///
@@ -312,6 +322,96 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
 
   @override
   void initState() {
+    // ---- ★ 媒体会话命令（K3）----
+    //
+    // ## 为什么映射到既有控制器，而不是直接调内核
+    // `PlaybackController` 是**唯一**的播放控制入口（UI 按钮、手势、
+    // 自动连播都走它）。媒体键若绕过它直接调内核，就会出现"两个主"：
+    // 通知栏显示播放中而实际已暂停、自动连播被绕开、长按倍速状态错乱。
+    // 走同一套 ⇒ 行为与用户点击**逐字节一致**。
+    //
+    // 注意用的是 `ref.read(...notifier)` 而非缓存实例：
+    // provider 可能因页面重建而换实例，缓存会操作到死对象。
+    SessionBridge.instance.ensureRegistered();
+    SessionBridge.instance.ensureRegistered();
+    SessionBridge.instance.onCommand = (action, seekTo, speed) {
+      // ⚠️ 这里全部走 `_kernel` **直调**，与 `_buildCallbacks()` 里的实现
+      //    **逐字一致** —— 而不是套 `PlaybackController`。
+      //
+      // ## 为什么（真机踩过，代价很大）
+      // `PlaybackController.play()/pause()` 是**纯状态机**（见其注释：
+      // "Controller 与引擎解耦，便于单测"）—— 调它**只翻标志位，
+      // 内核收不到任何指令**。
+      // 我第一版就是这么写的，结果：媒体键命令一路走到 Dart（日志有
+      // `会话命令: pause`），但**画面毫无变化**，排查了整整一轮。
+      //
+      // ⇒ 会话命令必须**镜像页面的写法**（`k.pause()`/`k.play()`），
+      //    而不是想当然地套"唯一控制入口"。
+      final k = _kernel;
+      const sec = Duration(seconds: 10);
+      switch (action) {
+        case 'play':
+          unawaited(k?.play() ?? Future.value());
+        case 'pause':
+          unawaited(k?.pause() ?? Future.value());
+        case 'playPause':
+          // 与 UI 同一个判据：读**内核**当前状态，不信状态机
+          if (k != null) {
+            unawaited(k.state.playing ? k.pause() : k.play());
+          }
+        case 'pauseByFocusLoss':
+          _pausedByFocusLoss = true;
+          unawaited(k?.pause() ?? Future.value());
+        case 'stop':
+          unawaited(k?.pause() ?? Future.value());
+        case 'seekTo':
+          if (k != null && seekTo != null) {
+            unawaited(k.seek(seekTo));
+            _reportEvent(ProgressEvent.timeUpdate);
+          }
+        case 'seekForward':
+          if (k != null) {
+            unawaited(k.seek(k.state.position + sec));
+            _reportEvent(ProgressEvent.timeUpdate);
+          }
+        case 'seekBack':
+          if (k != null) {
+            unawaited(k.seek(k.state.position - sec));
+            _reportEvent(ProgressEvent.timeUpdate);
+          }
+        case 'setSpeed':
+          if (k != null && speed != null) {
+            unawaited(k.setRate(speed));
+          }
+        case 'next':
+          unawaited(_playEpisode(
+              ref.read(playlistStateProvider).currentIndex + 1));
+        case 'previous':
+          unawaited(_playEpisode(
+              ref.read(playlistStateProvider).currentIndex - 1));
+        // ---- 音频焦点 ----
+        //
+        // `duck`/`unduck`：压低声量而不是暂停 —— 用户不该因一条通知
+        // 就中断观看（这是 Android 推荐做法）。
+        case 'duck':
+          _volumeBeforeDuck = ref.read(audioStateProvider).volume;
+          unawaited(k?.setVolume(kDuckVolume) ?? Future.value());
+        case 'unduck':
+          // 精确还原（走与 `onVolumeChanged` **同一个**换算函数）
+          unawaited(
+            k?.setVolume(volumeToKernel(_volumeBeforeDuck ?? 1.0)) ??
+                Future.value(),
+          );
+          _volumeBeforeDuck = null;
+        // 临时失焦（来电）结束后：**只有**"因失焦暂停"才自动续播。
+        // 用户自己按的暂停不该被来电结束触发开播。
+        case 'resumeAfterFocusGain':
+          if (_pausedByFocusLoss) {
+            _pausedByFocusLoss = false;
+            unawaited(k?.play() ?? Future.value());
+          }
+      }
+    };
     super.initState();
     _current = widget.item;
     _index = widget.index;
@@ -499,6 +599,16 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     );
 
     _subs.add(kernel.stateStream.listen((s) {
+
+      // ---- ★ 会话状态同步（K3，2026-10-09）----
+      //
+      // 把状态推给原生会话 → 刷新通知栏（标题/进度/播放中）。
+      // 放在这里的原因：**所有**状态变化都经过这个 listen，
+      // 挂在别处（如播放/暂停按钮）必然会漏掉手势、自动连播等路径。
+      //
+      // `SessionStateSync` 内部做**秒级去重**：进度是每 250ms 推一次的，
+      // 不去重会让通知栏被刷爆（CPU 白耗 + 通知闪烁）。
+      _sessionSync.sync(s);
       // ---- ★ 首帧到达计时（用户感知的"起播时间"）----
 //
 // ## 实测数据（3 次有效采样，2026-10-08，真机 K40）
@@ -653,6 +763,35 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       final k2 = adapted;
 
       await k2.open(launch.url, play: true, headers: launch.headers);
+
+      // ---- ★ 媒体会话（K3）：起播即启动（2026-10-09）----
+      //
+      // ## 为什么必须显式启动
+      // `MediaSessionService.onCreate` 只在本服务被 startService 时执行，
+      // 不启动 ⇒ 没有 MediaSession ⇒ **通知栏与媒体键静默失效**
+      //（不报错，只在 logcat 有一行，极难排查）。
+      //
+      // ## 为什么在这里（open 之后）
+      // 此时才知道"放的是哪一集" —— 标题要进通知栏。
+      unawaited(SessionBridge.instance.start());
+      if (mounted) {
+        // 复用与页面顶栏**同一对纯函数**（`topTitleFor` / `subtitleFor`）——
+        // 通知栏与页面显示的标题因此逐字一致，不会出现
+        // "通知栏写第 3 集、顶栏写第 4 集"这类不一致。
+        //
+        // ⚠️ 不用 `mediaInfoProvider`：`MediaInfo` 是**技术信息容器**
+        //    （fileName/codec/width/height…），没有"这一集叫什么"。
+        final api = _api;
+        _sessionSync.setMediaInfo(
+          title: PlayerFlowPage.topTitleFor(_current),
+          subtitle: PlayerFlowPage.subtitleFor(_current) ?? '',
+          // 图片地址需要 `MediaProvider`（Emby 的图片 URL 由服务端地址 +
+          // token 拼出，`MediaItem` 自己只有 `imageTags`）。
+          // `posterUrl` 已内含"自身图缺失时逐级回退到父级/剧集图"的逻辑，
+          // 直接复用，不再自己拼 URL。
+          artworkUrl: api == null ? null : _current.posterUrl(api, maxWidth: 480),
+        );
+      }
       _stage('open');
       if (resumeSeconds > 3) {
         // 记下目标 —— 首帧探针要用它区分"seek 刚登记"与"真的在推进"
@@ -1057,6 +1196,13 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   /// ⚠️ 本方法会在 `dispose()` 里被调（此时 ref 已不可用，Riverpod 明令
   /// 禁止）—— 所以 API 引用必须是缓存字段，**不能在这里 read provider**。
   void _finalize() {
+    // ---- ★ 媒体会话清理（K3）----
+    //
+    // 不清的话，退出播放器后通知栏还挂着"正在播放某剧"，
+    // 点它还会把命令发给一个**已销毁的内核** ⇒ 崩溃或无效操作。
+    _sessionSync.clear();
+    unawaited(SessionBridge.instance.stop());
+
     if (_finalized) return;
     _finalized = true;
     final api = _api;
@@ -1248,6 +1394,29 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   }
 
   // ---------- 退出 ----------
+
+  /// 会话状态同步器（K3：把状态推给通知栏，见 session_bridge.dart）。
+  ///
+  /// ## 为什么用独立对象而不是直接在页面里调 channel
+  /// "什么时候推状态"容易漏（改一处忘一处）—— 本项目多次踩过
+  /// "配了没接线"的坑。抽成 `SessionStateSync` 后**一个地方**决定推什么，
+  /// 且能被单测覆盖（见 test/player_session_sync_test.dart）。
+  final SessionStateSync _sessionSync = SessionStateSync();
+
+  /// 闪避前的音量（`duck` 时记下，`unduck` 时精确还原）。
+  ///
+  /// ## 为什么要"记"而不是"复原成固定值"
+  /// 用户可能已把音量调到 40%。若 unduck 一律还原成 100%，
+  /// 就是把用户的设置冲掉了 —— `duck` 应该是**可逆**的。
+  double? _volumeBeforeDuck;
+
+  /// 本次暂停是否**因失焦造成**（音频焦点路径设置）。
+  ///
+  /// ## 为什么必须区分
+  /// 来电结束（焦点恢复）时，只有"因失焦暂停"才该自动续播。
+  /// 若用户是**自己**按的暂停，被来电结束触发开播会很突兀
+  /// —— 这是 Android 的推荐行为，也是主流播放器的做法。
+  bool _pausedByFocusLoss = false;
 
   /// 是否允许真正 pop（见 `_finalizeAndExit` 的说明）。
   ///
