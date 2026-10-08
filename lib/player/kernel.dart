@@ -354,6 +354,15 @@ abstract class PlayerKernel {
   Future<void> setDecodeMode(DecodeMode mode);
 
   KernelState get state;
+
+  /// 补发被限流的最后一次位置（**默认空实现**）。
+  ///
+  /// ## 为什么在接口上有默认实现
+  /// 限流是 `NativeKernel` 的实现细节（它按 250ms 抑制位置推送）。
+  /// Media3 内核不需要限流（它的回调频率本来就低），
+  /// 故给默认空实现 —— 调用方（UI）无需判断内核类型，
+  /// 也可以安全地对任何内核调用。
+  void flushPendingPosition() {}
   KernelTracks get tracks;
   KernelSelection get selection;
 

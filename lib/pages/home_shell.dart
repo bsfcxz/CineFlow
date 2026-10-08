@@ -33,6 +33,16 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     ProfilePage(),
   ];
 
+  /// 复位方向 + 系统栏（**幂等**，多处调用无副作用）。
+  ///
+  /// 抽成方法是因为它有**两个触发点**：
+  ///   · `initState`：冷启动（App 被杀死后重开）
+  ///   · `didPopNext`：从播放页/详情页返回（真机 bug 的主场景）
+  void _restorePortrait() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -53,8 +63,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     // 幂等、无依赖（SystemChrome 是静态平台通道 API）。
     // 若将来加入需要横屏的一级页面，把这段挪进"竖屏页"的公共基类，
     // 而不是在这里做条件判断。
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    _restorePortrait();
   }
 
   void _switchTab(int i) => setState(() => _index = i);
