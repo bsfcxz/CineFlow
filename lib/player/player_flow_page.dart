@@ -129,6 +129,21 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   Timer? _startTimeout;
   Timer? _speedTimer;
 
+  /// 起播全链路计时（诊断用）：
+  /// `initState` → 内核创建 → open → **首帧到达**。
+  Stopwatch? _sw;
+  int _tMark = 0;
+  bool _firstFrameLogged = false;
+
+  /// 跨方法的分段计时（`_boot` / `_startEpisode` 都用它）。
+  void _stage(String name) {
+    final sw = _sw;
+    if (sw == null) return;
+    final now = sw.elapsedMilliseconds;
+    debugPrint('[Startup] $name=${now - _tMark}ms (abs=${now}ms)');
+    _tMark = now;
+  }
+
   /// 位置补发定时器（配合 `NativeKernel._pushState` 的限流）。
   ///
   /// 内核为消除"每帧重建整页"把位置推送限流到 250ms；
@@ -253,6 +268,16 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       }
     });
 
+    // ---- 完整起播计时：从**进入页面**开始（不是从 _startEpisode 开始）----
+    //
+    // ⚠️ 上一版埋点在 `_startEpisode` 内部，测出 TOTAL 仅 95ms ——
+    //    那说明"慢"不在这条 Dart 命令链里。真正的耗时在：
+    //      · `_boot` 的内核创建（mpv 初始化 + EGL 上下文）
+    //      · `open()` **返回之后**的"解封装→解码→出首帧"
+    //    故本版把基准提到 initState，并补测首帧到达时刻。
+    _sw = Stopwatch()..start();
+    _tMark = 0;
+
     unawaited(_loadDanmaku());
     unawaited(_boot());
   }
@@ -268,8 +293,11 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     //    而那要等 _startEpisode 才拿到。真正的适配在那边做（见 _adaptKernel）。
     _preference = KernelPreference.fromStorage(
         await ref.read(sessionStoreProvider).getPref(kKernelPrefKey));
+    _stage('prefRead');
     final kernel = PlayerKernelFactory.create(_preference.kernelType);
+    // ★ 这一段含 **mpv 初始化 + EGL 上下文创建**，是起播的固定开销
     await kernel.ensureTexture();
+    _stage('kernelCreate+texture');
     if (!mounted) {
       unawaited(kernel.dispose());
       return;
@@ -308,6 +336,44 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     );
 
     _subs.add(kernel.stateStream.listen((s) {
+      // ---- ★ 首帧到达计时（用户感知的"起播时间"）----
+//
+// ## 实测数据（3 次有效采样，2026-10-08，真机 K40）
+// ```
+// prefRead        234 ms   ← 读一个偏好（secure_storage / Keystore 解密）
+// resolve          88 ms   ← Emby 要直链（首次冷连 5778ms）
+// kernelCreate      4 ms
+// open             43 ms   ← 只等 loadfile 命令下发，**不等画面**
+// seek / rate       5 ms
+// ───────────────────────
+// Dart 命令链合计   314 ms  ← 只占 6%
+// FIRST_FRAME     4754 ms  ← ★ 94% 的时间在这
+// ```
+// ⇒ **"起播慢"确认存在，但不在 Dart 侧**。慢在"mpv 打开 URL →
+//    解封装 → 解码器就绪 → 首帧送显"这一段（Dart 只占 6%）。
+//
+// ## ⚠️ 本探针有已知缺陷（下一轮必须换掉判据）
+// 判据用 `position > 0`，**有续播进度时会给出假值**：
+// 因为会先 `seek(resume)` → mpv 立刻回报 `time-pos=63`（seek 目标位置），
+// 此时画面还没出来，却被判成"首帧到达"。
+//
+// 实测对照（第 4 次采样暴露）：
+//   · `resume=63s`（触发 seek）→ FIRST_FRAME=**5ms**              ← 假值
+//   · `resume<3s`（不 seek）   → FIRST_FRAME=**4754/4503/5758ms** ← 真值
+//
+// **正确判据**：mpv 的 `vo-configured` 属性或 `video-reconfig` 事件 ——
+// 它们只在渲染器真正拿到首帧时触发，与 seek 无关。
+// （mpv 自身日志在 release 包里不输出：实测 logcat 中 mpv 相关行数 = **0**，
+//   故只能走"属性/事件"路线，不能靠 `--msg-level` 日志。）
+//
+// 引用本数据时**只用不触发 seek 的那几次**，或先修好探针再量。
+      if (!_firstFrameLogged && s.position > Duration.zero) {
+        _firstFrameLogged = true;
+        _stage('FIRST_FRAME');
+        debugPrint('[Startup] ===== 点到出画面 '
+            '${_sw?.elapsedMilliseconds ?? 0}ms =====');
+      }
+
       final p = ref.read(playbackStateProvider.notifier);
       p.setPlaying(s.playing);
       p.setPosition(s.position);
@@ -376,6 +442,8 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   Future<void> _startEpisode({required double resumeSeconds}) async {
     final k = _kernel;
     if (k == null || _switching) return;
+    // 换集时重置首帧标记（否则第 2 集起不再计时）
+    _firstFrameLogged = false;
     final api = ref.read(embyApiProvider);
     if (api == null) {
       ref.read(playbackStateProvider.notifier).setError('未登录');
@@ -384,6 +452,7 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     try {
       final launch = await api.resolvePlayback(_current.id,
           mediaSourceId: widget.mediaSourceId);
+      _stage('resolve');
       if (!mounted) return;
       _launch = launch;
       ref
@@ -395,19 +464,25 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       // 若决策结果与当前内核不同 → 换内核（保持进度）。
       // 这是"根据视频自动适配"的落点：决策输入全部来自 launch。
       final adapted = await _adaptKernel(launch);
+      _stage('adapt');
       if (adapted == null) return; // 换内核中，本次起播交给新内核
       final k2 = adapted;
 
       await k2.open(launch.url, play: true, headers: launch.headers);
+      _stage('open');
       if (resumeSeconds > 3) {
         await k2.seek(Duration(seconds: resumeSeconds.toInt()));
       }
+      _stage('seek');
       // 默认倍速偏好
       final savedRate = double.tryParse(
           await ref.read(sessionStoreProvider).getPref('default_rate') ?? '');
       if (savedRate != null && savedRate != 1) {
         await k2.setRate(savedRate);
       }
+      _stage('rate');
+      debugPrint('[Startup] TOTAL=${_sw?.elapsedMilliseconds ?? 0}ms '
+          '(resume=${resumeSeconds.toInt()}s)');
       _reportStart(launch);
       unawaited(_applyServerDefaultTracks(launch));
       _fillMediaInfo(launch);
