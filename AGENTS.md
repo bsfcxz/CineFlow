@@ -85,7 +85,9 @@ flutter devices          # 确认真机在线（用 `flutter devices` 自己查 
 **改代码的三条铁律**
 1. 先读 §6（坑）与 §7（已知缺陷台账）——台账里的问题**尚未修复**，别当成已完成功能。
 2. 新增 Emby 端点/字段**必须先 curl 实测**（§10.2），把结论写进方法注释。
-3. 改完必须跑 §8 验收基线，**真机验证过才算完成**。
+3. 改完必须跑 §8 验收基线，**真机验证过才算完成**；
+   **报"已验证"前先读 [§8.4 反自欺](#84-反自欺报已验证前先过一遍2026-10-09-新增)**
+   —— 那里记着"测试绿了但结论是错的"三种形态（注释满足断言 / 注入没注入到真代码 / 数字靠推算）。
 
 ---
 
@@ -113,7 +115,7 @@ Flutter 实现的 **Emby 第三方播放器**（当前**仅 Android 手机端**�
 | 四 | UI/UX 与媒体库 | **~80%**（排序 ✅ / default_rate ✅ / 加载失败不伪装空库 ✅ / 首页降级 ✅ / 演职员含导演 ✅ / 服务端筛选数据层 ✅。**媒体库页已移除（ADR 0003），列表页 UI 待全量重构 → CF-P4-UI-019**） |
 | 五 | 弹幕系统 | **~70%**（协议/渲染/设置全部落地：官方签名 + 自建 URL-token 双形态、两种 `p` 布局、异步 1.5s×5min 轮询、追尾判据轨道分配、设置页与持久化。**未做**：弹幕发送、手动匹配面板、密度折线图；**未联调**：官方 API 本机不可达） |
 | 六 | 多平台适配 | **搁置**（用户明确只做手机端） |
-| 七 | 测试与发布 | ~85%（**469 例 Flutter 单测 + 143 例 Go 单测**全绿，另有 **1 个真机集成测试**；CI 有；**release 签名已配好并产出 v0.3.1 三 ABI**，见 §7.16） |
+| 七 | 测试与发布 | ~85%（**469 例 Flutter 单测 + 143 例 Go 单测**全绿，另有 **1 个真机集成测试**；CI 有；**release 签名已配好并产出 v0.3.1 三 ABI**，见 §7.16（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)）） |
 | 八 | 115 网盘扩展 | **~55%**（协议层 + 扫码登录 UI + 文件浏览 + 播放页全部落地，见 ADR 0007。**真机已验证到"能拿到二维码"**；**未联调**：无真实账号，列文件/取直链/真实播放未验证。走的是**非公开 webapi 接口**，有风控风险） |
 
 ### 技术栈现状（用户要求"严格按照 Go + Flutter"）
@@ -254,7 +256,7 @@ MCP `flutter` 服务器提供等价的封装工具：`devices` / `run_app` / `ru
 1. **UI 只依赖 `MediaProvider` 抽象**，不直接 import `emby_provider.dart`
    （例外：登录页调用静态 `EmbyProvider.authenticate`，以及尚未收敛的 `MediaException` 引用，见 §7.13）。
    这是「多源可插拔」的架构承诺，**新代码不得加重违反**。
-   > 边界类型已于 2026-10 中立化（`Emby*` → `Media*`，见 §7.19）。
+   > 边界类型已于 2026-10 中立化（`Emby*` → `Media*`，见 §7.19（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)））。
    > 但注意：**115 走的是独立页面而非 `MediaProvider`**——
    > 它的播放模型（文件夹树 + `pick_code`）与 Emby（库/季/集 + `MediaSources`）
    > 根本不同，强行统一会造出无意义概念。见 ADR 0007 的"与 Emby 的关系"。
@@ -264,7 +266,7 @@ MCP `flutter` 服务器提供等价的封装工具：`devices` / `run_app` / `ru
    **不允许对服务器字段做非空断言**。列表统一 `.whereType<Map<String, dynamic>>()`。
 4. **颜色/间距只用 `Cf` 令牌**；新颜色先问自己是不是该进 theme.dart。
 5. **网络请求失败一律可降级**：首页区块吞错降级空列表；toggle 失败回滚 UI 并提示；
-   但**不要**把「加载失败」伪装成「暂无内容」（见 §7.8）。
+   但**不要**把「加载失败」伪装成「暂无内容」（见 §7.8（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)））。
 6. **文案全中文**，风格对齐现有页面（"继续播放 34%"、"已看"、"剩余 N 分钟"）。
 7. 保持 `flutter analyze` **零 error/warning**；`lib/douban/douban_client.dart` 的
    `prefer_initializing_formals` 3 处 info 是外部引入代码的已知情况，**接受，不要为它改动**。
@@ -287,7 +289,7 @@ MCP `flutter` 服务器提供等价的封装工具：`devices` / `run_app` / `ru
   `PlayedItems` 同构——**这台服务器没有 `/Favorites/` 路径**。
 - **多版本/音轨**：`PlaybackInfo` → `MediaSources[]`，直链 `static=true`。
   指定版本时传 `MediaSourceId`，但**服务端仍返回全部 MediaSources**，必须客户端按 id 复选。
-- **转码**：**当前服务器不具备转码能力**（实测结论见 `emby_provider.resolvePlayback` 注释与 §7.12），
+- **转码**：**当前服务器不具备转码能力**（实测结论见 `emby_provider.resolvePlayback` 注释与 §7.12（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)）），
   故客户端只做直连。若将来接入支持转码的服务器，需重新 curl 实测 DeviceProfile 与
   `TranscodingUrl` 形状后再实现——**不要凭文档或记忆写**。
 
@@ -371,7 +373,7 @@ MCP `flutter` 服务器提供等价的封装工具：`devices` / `run_app` / `ru
   改为按屏高/可用宽计算。
 - **风格刻度是枚举**：要第 5 种圆角，先改 `theme.dart` 的表，别在页面里就地写新值。
 - **空态与错误态分开**：真没内容 → `CfEmptyView`；加载失败 → `CfErrorView`。
-  把失败画成空态是缺陷 §7.8 的原始形态。
+  把失败画成空态是缺陷 §7.8（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)） 的原始形态。
 
 ### 6.5 Go 核心层 / FFI（2026-10 新增，全是实测踩出来的）
 - **`import "C"` 会污染整个包**：含 cgo 的包在 `CGO_ENABLED=0`（本机默认）或无 gcc 时
@@ -533,26 +535,14 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 
 | # | 缺陷 | 证据 | 影响 |
 |---|---|---|---|
-| ~~7.1~~ | ~~`reportPlaybackStart` 零调用点~~ | **已修复**：`_reportStart(PlaybackLaunch)` 起播即发 `Sessions/Playing`（`player_page.dart`）。真机实测：起播 8s 时服务器会话已带 `PositionTicks=8.2s`（Progress 周期 10s，故只能来自 Start） | — |
-| ~~7.2~~ | ~~媒体库排序完全失效~~ | **已修复**：新增 `LibraryPage.sortOptions`（SortBy → 标签, 方向）与 `_cycleSort()` 循环切换。**同时修掉一个更深的问题**：`getItems` 的 `SortOrder` 原被硬编码为 `Ascending`，导致"最近添加"实际返回**最旧**的条目。真机验证：点击 chip 依次得到 名称/评分/最近添加 三种结果，评分序为 10.0→9.2→9.0 严格降序 | — |
-| ~~7.4~~ | ~~豆瓣缓存 TTL 形同虚设~~ | **已修复**（ADR 0005）：契约改为 **TTL 在写入时固化**——`put(key,value,{required ttl})` 必填、`get(key)` 无可忽略参数（旧契约 `get(key,ttl:)` 允许实现方收下参数却不用，这正是缺陷根源）。缓存改走 drift/SQLite：`expires_at` 列 + `idx_douban_expires` 索引，过期判断在 SQL 里；旧 `FileDoubanCache`（写好却零引用）已删除。**反向注入验证**：把 `get` 改回忽略 ttl → 测试变红 `Expected: null, Actual: 'v'`。**真机物证**：设备导出 SQLite 中 `rank:movie_showing:0:25` 一行，`expires_at - saved_at = 21600` 秒（正是榜单 6h），且跨进程重启后日志仍显示 `现有 1 条 / 30125 字符` | — |
-| ~~7.5~~ | ~~`default_rate` 有读无写~~ | **已修复**：播放设置抽屉新增「默认倍速（下次起播）」组（1x/1.25x/1.5x/2x），经 `PlayerPage.parseDefaultRate/encodeDefaultRate` 读写 `cf_pref_default_rate`；1x 存空串以清除偏好。真机确认 4 个选项渲染正常 | — |
-| ~~7.6~~ | ~~`getItems` 中 `'Filters'` 键写了两次~~ | **已修复**：改为 `if (unplayedOnly) ... else if (filters ...)` 互斥分支，不再静默覆盖 | — |
 | 7.7 | **无 401 统一处理**：拦截器只注入头，token 失效只能看错误页 | `emby_provider.dart:43-48` | README "自动重连"未实现 |
-| ~~7.8~~ | ~~媒体库加载失败被吞成"暂无内容"~~ | **已修复**：`_reload` 捕获错误存入 `_error`，`_results` 在空列表时优先渲染 `CfErrorView` + 重试。真机验证：关 WiFi → 强制 reload → 显示「加载失败，请检查网络后重试」+「重试」，**不再出现"该库暂无内容"** | — |
-| ~~7.9~~ | ~~首页 `/Latest` 无 try~~ | **已修复**：四个区块各自独立降级；但**全失败时**把首个错误放进 `HomeData.fatalError`，UI 据此显示错误页。真机验证：关 WiFi → 下拉刷新 → 显示错误页 + 重试；点重试恢复 | — |
 | 7.10 | **文档与代码不符**：README 称"自动重连"、"6h/24h 缓存"仍未兑现（"Start→Progress→Stopped"已随 7.1 修复变为事实） | `README.md:20`/`:38` | 误导后续代理，**改代码时必须顺手修正** |
 | 7.11 | **无 WakeLock / 无画中画**：manifest 仅申请 `INTERNET` | `android/app/src/main/AndroidManifest.xml` | 播放中可能熄屏 |
-| ~~7.12~~ | ~~转码仅有 UI 文案~~ | **经实测判定为"服务器不具备转码能力，暂不实现"**：Emby 4.10.0.40 免费版 `HardwareAccelerationRequiresPremiere=True`；带 DeviceProfile 强制转码的 POST 返回 `SupportsTranscoding=false` 且无 `TranscodingUrl`；直连 `master.m3u8` 虽 200 但 `CODECS` 仍是源编码（hvc1），即未真正转码。结论已写入 `emby_provider.resolvePlayback` 注释。**待服务器具备转码能力后再接入** | — |
-| 7.13 | **UI 层仍有文件直接 import `emby_provider.dart`**（主要为 `MediaException`），违反约定 §5.1。注：边界**类型**已中立化（§7.19），但 `EmbyException` 本身仍来自实现文件 | detail/player/login/profile/search/home/providers | 接入第二个走 `MediaProvider` 的源时会被这处挡住（115 不受影响，它走独立页面） |
-| ~~7.14~~ | ~~演职员只渲染 `Actor`~~ | **已修复**：`models.dart` 新增 `EmbyPeople` 扩展（`actors/directors/writers/crewLine`），详情页在演员横滑上方显示「导演 A / B」摘要行。**实测依据**：本服务器 `People[].Type` 只有 `Actor`(107) 与 `Director`(14) 两种，旧实现把 **14 条导演数据全部静默丢弃**。真机验证：详情页显示「导演 石头熊 / Ma Hua / 王子悦」 | — |
-| ~~7.15~~ | ~~类型/年份筛选仅客户端~~ | **数据层已修复**：`getItems` 新增 `genres`/`years` 参数；`getGenres`（`/Genres?ParentId=` → 200 + `{Items:[{Name}]}`，空名需滤）与 `getYearRange`（`ProductionYear` 升/降序 + `Limit=1` 双探针，本服务器实测 **1931–2026**）落地。实测 `Genres=动作` 使总数 2035→**823**、`Years=2024`→**67**、组合→**19**（交集语义），且返回条目确实都含该类型。**页面部分随 ADR 0003 作废**（媒体库页已删除）；参数拼装由 `test/server_filter_test.dart` 6 例守住，重构时直接复用 | — |
-| ~~7.16~~ | ~~release 用 debug 签名~~ | **已修复**：RSA-4096 / PKCS12 / 30 年有效期，keystore 存**仓库外**（`%USERPROFILE%\cineflow-keystore\`），CI 从 5 个 Secrets 还原（`KEYSTORE_BASE64` 等）并写 `android/key.properties`，发布前有**签名守卫**（grep `Android Debug` + `keytool -printcert` 指纹比对）。**已产出并发布 v0.3.1 三个 ABI 的正式签名包**；工具 `tool/verify_signing.ps1`。⚠️ 注意 `apksigner verify` **必须带 `--verbose`** 才会打印 v2/v3 签名方案行 | — |
-| ~~7.17~~ | ~~`clientVersion = '0.1.0'` 与 pubspec `1.0.0+1` 不一致~~ | **已修复**：新增 `lib/core/version.dart` 作为 Dart 侧唯一来源（`kAppVersion` / `kClientVersion` / `kAppVersionLabel`），`VERSION` 为全仓唯一权威，`pubspec.yaml` 对齐为 `0.2.0+1`，「我的」页不再硬编码。一致性由 `tool/bump_version.ps1 -Check` 强制校验（收工前与 CI 必跑）；改版本用 `tool/bump_version.ps1 -Version X.Y.Z` 一次改齐三处 | — |
+| 7.13 | **UI 层仍有文件直接 import `emby_provider.dart`**（主要为 `MediaException`），违反约定 §5.1。注：边界**类型**已中立化（§7.19（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)）），但 `EmbyException` 本身仍来自实现文件 | detail/player/login/profile/search/home/providers | 接入第二个走 `MediaProvider` 的源时会被这处挡住（115 不受影响，它走独立页面） |
 | 7.18 | **仓库卫生**：`tool/icon/_gen/profile/` 混入 256 个 Edge 浏览器配置文件（已在 `.gitignore` 忽略）；`build/` 占 3.4GB（已忽略）；仓库历史里无垃圾文件 | — | 见 §9 |
-| ~~7.19~~ | ~~`MediaProvider` 抽象实际未解耦（ADR 0002 的"UI 零改动"承诺不成立）~~ | **已修复**：抽象层 12 个签名原本直接返回 `Emby*` 类型，全仓 **21 文件 / 243 处**引用。已把**跨越抽象边界的类型**中立化为 `Media*`（EmbyItem→MediaItem 等 12 个），刻意保留 `EmbyProvider`/`embyApiProvider`（那是具体实现，名字里带 Emby 是对的）。做法：词边界正则 + **最长优先**排序（避免 `EmbyItem` 吃掉 `EmbyItemDetail` 前缀），动手前先确认 `media_kit` 未导出同名符号。**验收：analyze 0 error/warning 一次通过，263 例测试全绿（改名不改行为）** | — |
 | 7.20 | **`models.dart` 仍含 Emby 线格式**：`fromJson` 工厂里是 Emby 专属键名（`UserData`/`MediaSources`/`ImageTags` 等）。要真正"第二 provider 可插拔"，需把线格式解析抽到独立的 Emby 适配器（`lib/data/emby/`），使中立模型层不含 Emby 词汇 | `models.dart`（434 行） | 目前 115 走独立页面故不受影响（ADR 0007）；但若将来再接入第二个**走 `MediaProvider`** 的源，这层必须先抽 |
 | 7.21 | **退出播放页后屏幕方向不复位**（用户反馈"退出后首页也是横的"）。真机取证：退出播放页后 App 仍在运行（`topResumedActivity` 是本 App、pid 存活）、**当前就在 App 自己的首页/详情页**，但窗口仍是 `cur=2400x1080`（横）。**已试 4 种方案全部失败**：① `player_flow_page.dispose()` 里复位（调用发生但窗口不转）；② `HomeShell.initState` 复位（只在冷启动跑一次 —— 它一直在导航栈底部，不会 unmount）；③ `RouteAware.didPopNext`（只覆盖"直接下层是首页"，实测落点是**详情页**）；④ 导航层统一处理 `AutoPortraitObserver`（监听全局路由变化）→ 仍横屏。<br>**决定性取证**：App 未运行时是竖屏、冷启动后也是竖屏 ⇒ 横屏偏好**没有**被系统持久化、我们的复位调用**是有效的**；但从播放页返回后窗口保持横屏，且**连系统级** `settings put system user_rotation 0` **都无法让它转回** ⇒ 有东西在**持续请求横屏**。<br>**下一轮入口**：`player_flow_page.dart` 的 initState **绕过**了新分层的 `SystemUiService` 直接调 `SystemChrome.setPreferredOrientations(landscape)`；而 `lib/player/infrastructure/system/system_services.dart` 里已有 `lockLandscape()` / `unlockOrientation()`，后者注释明确写着"退出播放器时**必须**调这个，否则整个 App 仍锁在横屏"。建议让 `PlayerFlowPage` 改用 `SystemUiService`，把"成对性"交给服务保证，而不是靠每个调用点记得复位。⚠️ 另注：诊断时**不要**用 `settings put system user_rotation` —— 那会把系统锁成强制横屏，此时任何 App 的 `setPreferredOrientations` 都无效，会制造假象（已踩过）。 | `player_flow_page.dart` initState / `home_shell.dart` / `router.dart` | 用户离开播放器后 App 内页面仍横屏，观感错乱（需手动转手机） |
+| — | **已修复项已归档**（共 13 条） | 见 [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md) —— 含每条的实测依据与验证手法。**标题说的"未修复"指上表**；已修项不在本表，别去翻它找待办 | — |
 
 ---
 
@@ -604,7 +594,7 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 6. 若改了 drift 表结构：**必须升 `schemaVersion` 并写 migration**，否则老用户升级即崩。
 
 > **纯逻辑改动请补单元测试**，不要只靠真机点击：
-> 「点了没反应」型缺陷（如 §7.2 排序、§7.5 偏好无写入）**静态分析发现不了**，
+> 「点了没反应」型缺陷（如 §7.2（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)） 排序、§7.5（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)） 偏好无写入）**静态分析发现不了**，
 > 只有断言参数/编解码本身才能防回归。
 > 做法：把逻辑提为 `public static`（如 `LibraryPage.sortDirectionFor`、
 > `PlayerPage.parseDefaultRate`），测试放在 `test/`，不碰 UI 私有状态。
@@ -631,6 +621,47 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 收工消息必须包含：**改了什么文件**、**analyze/test 的实际输出**、
 **真机验证的哪几步 + 观察到的结果**、**未验证的部分与原因**。
 **禁止**在没有实际执行的情况下声称"已验证"。
+
+### 8.4 反自欺：报"已验证"前先过一遍（2026-10-09 新增）
+
+> ★ **细节见 [`docs/VERIFICATION-DISCIPLINE.md`](docs/VERIFICATION-DISCIPLINE.md)**
+> （**为什么外移**：本文件有 **65536 字节**工作区指令预算，超出会被截断、
+> 后面的章节代理读不到 —— 实测加完整版后 §12 整节丢失。
+> 与 §4 目录地图外移是同一原因。）
+
+前三节讲**"要跑什么"**，本节讲**"跑了也不一定算数"**。
+以下三类都是实测栽出来的，根因相同：**验证手段本身没有被验证**。
+危害比"没验证"更大 —— 测试是**绿的**、脚本是**通过的**、数字是**写了**的，
+但**结论是错的**，会让人确信自己已经验证过了。
+
+1. **断言不得被"注释/文档/相邻代码"满足**
+   实测：`contains('s.videoRange')` 命中了**注释**里的同名文本，
+   删掉真代码测试仍全绿。
+   ⇒ 断言前**先剥注释**（统一用 `readCode()`）；
+   断言落在**必然会变的那一行**（如 `<uses-permission android:name="…X"/>` 整行，
+   而非裸关键字 `X`）；断言**精确到分支/切片**（同一串出现多处时只改一处仍为真）；
+   窗口**用下一个方法名作边界**，别拍长度。
+
+2. **替换/注入要用词边界，且长串优先**
+   实测两次假象："注入无效"其实是 `replace(...,1)` **只改到注释那处**；
+   "测试抓不到"其实是关键字**出现多处**。
+   ⚠️ 还有第三次（本轮现犯）：用**裸 `§7.1`** 作替换串时，
+   它命中了 `§7.10` / `§7.19` 的**前缀** ⇒ 制造 **17 处乱码**。
+   这与本仓库 `EmbyItem` 吃掉 `EmbyItemDetail` 前缀是**同一类**错误。
+   ⇒ 用 `(?!\d)` 之类**词边界** + **长串优先**；注入前 `print(命中次数)`；
+   注入后确认 **`analyze` 仍 0 error**（否则"变红"可能是**编译错**）；
+   脚本要**还原并断言还原一致**。
+
+3. **数字必须来自实际输出，不得推算**
+   实测：台账写"859 例 / +19"，实际 **847 / +7** ——
+   我按"两个新文件共 19 例"**推算**且**没跑就填**。
+   §8.1 已记着"286/377/408 都当过当前值"，**这是重犯**。
+   ⇒ 测试数/耗时/体积/行号**一律粘贴实际输出**；
+   禁止"加了 N 个所以总数 M+N"这类心算。
+
+> **一句话判据**：说"已验证"之前先问 ——
+> **这个结果，有没有可能在我删掉真代码之后依然成立？**
+> 若"有可能"，那就不是验证，只是**看起来像验证**。
 
 ---
 
@@ -688,7 +719,7 @@ curl -s -H "X-Emby-Token: <token>" http://<server>:8096/Items/<itemId>/PlaybackI
 
 ### 10.3 改代码时
 - 只在**必要范围**内改；不做顺手重构、不重排格式。
-- 错误可降级（§5.5），但**不要把失败伪装成空数据**（§7.8）。
+- 错误可降级（§5.5），但**不要把失败伪装成空数据**（§7.8（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)））。
 - 新增 UI 必须用 `Cf` 令牌（§5.4）、文案中文（§5.6）、未接入用 `showComingSoon`（§5.8）。
 
 ### 10.4 收工前
@@ -778,6 +809,8 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 | **115 为什么走 webapi 而不是官方开放平台、有什么风险** | **`docs/decisions/0007-pan115-webapi-route.md`** |
 | Emby 与 115 的播放模型差异、能力对照表 | 同上（§"与 Emby 的关系"） |
 | 审查清单（提交前逐条打勾） | `docs/review-checklist.md`（§0–§7） |
+| **验证纪律：三类"假绿"怎么避免** | [`docs/VERIFICATION-DISCIPLINE.md`](docs/VERIFICATION-DISCIPLINE.md)（§8.4 只有摘要；含注释满足断言 / 注入没注到真代码 / 数字靠推算的实例与规则）|
+| **已修复缺陷的实测依据与验证手法** | [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)（§7 只留**未修复**项；已修 13 条归档在这里，含"反向注入怎么做的""用什么物证确认的"）|
 | **按键/交互元素是否可用** | **`python tool/audit_buttons.py out.txt`**（查空实现/死按钮/命中区过小/失败被吞；清单见 `docs/UI-DESIGN.md` §3.3.2） |
 | **设计令牌采用率（字号/间距/断点/圆角）** | **`python tool/audit_tokens.py`**（人读报告）；**`--check`** 只看圆角是否收敛（退出码 0/1，可进 CI）。⚠️ **"定义了令牌" ≠ "用了令牌"** —— U1 实测：排版令牌只用了 24 处而裸 `fontSize` 有 232 处、`clampTextScale`/`CfBreakpoints` **真代码采用 0 处** |
 | 技术技能与开源借鉴（S1–S10） | `docs/TECH-SKILLS.md` + 技能 `cineflow-tech-skills` |
