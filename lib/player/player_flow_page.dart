@@ -102,6 +102,47 @@ class PlayerFlowPage extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<PlayerFlowPage> createState() => _PlayerFlowPageState();
+  // ---------- 顶栏文案（用户 2026-10-09 反馈）----------
+
+  /// 顶栏主标题：**集数 + 名称**（用户要求"增加显示集数的名称"）。
+  ///
+  /// ## 修的是什么（用户原话："旁边显示的集数有重复显示"）
+  /// 原实现 `title: _current.name` + **`subtitle: _current.name`** ——
+  /// **同一个值传了两次**，于是顶栏两行显示同一句话。
+  ///
+  /// 现在 title 承载"集数 + 本集名"，subtitle 承载"剧名"（见 [_subtitleFor]），
+  /// 两行是**不同的信息**，不再是重复。
+  ///
+  /// ## 三种条目
+  /// · 剧集且有序号 → `第 N 集 · 本集名`
+  /// · 剧集无序号   → 只显示本集名（**不出现"第 null 集"**）
+  /// · 电影/其他    → 只显示名称
+  static String topTitleFor(MediaItem item) {
+    final n = item.name.trim();
+    if (item.type != 'Episode') return n;
+    final idx = item.indexNumber;
+    if (idx == null) return n;
+    // 名称里已含"第 N 集"时不重复拼（有些服务端把集号写进了 Name）
+    if (n.contains('第 $idx 集') || n.contains('第$idx集')) return n;
+    return '第 $idx 集 · $n';
+  }
+
+  /// 顶栏副标题：**剧名**（与主标题不同的信息）。
+  ///
+  /// ## 为什么要有"相同则返回 null"的兜底
+  /// 这个 bug 的本质就是"两行喂了同一个值"。为避免**将来**再从别的路径
+  /// 造成重复（例如某条目的 `seriesName` 恰好等于名称），
+  /// 这里统一兜底：**与主标题相同就不显示第二行**。
+  ///
+  /// `PlayerTopBar` 已支持 `subtitle == null`（那行不渲染）。
+  static String? subtitleFor(MediaItem item) {
+    if (item.type != 'Episode') return null; // 电影只要一行
+    final series = item.seriesName?.trim();
+    if (series == null || series.isEmpty) return null;
+    if (series == topTitleFor(item)) return null; // ★ 去重兜底
+    return series;
+  }
+
 }
 
 class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
@@ -1217,12 +1258,27 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
         backgroundColor: Colors.black,
         body: PlayerUiPage(
           slots: PlayerPageSlots(
-            title: _current.name,
+            // ★ 顶栏文案（用户反馈修复，2026-10-09）
+            //
+            // ## 修的是什么
+            // 原实现是 `title: _current.name` + **`subtitle: _current.name`**
+            // —— **同一个值传了两次**，顶栏两行显示同一句话
+            //（用户："旁边显示的集数有重复显示"）。
+            //
+            // 实机语义树也印证过：`返回 | 第 7 集 | 第 7 集 | 快退 10 秒`
+            // 或 `返回 | 剧名 | 剧名 | ...`。
+            //
+            // ## 现在
+            // · title    = `第 N 集 · 本集名`（用户要的"集数名称"）
+            // · subtitle = 剧名（**与 title 不同的信息**）
+            // · 电影/无剧名 → subtitle 为 null，**不显示第二行**
+            // 取值逻辑在 `topTitleFor` / `subtitleFor`（纯函数，可单测）。
+            title: PlayerFlowPage.topTitleFor(_current),
             video: AspectVideo(
               textureId: tid,
               videoRatio: _kernel?.aspectRatio ?? 16 / 9,
             ),
-            subtitle: _current.name,
+            subtitle: PlayerFlowPage.subtitleFor(_current),
             danmakuLayer: const _DanmakuLayer(),
           ),
           callbacks: _buildCallbacks(),
