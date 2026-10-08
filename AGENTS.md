@@ -552,6 +552,7 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 | 7.18 | **仓库卫生**：`tool/icon/_gen/profile/` 混入 256 个 Edge 浏览器配置文件（已在 `.gitignore` 忽略）；`build/` 占 3.4GB（已忽略）；仓库历史里无垃圾文件 | — | 见 §9 |
 | ~~7.19~~ | ~~`MediaProvider` 抽象实际未解耦（ADR 0002 的"UI 零改动"承诺不成立）~~ | **已修复**：抽象层 12 个签名原本直接返回 `Emby*` 类型，全仓 **21 文件 / 243 处**引用。已把**跨越抽象边界的类型**中立化为 `Media*`（EmbyItem→MediaItem 等 12 个），刻意保留 `EmbyProvider`/`embyApiProvider`（那是具体实现，名字里带 Emby 是对的）。做法：词边界正则 + **最长优先**排序（避免 `EmbyItem` 吃掉 `EmbyItemDetail` 前缀），动手前先确认 `media_kit` 未导出同名符号。**验收：analyze 0 error/warning 一次通过，263 例测试全绿（改名不改行为）** | — |
 | 7.20 | **`models.dart` 仍含 Emby 线格式**：`fromJson` 工厂里是 Emby 专属键名（`UserData`/`MediaSources`/`ImageTags` 等）。要真正"第二 provider 可插拔"，需把线格式解析抽到独立的 Emby 适配器（`lib/data/emby/`），使中立模型层不含 Emby 词汇 | `models.dart`（434 行） | 目前 115 走独立页面故不受影响（ADR 0007）；但若将来再接入第二个**走 `MediaProvider`** 的源，这层必须先抽 |
+| 7.21 | **退出播放页后屏幕方向不复位**（用户反馈"退出后首页也是横的"）。真机取证：退出播放页后 App 仍在运行（`topResumedActivity` 是本 App、pid 存活）、**当前就在 App 自己的首页/详情页**，但窗口仍是 `cur=2400x1080`（横）。**已试 4 种方案全部失败**：① `player_flow_page.dispose()` 里复位（调用发生但窗口不转）；② `HomeShell.initState` 复位（只在冷启动跑一次 —— 它一直在导航栈底部，不会 unmount）；③ `RouteAware.didPopNext`（只覆盖"直接下层是首页"，实测落点是**详情页**）；④ 导航层统一处理 `AutoPortraitObserver`（监听全局路由变化）→ 仍横屏。<br>**决定性取证**：App 未运行时是竖屏、冷启动后也是竖屏 ⇒ 横屏偏好**没有**被系统持久化、我们的复位调用**是有效的**；但从播放页返回后窗口保持横屏，且**连系统级** `settings put system user_rotation 0` **都无法让它转回** ⇒ 有东西在**持续请求横屏**。<br>**下一轮入口**：`player_flow_page.dart` 的 initState **绕过**了新分层的 `SystemUiService` 直接调 `SystemChrome.setPreferredOrientations(landscape)`；而 `lib/player/infrastructure/system/system_services.dart` 里已有 `lockLandscape()` / `unlockOrientation()`，后者注释明确写着"退出播放器时**必须**调这个，否则整个 App 仍锁在横屏"。建议让 `PlayerFlowPage` 改用 `SystemUiService`，把"成对性"交给服务保证，而不是靠每个调用点记得复位。⚠️ 另注：诊断时**不要**用 `settings put system user_rotation` —— 那会把系统锁成强制横屏，此时任何 App 的 `setPreferredOrientations` 都无效，会制造假象（已踩过）。 | `player_flow_page.dart` initState / `home_shell.dart` / `router.dart` | 用户离开播放器后 App 内页面仍横屏，观感错乱（需手动转手机） |
 
 ---
 
@@ -564,7 +565,7 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 > 下面保留分项说明，便于单独排查。
 
 1. `flutter analyze` → **0 error / 0 warning**（仅允许 §5.7 的 3 条 douban info）。
-2. `flutter test` → **全绿**（当前 **469 例**）。
+2. `flutter test` → **全绿**（当前 **772 例** —— ⚠️ 这个数字**每次都可能变**，以 `flutter test` 实际输出为准，别照抄）。
    > 实测依据：`flutter test` 输出 `+469: All tests passed!`。
    > 分布：登录冒烟 1 / 偏好 5 / 首页降级 6 / 演职员 10 / 服务端筛选+EventName 16 /
    > 路由 15 / drift 17 / 豆瓣缓存 12 / Go 核心 13 / **弹幕 161**
