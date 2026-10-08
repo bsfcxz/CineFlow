@@ -74,22 +74,33 @@ Section 'L0-a · 静态分析与单元测试'
 # 本仓库有 3 条 douban info 属已知豁免（AGENTS §5.7），analyze 会因此退 1。
 Write-Host "  > flutter analyze ..."
 $an = & $flutter analyze 2>&1 | Out-String
-if ($an -match 'No issues found') {
-    Ok 'flutter analyze：0 issue'
-} elseif ($an -match '(\d+) error' -and $an -match '(\d+) warning') {
-    # 有 error/warning 才算失败；只有 info 是可接受的
-    $errs = [int]$Matches[1]
-    $warns = [int]$Matches[2]
-    if ($errs -eq 0 -and $warns -eq 0) {
-        Ok 'flutter analyze：0 error / 0 warning（仅 info，已豁免）'
+# ⚠️ **不要依赖汇总行**（2026-10-08 修：门禁自身缺陷）
+#
+# 旧逻辑写的是 `$an -match '(\d+) error'`，期待 "N error, M warnings found"。
+# 但 `flutter analyze` 3.47.5 的实际输出**只有逐条诊断行**：
+#     info - Don't use 'BuildContext's across async gaps. ... (lib/xxx.dart:12:5)
+# 它**不打印** error/warning 汇总；`No issues found` 仅在**完全无 issue**时出现。
+#
+# 后果：只要存在任何 info（本仓库有 3 条长期豁免的 info），
+#       旧逻辑就落到 else → 报"输出无法解析" → **门禁恒失败**。
+#       （这是既有缺陷，AGENTS §5.7 说那 3 条 info 长期豁免，
+#        说明该分支早就走不通，只是没人跑过收工门禁。）
+#
+# 修法：**直接数逐条诊断行**。前缀 `error - ` / `warning - ` 是各版本
+#       稳定的契约，比汇总行可靠。
+$anLines = $an -split "`r?`n"
+$errs = @($anLines | Where-Object { $_ -match '^\s*error\s+-\s' }).Count
+$warns = @($anLines | Where-Object { $_ -match '^\s*warning\s+-\s' }).Count
+if ($errs -eq 0 -and $warns -eq 0) {
+    if ($an -match 'No issues found') {
+        Ok 'flutter analyze：0 issue'
     } else {
-        Bad "flutter analyze：$errs error / $warns warning（必须为 0）"
-        ($an -split "`n" | Select-String -Pattern 'error •|warning •' | Select-Object -First 8) |
-            ForEach-Object { Write-Host "        $($_.Line.Trim())" -ForegroundColor DarkRed }
+        Ok 'flutter analyze：0 error / 0 warning（仅 info，已豁免）'
     }
 } else {
-    Bad 'flutter analyze：输出无法解析，请手动确认'
-    Write-Host ($an -split "`n" | Select-Object -Last 6)
+    Bad "flutter analyze：$errs error / $warns warning（必须为 0）"
+    $anLines | Where-Object { $_ -match '^\s*(error|warning)\s+-\s' } | Select-Object -First 8 |
+        ForEach-Object { Write-Host "        $($_.Trim())" -ForegroundColor DarkRed }
 }
 
 # --- flutter test ---

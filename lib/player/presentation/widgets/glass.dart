@@ -54,7 +54,22 @@ class GlassBackground extends StatelessWidget {
   }
 }
 
-/// 圆形玻璃按钮（中部三键）。
+/// 圆形**透明**按钮（中部三键）。
+///
+/// ## 名字里的 "Glass" 是历史遗留（行为已改）
+/// 原先是毛玻璃圆底（12% 白 + blur12 + 描边），用户第四轮要求：
+/// "暂停、播放、快进、锁屏键也使用透明改成和底栏一样" → 现在**无背景**。
+///
+/// ## 为什么去掉背景（与底栏同一原因，已实测）
+/// `BackdropFilter` 会把它区域的**视频像素**模糊掉 —— 用户看到的是
+/// "这块画面糊了" = 被遮挡。全屏播放器里任何带 blur 的浮层都在破坏画面。
+///
+/// ## 可读性靠什么（不放底色、不模糊）
+/// 图标用 [PlayerUi.overlayIconShadows] 双层阴影 —— 白图标压亮画面也读得到。
+/// 这与底栏（第三轮）采用的做法一致，两处保持同一套视觉语言。
+///
+/// ## 交互反馈仍在
+/// `InkWell` 的水波纹保留（`Material` 透明），点击有反馈但不留底色。
 class GlassButton extends StatelessWidget {
   const GlassButton({
     super.key,
@@ -85,8 +100,13 @@ class GlassButton extends StatelessWidget {
           child: InkWell(
             onTap: onTap,
             customBorder: const CircleBorder(),
-            child: GlassBackground(
-              child: Icon(icon, size: iconSize, color: Colors.white),
+            child: Center(
+              child: Icon(
+                icon,
+                size: iconSize,
+                color: Colors.white,
+                shadows: PlayerUi.overlayIconShadows,
+              ),
             ),
           ),
         ),
@@ -95,7 +115,25 @@ class GlassButton extends StatelessWidget {
   }
 }
 
-/// 圆形玻璃按钮（锁按钮，40×40，支持"激活色"）。
+/// 圆形**透明**按钮（锁按钮，40×40，支持"激活色"）。
+///
+/// ## 与 [GlassButton] 的差别只有尺寸与激活态
+/// 两者现在都是**无背景**（用户第四轮要求"锁屏键也透明"）。
+///
+/// ## ★ 激活态从"填色"改到"图标色"（关键设计决定）
+/// 原实现：锁定时给整圆填 `lockActive`（蓝，90% 不透明）——
+/// 那是**大块不透明色**，正是用户要消除的遮挡。
+///
+/// 但"锁定了"必须看得出来，否则用户不知道点击会不会生效。
+/// 故把状态信号**从背景移到图标**：锁定时图标变蓝（[PlayerUi.lockActive]），
+/// 背景仍全透明。信号保留、遮挡消除。
+///
+/// 这个取舍是通用的：**透明化时，把状态表达从"面"移到"线/点"**
+/// （图标、文字、描边），而不是把状态一起丢掉。
+///
+/// ## 命中区
+/// 视觉 40dp，但**命中区撑到 48dp**（本项目 U5/U8 已确立的纪律：
+/// 视觉尺寸与命中区分开，40 只有基线的 83%，横屏躺着点容易偏）。
 class GlassCircle extends StatelessWidget {
   const GlassCircle({
     super.key,
@@ -110,7 +148,7 @@ class GlassCircle extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
 
-  /// 激活态（锁定时用醒目蓝，规格 §7.5：`0xFF007AFF`）。
+  /// 激活态（锁定时图标变醒目蓝，规格 §7.5：`0xFF007AFF`）。
   final bool active;
   final double size;
   final double iconSize;
@@ -122,8 +160,6 @@ class GlassCircle extends StatelessWidget {
       button: true,
       label: semanticLabel,
       child: SizedBox(
-        // ⚠️ 视觉 40dp，但**命中区撑到 48dp**（本项目 U5/U8 已确立的纪律：
-        //    视觉尺寸与命中区分开，40 只有基线的 83%，横屏躺着点容易偏）。
         width: 48,
         height: 48,
         child: Center(
@@ -135,15 +171,13 @@ class GlassCircle extends StatelessWidget {
               child: InkWell(
                 onTap: onTap,
                 customBorder: const CircleBorder(),
-                child: GlassBackground(
-                  fill: active
-                      ? PlayerUi.lockActive.withValues(alpha: 0.9)
-                      : PlayerUi.lockFill,
-                  border: active ? PlayerUi.lockActive : PlayerUi.lockBorder,
+                child: Center(
                   child: Icon(
                     icon,
                     size: iconSize,
-                    color: active ? Colors.white : Colors.white,
+                    // ★ 激活信号在**图标色**上，不在背景（背景保持透明）
+                    color: active ? PlayerUi.lockActive : Colors.white,
+                    shadows: PlayerUi.overlayIconShadows,
                   ),
                 ),
               ),

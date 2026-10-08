@@ -155,4 +155,25 @@ abstract final class PlayerUi {
   static double playlistWidth(double availableWidth) =>
       (availableWidth * PlayerPanels.playlistWidthRatio)
           .clamp(0.0, PlayerPanels.playlistMaxWidth);
+
+  // ---- 透明浮层的可读性保障（用户第四轮要求：全部控件透明）----
+
+  /// 浮层图标/文字的**双层阴影**。
+  ///
+  /// ## 为什么需要（去掉背景色的必然代价）
+  /// 用户要求"暂停、播放、快进、锁屏键也透明，和底栏一样"。
+  /// 这四处原先都垫着 `GlassBackground`（12% 白 + blur12 + 描边），
+  /// 图标压在上面读得到；去掉背景后，**纯白图标压在亮画面上会看不见**。
+  ///
+  /// 阴影是"不修改背景也能读"的通行做法（也是底栏第三轮已采用的做法）：
+  /// · 近距（blur 4 / black87）—— 保证字形轮廓清晰
+  /// · 远距（blur 10 / black54）—— 保证亮背景上仍有对比
+  ///
+  /// ⚠️ **不要为了"好看"把模糊加回来**。已实测（底栏那轮）：
+  ///    `BackdropFilter` 会模糊其区域的**视频像素**，用户看到"这块被遮挡了"。
+  ///    全屏播放器里，任何带 blur 的浮层都在破坏画面。
+  static const List<Shadow> overlayIconShadows = [
+    Shadow(blurRadius: 4, color: Colors.black87),
+    Shadow(blurRadius: 10, color: Colors.black54),
+  ];
 }

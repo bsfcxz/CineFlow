@@ -109,4 +109,85 @@ void main() {
               '没有阴影会读不到（$withShadow/$total 条带阴影）。');
     });
   });
+
+  // ================================================================
+  // 用户第四轮："暂停、播放、快进、锁屏键也使用透明改成和底栏一样"
+  //
+  // 这四处原先都垫着 `GlassBackground`（12% 白 + blur12 + 描边）：
+  //   · 中部三键（后退/播放/前进）→ `GlassButton`
+  //   · 锁按钮 → `GlassCircle`（锁定时还填 90% 蓝，是最大的一块遮挡）
+  //
+  // ## 与底栏同一根因
+  // `BackdropFilter` 会模糊其区域的**视频像素**。用户要的"透明"
+  // 是"这块画面和其他地方一模一样、不被处理"。
+  // ================================================================
+  group('★ 中部按钮与锁屏键也必须透明（用户第四轮）', () {
+    testWidgets('★ 中部三键子树里不得出现 BackdropFilter', (tester) async {
+      final (_, _) = await base.pumpPlayer(tester);
+
+      // 中部按钮在控制层里；用**精确键名**检查
+      // （键名以 lib/keys.dart 为准：togglePlayButton / seekForwardButton /
+      //   seekBackButton。我第一版写的 `playButton` + `byName()`
+      //   两个都不存在 —— 编译期就报错，属低级失误。）
+      final centerKeys = <String, Key>{
+        'togglePlayButton': keys.player.togglePlayButton,
+        'seekForwardButton': keys.player.seekForwardButton,
+        'seekBackButton': keys.player.seekBackButton,
+      };
+      var found = 0;
+      for (final entry in centerKeys.entries) {
+        final f = find.byKey(entry.value);
+        if (f.evaluate().isEmpty) continue;
+        found++;
+        expect(
+          find.descendant(of: f, matching: find.byType(BackdropFilter)),
+          findsNothing,
+          reason: '中部按钮「${entry.key}」子树出现了 BackdropFilter ——\n'
+              '它会把按钮区域的视频画面模糊掉（用户看到的"遮挡"）。\n'
+              '若这条红 → 有人把毛玻璃圆底加回中部按钮了。',
+        );
+      }
+      expect(found, greaterThan(0),
+          reason: '至少要找到中部按钮之一，否则测试前提不成立'
+              '（keys 名可能改了，检查 lib/keys.dart）');
+    });
+
+    testWidgets('★ 锁按钮子树里不得出现 BackdropFilter', (tester) async {
+      final (_, _) = await base.pumpPlayer(tester);
+
+      final lock = find.byKey(keys.player.lockButton);
+      expect(lock, findsOneWidget, reason: '锁按钮未渲染，测试前提不成立');
+
+      expect(
+        find.descendant(of: lock, matching: find.byType(BackdropFilter)),
+        findsNothing,
+        reason: '锁按钮子树出现了 BackdropFilter —— 它会把按钮区域的\n'
+            '视频画面模糊掉。用户明确要求"锁屏键也透明"。\n'
+            '若这条红 → 有人把毛玻璃圆底加回锁按钮了。',
+      );
+    });
+
+    testWidgets('★ 锁按钮锁定态不得用大面积填色（状态走图标色）', (tester) async {
+      final (_, _) = await base.pumpPlayer(tester);
+
+      final lock = find.byKey(keys.player.lockButton);
+      expect(lock, findsOneWidget);
+
+      // 锁定态的关键：**不能**用 90% 蓝的大圆填色（那是遮挡）
+      // 做法：找锁按钮下所有 DecoratedBox，断言不存在"高不透明度大色块"
+      final boxes = find.descendant(of: lock, matching: find.byType(DecoratedBox));
+      for (final e in boxes.evaluate()) {
+        final d = (e.widget as DecoratedBox).decoration;
+        if (d is BoxDecoration && d.color != null) {
+          expect(
+            d.color!.a,
+            lessThan(0.5),
+            reason: '锁按钮里有 ${d.color!.a} 不透明度的填色 ——\n'
+                '原实现的锁定态是 90% 蓝的大圆，正是用户要消除的遮挡。\n'
+                '状态信号应改走**图标颜色**（透明化时把状态从"面"移到"点"）。',
+          );
+        }
+      }
+    });
+  });
 }
