@@ -47,6 +47,8 @@ class PlayerPageCallbacks {
     required this.onFullscreenToggled,
     required this.onBack,
     required this.onSelectMedia,
+    required this.onPrevious,
+    required this.onNext,
     required this.onSelectAudioTrack,
     required this.onSelectSubtitleTrack,
     required this.onImportSubtitle,
@@ -70,6 +72,18 @@ class PlayerPageCallbacks {
   final VoidCallback onFullscreenToggled;
   final VoidCallback onBack;
   final ValueChanged<int> onSelectMedia;
+
+  /// 上一集 / 下一集。
+  ///
+  /// ## 为什么必须走宿主（而不是 UI 层自己调 `playlist.previous()`）
+  /// `previous()/next()` **只改列表的选中项**，不产生任何播放行为 ——
+  /// 宿主拿到通知后才去 `_playEpisode()`。
+  ///
+  /// 曾经的实现是 UI 层直接调 `previous()/next()`，于是：
+  /// 【列表高亮变了，但画面永远不换】= 用户说的"上下集按钮无用"。
+  /// **根因是这两个契约当时根本不存在** —— 不是忘了接，是无处可接。
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
   final ValueChanged<String> onSelectAudioTrack;
   final ValueChanged<String?> onSelectSubtitleTrack;
   final VoidCallback onImportSubtitle;
@@ -203,9 +217,20 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
       widget.callbacks.onSubtitleDelayChanged(s.delay);
       widget.callbacks.onSubtitleFontSizeChanged(s.fontSize);
     };
-    ref.read(playlistStateProvider.notifier).onSelect =
-        (e) => widget.callbacks.onSelectMedia(
-            ref.read(playlistStateProvider).currentIndex);
+    // 选集回调：转发"**被选中 entry 的下标**"给上层。
+    //
+    // ⚠️ 两点约束（都踩过）：
+    // 1. **只转发，不调 `select()`** —— `select()` 正是本回调的调用者，
+    //    再调一次就是递归（原实现就是这么写的）。
+    // 2. 用 `e.id` 反查下标，而不是直接用 `currentIndex` ——
+    //    正常路径下两者相同（`select()` 先更新 currentIndex 再回调），
+    //    但传"用户实际点的那一项"语义更准，也不受将来
+    //    `select()` 实现变化影响。
+    ref.read(playlistStateProvider.notifier).onSelect = (e) {
+      final entries = ref.read(playlistStateProvider).entries;
+      final i = entries.indexWhere((x) => x.id == e.id);
+      widget.callbacks.onSelectMedia(i >= 0 ? i : 0);
+    };
 
     // 倍速变化 → 落内核
     ref.listenManual(playbackStateProvider, (prev, next) {
@@ -518,10 +543,11 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
                       hasNext: playlist.hasNext,
                       danmakuEnabled: danmaku.enabled,
                       fullscreen: ui.fullscreen,
-                      onPrevious: () =>
-                          ref.read(playlistStateProvider.notifier).previous(),
-                      onNext: () =>
-                          ref.read(playlistStateProvider.notifier).next(),
+                      // ★ 转发给宿主（宿主才做得了"切集播放"）。
+                      //    原实现直接调 `playlist.previous()/next()` ——
+                      //    那只改列表高亮，画面不动 = 用户说的"无用"。
+                      onPrevious: widget.callbacks.onPrevious,
+                      onNext: widget.callbacks.onNext,
                       onCycleSpeed: () => ref
                           .read(playbackStateProvider.notifier)
                           .cycleSpeed(),

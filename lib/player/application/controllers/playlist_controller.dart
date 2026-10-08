@@ -138,6 +138,23 @@ class PlaylistController extends Notifier<PlaylistState> {
   }
 
   /// 选择某一项（面板点击）。
+  /// **只同步索引，不触发 `onSelect` 回调**。
+  ///
+  /// ## 为什么必须与 [select] 分开（真机 bug，2026-10-09）
+  /// 宿主（`PlayerFlowPage`）在 `_playEpisode` 里已经决定了"现在播第几集"，
+  /// 它只需要把列表的 `currentIndex` **对齐**过去。
+  ///
+  /// 若用 [select]，会触发 `onSelect` 回调 → 宿主又调 `_playEpisode`
+  /// → **递归换集**（且下标可能来回抖动）。
+  ///
+  /// 单一职责：**[select] = 用户点选**（改索引 + 通知宿主）；
+  /// **[setCurrentIndex] = 宿主对齐**（只改索引）。
+  void setCurrentIndex(int index) {
+    if (index < 0 || index >= state.entries.length) return;
+    if (index == state.currentIndex) return;
+    state = state.copyWith(currentIndex: index);
+  }
+
   void select(int index) {
     if (index < 0 || index >= state.entries.length) return;
     if (index == state.currentIndex) return;
