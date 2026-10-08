@@ -47,9 +47,31 @@ final playbackStateProvider =
 final isPlayingProvider = Provider<bool>(
     (ref) => ref.watch(playbackStateProvider.select((s) => s.isPlaying)));
 
-/// 仅订阅倍速文案所需的值。
+/// 倍速按钮的文案 —— **永远显示用户选择的倍速**（`userSpeed`）。
+///
+/// ## ⚠️ 这里必须是 `userSpeed`，不是 `effectiveSpeed`（用户规格，2026-10-09）
+///
+/// 用户明确的 5 条规格：
+/// ```
+/// ① 长按只影响"实际播放倍速"，不修改"用户选择的倍速"
+/// ② 长按结束后，倍速按钮回到用户之前选择的值
+/// ③ 倍速按钮点击循环永远只操作 userSpeed，与长按无关
+/// ④ 长按期间，倍速按钮显示不变（仍显示用户选择的值）
+/// ⑤ 长按期间，只有长按反馈浮层显示 longPressSpeed
+/// ```
+///
+/// `effectiveSpeed` 是"**内核实际在跑的**倍速"（长按期间 = 3.0），
+/// 它的用途是**下发给引擎**（见 `player_ui_page` 的 `onSpeedChanged` 监听）
+/// 与**长按浮层**。把它用在按钮文案上会违反第 ④ 条：
+/// 长按期间按钮会跳到 3.0x，用户会以为"我的倍速被改了"。
+///
+/// **一句话**：`effectiveSpeed` → 给引擎；`userSpeed` → 给用户看。
+///
+/// （本 provider 此前用的是 `effectiveSpeed`，且**生产代码零消费者** ——
+///   只有测试引用。属"写好却没用，还用错"的死代码，
+///   与 AGENTS §7 里 `FileDoubanCache` 那类问题同源。）
 final speedLabelProvider = Provider<String>((ref) => ref.watch(
-    playbackStateProvider.select((s) => _speedLabelOf(s.effectiveSpeed))));
+    playbackStateProvider.select((s) => _speedLabelOf(s.userSpeed))));
 
 String _speedLabelOf(double v) => '${v.toStringAsFixed(1)}x';
 
