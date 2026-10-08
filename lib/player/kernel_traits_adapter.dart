@@ -42,6 +42,12 @@ MediaTraits traitsFromLaunch(PlaybackLaunch launch) {
   String? audioCodec;
   var hasExternalSubtitle = false;
 
+  /// 视频动态范围（SDR / HDR10 / DOVI…）。
+  ///
+  /// ★ 借鉴 LinPlayer 的"HDR / 杜比视界自动切软解"思路（**仅取思路，未抄代码** ——
+  ///   该仓库是 AGPL-3.0）。原理见 `MediaTraits.videoRange` 的说明。
+  String? videoRange;
+
   for (final s in launch.streams) {
     switch (s.type) {
       case 'Video':
@@ -49,6 +55,9 @@ MediaTraits traitsFromLaunch(PlaybackLaunch launch) {
         videoHeight ??= s.height;
         videoWidth ??= s.width;
         videoCodec ??= s.codec;
+        // 数据层**早就解析了** `MediaStream.videoRange`（models.dart:538），
+        // 但此前**从未进入内核决策** —— 这条线是断的，现在接上。
+        videoRange ??= s.videoRange;
       case 'Audio':
         audioCodec ??= s.codec;
       case 'Subtitle':
@@ -67,5 +76,6 @@ MediaTraits traitsFromLaunch(PlaybackLaunch launch) {
     isHls: isHls,
     isTranscoding: isTranscoding,
     hasExternalSubtitle: hasExternalSubtitle,
+    videoRange: videoRange,
   );
 }
