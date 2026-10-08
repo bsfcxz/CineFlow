@@ -163,6 +163,8 @@ List<String> pumpRealPlayer(
             onFullscreenToggled: () => calls.add('fullscreen'),
             onBack: () => calls.add('back'),
             onSelectMedia: (i) => calls.add('selectMedia:$i'),
+            onPrevious: () {},
+            onNext: () {},
             onSelectAudioTrack: (id) {
               calls.add('audio:$id');
               kernel.setAudioTrack(id);

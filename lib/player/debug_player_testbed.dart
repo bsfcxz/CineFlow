@@ -318,6 +318,8 @@ class _DebugPlayerTestbedState extends ConsumerState<DebugPlayerTestbed> {
       },
       onBack: _exit,
       onSelectMedia: (_) {},
+      onPrevious: () {},
+      onNext: () {},
       onSelectAudioTrack: (id) => _kernel?.setAudioTrack(id),
       onSelectSubtitleTrack: (id) => _kernel?.setSubtitleTrack(id ?? 'no'),
       onImportSubtitle: () =>

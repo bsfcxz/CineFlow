@@ -39,6 +39,8 @@ PlayerPageCallbacks _noopCallbacks() => PlayerPageCallbacks(
       onFullscreenToggled: () {},
       onBack: () {},
       onSelectMedia: (_) {},
+      onPrevious: () {},
+      onNext: () {},
       onSelectAudioTrack: (_) {},
       onSelectSubtitleTrack: (_) {},
       onImportSubtitle: () {},

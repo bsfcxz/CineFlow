@@ -40,6 +40,8 @@ class _Harness {
       onFullscreenToggled: () => calls.add('fullscreen'),
       onBack: () => calls.add('back'),
       onSelectMedia: (i) => calls.add('selectMedia:$i'),
+      onPrevious: () {},
+      onNext: () {},
       onSelectAudioTrack: (id) => calls.add('audio:$id'),
       onSelectSubtitleTrack: (id) => calls.add('subtitle:$id'),
       onImportSubtitle: () => calls.add('importSubtitle'),

@@ -786,6 +786,24 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       _index = index;
       _resumeSeconds = 0; // 与旧页一致：换集不续播
     });
+    // ★ 同步播放列表的 currentIndex（真机 bug 的根因修复，2026-10-09）
+    //
+    // ## 为什么必须同步
+    // 本页维护 `_index`，播放列表维护 `playlistStateProvider.currentIndex`
+    // —— 两者是**独立的两个状态源**，此前**互不同步**。
+    // 而上下集按钮（`onNext/onPrevious`）读的是**列表的** currentIndex：
+    // ```
+    // onNext → pl.currentIndex + 1 → _playEpisode(...)
+    // ```
+    // 列表索引若停在旧值，传进来的下标就是错的 ⇒
+    // 跳到错误的位置、或原地不动 = 用户说的"上下集按钮无用"。
+    //
+    // 现在 `_playEpisode` 是**唯一**改"当前第几集"的地方，
+    // 它同时对齐两个状态源 ⇒ 单一事实源。
+    //
+    // ⚠️ 用 `setCurrentIndex` 而非 `select` —— 后者会触发 `onSelect`
+    //    回调 → 又调 `_playEpisode` → 递归换集。
+    ref.read(playlistStateProvider.notifier).setCurrentIndex(index);
     // 弹幕清空（新集的弹幕在 _loadDanmaku 里重新填充）
     ref.read(danmakuUiProvider.notifier).set(const DanmakuLoadResult());
     // 复位 UI 状态（providers 是应用级单例，换集必须清）
@@ -1237,10 +1255,30 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
             _immersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
       },
       onBack: _finalizeAndExit,
-      onSelectMedia: (i) {
-        final entries = ref.read(playlistStateProvider).entries;
-        if (i < 0 || i >= entries.length) return;
-        ref.read(playlistStateProvider.notifier).select(i);
+      // ★ 选集/上下集 → **真正切集**（用户反馈"点了没用"）
+      //
+      // ## 修的是什么（根因是同一个 bug）
+      // 原实现只调 `select(i)` —— 那只是**改列表高亮**，
+      // **没有任何人调用 `_playEpisode`**，所以画面永远不换 = "没用"。
+      // 而且 `select()` 内部**已经调过** `onSelect` 回调，
+      // 这里再调一次是**递归自我调用**
+      // （第二次因 `index == currentIndex` 提前 return 才没死循环）。
+      //
+      // ## 为什么直接调 `_playEpisode`
+      // 它是**已存在的、自动连播在用的**切集路径（L826），
+      // 会做全流程：上报服务端 Stop → 落库条目进度 → 换集起播 → 重载弹幕。
+      // 走同一条路 ⇒ "手动选集"与"自动连播"行为必然一致。
+      onSelectMedia: (i) => unawaited(_playEpisode(i)),
+      // 上下集：与选集走**同一条切集路径**（见 onSelectMedia 的说明）
+      onPrevious: () {
+        final idx = ref.read(playlistStateProvider).currentIndex;
+        if (idx <= 0) return; // 到头不动（与 PlaylistState.hasPrevious 一致）
+        unawaited(_playEpisode(idx - 1));
+      },
+      onNext: () {
+        final pl = ref.read(playlistStateProvider);
+        if (!pl.hasNext) return;
+        unawaited(_playEpisode(pl.currentIndex + 1));
       },
       onSelectAudioTrack: (id) async {
         final k = _kernel;
