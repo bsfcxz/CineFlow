@@ -134,6 +134,11 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   Stopwatch? _sw;
   int _tMark = 0;
   bool _firstFrameLogged = false;
+  bool _demuxLogged = false;
+
+  /// 本次起播的 seek 目标（用于判"position 是真的在推进"，
+  /// 而不是 seek 刚登记时的那个瞬时值）。
+  Duration _seekTarget = Duration.zero;
 
   /// 跨方法的分段计时（`_boot` / `_startEpisode` 都用它）。
   void _stage(String name) {
@@ -367,11 +372,31 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
 //   故只能走"属性/事件"路线，不能靠 `--msg-level` 日志。）
 //
 // 引用本数据时**只用不触发 seek 的那几次**，或先修好探针再量。
-      if (!_firstFrameLogged && s.position > Duration.zero) {
+      // ① 解封装探测完成：duration 首次拿到（此前一直是 0）
+      //
+      // 它意味着**容器已识别、时长已知** —— 网络读取 + 解封装这一阶段结束。
+      // 用它能区分"慢在网络/容器探测"与"慢在解码器初始化"。
+      if (!_demuxLogged && s.duration > Duration.zero) {
+        _demuxLogged = true;
+        _stage('DEMUX_DONE');
+      }
+
+      // ② ★ 首帧真正渲染：position **超过** seek 目标
+      //
+      // ## 为什么不是 `position > 0`（旧判据的错）
+      // seek 后 mpv **立刻**回报 `time-pos = 目标值`（如 63.000s）——
+      // 那只是"跳转已登记"，画面还没出来。旧判据在此时就判"首帧到达"，
+      // 于是测出假的 5ms（实测第 4 次采样暴露的矛盾）。
+      //
+      // 正确判据：位置**越过**目标继续推进 ⇒ 解码器已就绪、首帧已送显。
+      // 容忍 0.5s 误差，避免把 seek 后的微抖当推进。
+      final past = s.position > _seekTarget + const Duration(milliseconds: 500);
+      if (!_firstFrameLogged && past) {
         _firstFrameLogged = true;
         _stage('FIRST_FRAME');
         debugPrint('[Startup] ===== 点到出画面 '
-            '${_sw?.elapsedMilliseconds ?? 0}ms =====');
+            '${_sw?.elapsedMilliseconds ?? 0}ms '
+            '(seekTarget=${_seekTarget.inSeconds}s) =====');
       }
 
       final p = ref.read(playbackStateProvider.notifier);
@@ -444,6 +469,7 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     if (k == null || _switching) return;
     // 换集时重置首帧标记（否则第 2 集起不再计时）
     _firstFrameLogged = false;
+    _demuxLogged = false;
     final api = ref.read(embyApiProvider);
     if (api == null) {
       ref.read(playbackStateProvider.notifier).setError('未登录');
@@ -471,7 +497,9 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       await k2.open(launch.url, play: true, headers: launch.headers);
       _stage('open');
       if (resumeSeconds > 3) {
-        await k2.seek(Duration(seconds: resumeSeconds.toInt()));
+        // 记下目标 —— 首帧探针要用它区分"seek 刚登记"与"真的在推进"
+        _seekTarget = Duration(seconds: resumeSeconds.toInt());
+        await k2.seek(_seekTarget);
       }
       _stage('seek');
       // 默认倍速偏好

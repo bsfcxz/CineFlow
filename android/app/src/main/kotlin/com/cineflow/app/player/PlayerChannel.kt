@@ -89,6 +89,31 @@ class PlayerChannel(
             MPVLib.setOptionString("demuxer-max-bytes", "64MiB")
             MPVLib.setOptionString("demuxer-max-back-bytes", "32MiB")
 
+            // ★ 起播优化（2026-10-08，真机埋点驱动，用户反馈"起播慢"）
+            //
+            // ## 实测问题（3 次采样中位）
+            //   DEMUX_DONE  = 4255ms  ← 打开 URL → 容器探测完成
+            //   FIRST_FRAME = 4513ms  ← → 首帧渲染
+            //   点到出画面   = 9087ms
+            //   而 Dart 命令链只占 314ms ⇒ 慢在 mpv 内部，不在网络请求层
+            //
+            // ## 根因
+            // ffmpeg 默认 `analyzeduration` = **5 秒**：要读够 5 秒数据
+            // 才确定流信息（轨道/编码/时长）。对**网络源**这就是纯等待，
+            // 与实测的 4.2 秒高度吻合。
+            //
+            // ## 取舍
+            // 分析窗口越短，**冷门容器/异常流的探测准确率越低**
+            // （可能误判轨道）。1 秒对 Emby 直连的常见容器（mp4/mkv）足够；
+            // 若将来遇到"轨道识别不全/时长不对"，**先回调这一项**。
+            MPVLib.setOptionString("demuxer-lavf-analyzeduration", "1")
+            // 探测缓冲同步收紧（ffmpeg 默认 5MB）：网络源读满 5MB 也要时间。
+            // 2MB 足够识别容器头部。
+            MPVLib.setOptionString("demuxer-lavf-probesize", "2097152")
+            //
+            // ⚠️ 本轮**不动** `cache-pause` 系列 —— 一次只改一个变量，
+            //    否则分不清收益来自"分析窗口"还是"缓冲等待"。
+
             // 网络 I/O 超时：默认 60s 太长，遇到 STRM 死源要干等一分钟才报错。
             // 15s 与 Dart 侧 `PlayerPage._startTimeoutDuration` 对齐 ——
             // 两层都设的意义：mpv 这层管**连接/读取**超时（能主动断开），
