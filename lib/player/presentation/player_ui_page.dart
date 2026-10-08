@@ -410,20 +410,43 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
   ///
   /// ⚠️ 用 `Future.delayed` 而不是 Timer 字段：这里只需要"等 250ms 看有没有
   /// 第二次点击"，且必须处理 widget 已销毁的情况（`mounted` 检查）。
+  /// 第一次点击时控制层是否可见（双击判定需要它来"恢复可见"）。
+  bool _tapStartedVisible = false;
+
   void _handleTap() {
+    final uiCtl = ref.read(uiVisibilityProvider.notifier);
+
     _tapCount++;
     if (_tapCount == 1) {
+      _tapStartedVisible = ref.read(uiVisibilityProvider).visible;
+
+      // ★ **可见时立即隐藏**（用户要求"点击后马上就能隐藏"，不等 250ms）
+      //
+      // ## 为什么可以立即隐藏，同时还能保住双击
+      // 隐藏只是"把控制层收起来"，**不改 `_tapCount`** ——
+      // 双击判定照常进行。若第二次点击在窗口内到达，走下面的 else
+      // 分支：**恢复可见 + 播放/暂停**（否则双击会"闪一下"）。
+      //
+      // ⚠️ 我第一版在这里直接 `return`，把 `_tapCount` 也清零了 ——
+      //    结果第二次点击被当成"新的第一次单击"，**双击彻底失效**。
+      //    被 `test/player_tap_test.dart` 的 2 例抓住（那是本仓的真实防线）。
+      if (_tapStartedVisible) uiCtl.hide();
+
       Future<void>.delayed(PlayerGestures.tapDelay, () {
         if (!mounted) return;
         if (_tapCount == 1) {
-          // 250ms 内没有第二次 → 单击：显隐 UI
-          ref.read(uiVisibilityProvider.notifier).toggle();
+          // 250ms 内没有第二次 ⇒ 确认是单击
+          // · 原本可见 → 已在上面立即隐藏，无需再动
+          // · 原本隐藏 → 此刻才唤出（延时不可避免：否则双击会闪一下）
+          if (!_tapStartedVisible) uiCtl.show();
         }
         _tapCount = 0;
       });
     } else {
       // 双击：播放/暂停
       _tapCount = 0;
+      // 若第一次点击把控制层藏了，这里恢复 —— 双击不该顺带隐藏 UI
+      if (_tapStartedVisible) uiCtl.show();
       widget.callbacks.onTogglePlay();
     }
   }
@@ -452,7 +475,24 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
             children: [
               const BarScrim(height: PlayerUi.topBarFade, fromTop: true),
               Padding(
-                padding: const EdgeInsets.only(top: 4),
+                // ★ 顶部安全区（用户要求"退出箭头放在左上角"，2026-10-09）
+                //
+                // ## 为什么加 `MediaQuery.paddingOf(context).top`
+                // 原来只有 4px：在**竖屏**（用户主要用法）下，
+                // 左上角的返回按钮会被状态栏/挖孔屏压住或贴得太紧，
+                // 视觉上不像"左上角的独立按钮"。
+                //
+                // 竖屏 padding.top ≈ 状态栏高度；全屏（沉浸式）时为 0
+                // ⇒ 两种模式都自然。
+                //
+                // ## 为什么不改成 Positioned 单独定位
+                // `keys.player.topBar` / `keys.player.backButton` 是测试依赖的键，
+                // 且顶栏整体参与 z 序与命中判定（`UiElementDetector`）。
+                // 脱离 Row 会破坏这两点 ⇒ 在 Row 内调边距即可。
+                padding: EdgeInsets.only(
+                  top: 4 + MediaQuery.paddingOf(context).top,
+                  left: 4, // 贴左 ⇒ 返回按钮锚在左上角
+                ),
                 child: Row(
                   key: keys.player.topBar,
                   children: [

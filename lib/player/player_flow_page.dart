@@ -211,11 +211,19 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       _resumeSeconds = totalSec * pct;
     }
 
-    // 播放页锁横屏 + 沉浸式（与旧页一致）
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
+    // ---- 方向策略（用户 2026-10-09 明确要求）----
+    //
+    // ★ **默认竖屏**，不再一进播放页就锁横屏。
+    //
+    // 用户原话："播放页不锁横屏横屏，我是手机使用，点击全屏时变成横屏"
+    // ⇒ 期望：进播放页 = 竖屏；**点全屏**才切横屏。
+    //
+    // 原实现无条件锁横屏（沿用旧页），对"手机竖着用"的场景是反的 ——
+    // 用户竖着拿手机进播放页就被强制转横，还得把手机转回来。
+    //
+    // 横屏只在"全屏"时锁（见 `onFullscreenToggled`）。
+    // 系统栏仍进沉浸式：竖屏下也想要"只有画面"的观感。
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
     // 偏好：自动连播（默认开，与旧页同键 auto_next）
@@ -1091,6 +1099,12 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
 
   // ---------- 退出 ----------
 
+  /// 是否允许真正 pop（见 `_finalizeAndExit` 的说明）。
+  ///
+  /// `PopScope.canPop` 绑定它：平时 false（拦系统返回，走我们的清理），
+  /// 清理完成后置 true 再 pop —— **否则会无限递归**。
+  bool _allowPop = false;
+
   void _finalizeAndExit() {
     _finalize();
     // provider 清理必须在 unmount 前做（dispose 里 ref 不可用）
@@ -1098,7 +1112,23 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     unawaited(ScreenBrightness().resetApplicationScreenBrightness());
-    Navigator.of(context).maybePop();
+
+    // ★ 必须先解除 PopScope 的拦截，否则 pop 会被再次拒绝 ——
+    //   而 `onPopInvokedWithResult` 又会调回本方法 ⇒ **无限递归**
+    //   ⇒ UI 线程卡死（用户反馈"点退出箭头直接卡住"）。
+    //
+    // 递归链：
+    //   maybePop() → canPop=false ⇒ 拒绝 → onPopInvokedWithResult(didPop:false)
+    //   → _finalizeAndExit() → maybePop() → …… 同步死循环
+    //
+    // 修法：置 `_allowPop = true` 后再 pop。`setState` 是为了让
+    // `PopScope.canPop` 在下一次 build 时读到新值 —— 故要先 setState
+    // 再在下一帧 pop，否则本次 pop 读到的仍是旧值。
+    setState(() => _allowPop = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context).maybePop();
+    });
 
     // ---- ★ 延迟兜底复位（真机实测必要，2026-10-08）----
     //
@@ -1173,7 +1203,13 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     }
 
     return PopScope<Object?>(
-      canPop: false,
+      // ★ 绑定 `_allowPop`（**不是**恒 false）—— 见 `_finalizeAndExit` 的说明。
+      //
+      // 恒 false + 在 `onPopInvokedWithResult` 里调 `maybePop()` = **无限递归**：
+      //   maybePop() → canPop=false ⇒ 被拒 → onPopInvokedWithResult(didPop:false)
+      //   → _finalizeAndExit() → maybePop() → …… 同步死循环 ⇒ UI 线程卡死。
+      // 用户反馈"点左侧的退出箭头直接卡住"就是这个。
+      canPop: _allowPop,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _finalizeAndExit();
       },
@@ -1249,10 +1285,27 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
         ref.read(videoStateProvider.notifier).setAspectMode(m);
       },
       onFullscreenToggled: () {
-        // 沉浸式 ↔ 显示系统栏（播放页本就横屏锁定）
+        // ★ 全屏 = **切横屏 + 沉浸式**（用户明确要求）
+        //
+        // 用户原话："点击全屏时变成横屏" ⇒ 全屏的语义就是**转横屏**。
+        //
+        // 原实现只切系统栏不切方向，而播放页**本来就锁横屏**，
+        // 所以点了看不出任何变化 —— 用户说的"点击全屏好像没用"。
+        // 更要命的是 `_boot` 初始即 `immersiveSticky`，
+        // 第一次点会**退出**沉浸式（露出系统栏），与"进入全屏"相反。
         _immersive = !_immersive;
-        SystemChrome.setEnabledSystemUIMode(
-            _immersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
+        if (_immersive) {
+          // 进全屏：锁横屏 + 沉浸式
+          SystemChrome.setPreferredOrientations([
+            DeviceOrientation.landscapeLeft,
+            DeviceOrientation.landscapeRight,
+          ]);
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        } else {
+          // 退全屏：回竖屏 + 显示系统栏
+          SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+          SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+        }
       },
       onBack: _finalizeAndExit,
       // ★ 选集/上下集 → **真正切集**（用户反馈"点了没用"）
