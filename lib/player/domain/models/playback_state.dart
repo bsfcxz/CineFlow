@@ -24,6 +24,7 @@ class PlaybackState {
     this.userSpeed = 1.0,
     this.longPressSpeed = 3.0,
     this.isLongPressing = false,
+    this.engineSpeed = 1.0,
     this.isBuffering = false,
     this.isCompleted = false,
     this.errorMessage,
@@ -42,6 +43,23 @@ class PlaybackState {
 
   /// 是否处于"长按快进"中。
   final bool isLongPressing;
+
+  /// **内核实际生效的倍速**（只读语义，用户规格禁令⑤）。
+  ///
+  /// ## 为什么必须与 [userSpeed] 分开（禁令①）
+  /// | 字段 | 谁写 | 谁看 | 含义 |
+  /// |---|---|---|---|
+  /// | `userSpeed` | **只有用户操作**（点按钮/设偏好） | 倍速按钮文案 | 用户**想要**的倍速 |
+  /// | `engineSpeed` | **只有内核回报**（`syncSpeed`） | 需要展示"实际倍速"的地方 | 引擎**实际在跑**的 |
+  /// | `effectiveSpeed` | 派生（不改任何字段） | 下发给引擎的期望值 | "**应该**给引擎什么" |
+  ///
+  /// ## 历史教训（为什么这个字段是被"逼"出来的）
+  /// 重构前 `syncSpeed` 把内核速率写进 `userSpeed`，于是：
+  /// · 长按 → 内核回报 3.0 → `userSpeed` 变 3.0 → 用户发现"倍速被改了"
+  /// · 修了两轮（长按守卫 / 迟到回报时间窗），**都是补丁**
+  /// 用户禁令①句话点破根因：**一个变量兼表两者，就必然互相污染**。
+  /// 拆成两个字段后，那两轮守卫可以删掉 —— 因为污染路径不存在了。
+  final double engineSpeed;
 
   final bool isBuffering;
   final bool isCompleted;
@@ -80,6 +98,7 @@ class PlaybackState {
     double? userSpeed,
     double? longPressSpeed,
     bool? isLongPressing,
+    double? engineSpeed,
     bool? isBuffering,
     bool? isCompleted,
     // 用哨兵而非 `?? this.errorMessage`：否则**无法把错误清空**
@@ -94,6 +113,7 @@ class PlaybackState {
         userSpeed: userSpeed ?? this.userSpeed,
         longPressSpeed: longPressSpeed ?? this.longPressSpeed,
         isLongPressing: isLongPressing ?? this.isLongPressing,
+        engineSpeed: engineSpeed ?? this.engineSpeed,
         isBuffering: isBuffering ?? this.isBuffering,
         isCompleted: isCompleted ?? this.isCompleted,
         errorMessage: identical(errorMessage, _sentinel)
@@ -112,14 +132,15 @@ class PlaybackState {
           other.userSpeed == userSpeed &&
           other.longPressSpeed == longPressSpeed &&
           other.isLongPressing == isLongPressing &&
+          other.engineSpeed == engineSpeed &&
           other.isBuffering == isBuffering &&
           other.isCompleted == isCompleted &&
           other.errorMessage == errorMessage;
 
   @override
   int get hashCode => Object.hash(isPlaying, position, duration, buffer,
-      userSpeed, longPressSpeed, isLongPressing, isBuffering, isCompleted,
-      errorMessage);
+      userSpeed, longPressSpeed, isLongPressing, engineSpeed, isBuffering,
+      isCompleted, errorMessage);
 
   @override
   String toString() => 'PlaybackState(playing: $isPlaying, '
