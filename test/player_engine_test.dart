@@ -88,6 +88,12 @@ class MinimalKernel implements PlayerKernel {
   Future<void> setSubtitleTrack(String id) async {}
   @override
   // KernelState 的字段都是 required（既有类型，不能改签名去迁就测试）
+  /// 限流补发 —— 假内核不做限流，空实现即可
+  /// （implements 要求实现所有接口成员，接口默认实现只对 extends 生效）
+  @override
+  void flushPendingPosition() {}
+
+  @override
   KernelState get state => const KernelState(
         position: Duration.zero,
         duration: Duration.zero,

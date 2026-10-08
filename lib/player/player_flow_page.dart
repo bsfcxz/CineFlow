@@ -128,6 +128,13 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   String _playMethod = 'direct';
   Timer? _startTimeout;
   Timer? _speedTimer;
+
+  /// 位置补发定时器（配合 `NativeKernel._pushState` 的限流）。
+  ///
+  /// 内核为消除"每帧重建整页"把位置推送限流到 250ms；
+  /// 本定时器保证**窗口内最后一次位置**会被补发出去 ——
+  /// 否则暂停/seek 后进度条会停在旧位置。
+  Timer? _posFlushTimer;
   int _bufStalls = 0;
   bool _netSlowHint = false;
   bool _autoNextEnabled = true;
@@ -288,6 +295,18 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   ///    （否则旧内核 dispose 后其流关闭，会产生未捕获错误）。
   void _wireKernel(PlayerKernel kernel) {
     bool? lastPlaying;
+    // ---- 位置补发定时器（配合内核的推送限流）----
+    //
+    // 内核把位置推送限流到 250ms 以消除"每帧重建整页"。
+    // 本定时器每 250ms 调一次 `flushPendingPosition()` ——
+    // 内核侧**只在有挂起位置时**才真正发事件（空调用无开销），
+    // 保证限流窗口内的最后一次位置不丢（暂停/seek 后进度条不停住）。
+    _posFlushTimer?.cancel();
+    _posFlushTimer = Timer.periodic(
+      const Duration(milliseconds: 250),
+      (_) => kernel.flushPendingPosition(),
+    );
+
     _subs.add(kernel.stateStream.listen((s) {
       final p = ref.read(playbackStateProvider.notifier);
       p.setPlaying(s.playing);
@@ -982,6 +1001,7 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     _finalize();
     _startTimeout?.cancel();
     _speedTimer?.cancel();
+    _posFlushTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }

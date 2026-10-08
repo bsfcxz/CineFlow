@@ -77,10 +77,79 @@ class NativeKernel implements PlayerKernel {
   @override
   Stream<void> get videoSizeStream => _videoSizeController.stream;
 
-  void _pushState(KernelState s) {
+  /// ★ 位置推送限流（真机卡顿的根因修复，2026-10-08）
+  ///
+  /// ## 问题
+  /// mpv 的 `time-pos` 是**原生观察属性**：每次值变化就发一次
+  /// `MPV_EVENT_PROPERTY_CHANGE`，播放中约 **30–60 次/秒**（每帧）。
+  /// 原来每次变化都 `_pushState` → 事件流 → Riverpod 状态变 →
+  /// `PlayerUiPage.build` 重跑（它 watch 整个 `playbackStateProvider`）
+  /// → **整页 Stack**（视频层/弹幕层/手势层/反馈层/控制层）重建 60 次/秒。
+  ///
+  /// 真机 `dumpsys gfxinfo` 实测：
+  /// ```
+  /// Janky frames: 6 (33.33%)     Number Slow UI thread: 3
+  /// 90th percentile: 97ms        95th percentile: 150ms
+  /// ```
+  /// `Slow UI thread`（而非 `Slow issue draw commands`）⇒ 瓶颈是 **Dart 重建**。
+  ///
+  /// ## 为什么限流是安全的
+  /// · **进度条**：250ms 刷新一次，肉眼完全看不出（60Hz 屏上是 15 帧一更新，
+  ///   而进度条一次只移动几十像素，人眼无法分辨"每帧"与"每 250ms"）
+  /// · **时间文字**：本来就是秒级显示，250ms 已经远超需要
+  /// · **其他字段**（playing/duration/buffer/rate/volume）：**立即推送**，
+  ///   它们的**变化频率天然很低**（用户操作才变），且**必须及时**
+  ///   （比如 playing 翻转要立刻更新播放按钮图标）
+  ///
+  /// ## 实现要点
+  /// 只在"**仅有位置变化**"时限流；其他字段变化一律立即推送，
+  /// 否则会出现"点暂停后图标 250ms 才变"的可感知延迟。
+  ///
+  /// ⚠️ 末尾**必须补发一次**（flush）：否则限流窗口内最后一次位置变化
+  ///    会丢失，seek 后进度条可能停在旧位置。
+  void _pushState(KernelState s, {bool isPositionOnly = false}) {
     _state = s;
-    if (!_stateController.isClosed) _stateController.add(s);
+    if (_stateController.isClosed) return;
+
+    if (!isPositionOnly) {
+      // 非位置字段变化 → 立即推送（并重置限流窗口起点）
+      _lastPositionPushAt = DateTime.now();
+      _stateController.add(s);
+      return;
+    }
+
+    final now = DateTime.now();
+    final since = _lastPositionPushAt;
+    if (since != null && now.difference(since) < _positionThrottle) {
+      // 窗口内：不推送，但要记下"有待补发"
+      _pendingPosition = s.position;
+      return;
+    }
+    _lastPositionPushAt = now;
+    _pendingPosition = null;
+    _stateController.add(s);
   }
+
+  /// 位置推送间隔（见 [_pushState] 的长注释）。
+  static const Duration _positionThrottle = Duration(milliseconds: 250);
+  DateTime? _lastPositionPushAt;
+
+  /// 限流窗口内被抑制的最后一个位置（待补发）。
+  Duration? _pendingPosition;
+
+  /// 补发挂起的位置（由 UI 侧定时调用，或下次事件到来时）。
+  ///
+  /// ⚠️ 不补发会丢失"最后一次位置"：例如用户 seek 后立刻松手，
+  ///    进度条会停在旧位置直到下一次 time-pos 到来。
+  @override
+  void flushPendingPosition() {
+    final p = _pendingPosition;
+    if (p == null || _stateController.isClosed) return;
+    _pendingPosition = null;
+    _lastPositionPushAt = DateTime.now();
+    _stateController.add(_state.copyWith(position: p));
+  }
+
 
   KernelState _copy({
     Duration? position,
@@ -134,7 +203,13 @@ class NativeKernel implements PlayerKernel {
     switch (name) {
       case 'time-pos':
         final v = (data as num?)?.toDouble() ?? -1;
-        if (v >= 0) _pushState(_copy(position: Duration(milliseconds: (v * 1000).round())));
+        // ★ 标记为"仅位置变化" → 走限流路径（每秒最多 4 次，不是 60 次）
+        if (v >= 0) {
+          _pushState(
+            _copy(position: Duration(milliseconds: (v * 1000).round())),
+            isPositionOnly: true,
+          );
+        }
       case 'duration':
         final v = (data as num?)?.toDouble() ?? -1;
         if (v > 0) {

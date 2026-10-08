@@ -22,6 +22,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter/services.dart'
+    show DeviceOrientation, SystemChrome, SystemUiMode;
 
 import '../data/models.dart';
 import '../pages/detail_page.dart';
@@ -189,8 +191,74 @@ final routerProvider = Provider<GoRouter>((ref) {
 ///
 /// [gate] 提供会话状态与变化通知；测试可注入假实现。
 /// [initialLocation] 供测试注入（避免测试依赖真实会话状态）。
+// ---- 自动竖屏观察者（真机 bug 的根治方案）----
+//
+// ## 问题（三轮排查的完整结论）
+// 播放页会锁横屏。退出它的**落点不止一个**：
+// ```
+// 播放器 → 详情页（实测最常见）
+// 播放器 → 首页
+// 播放器 → 桌面（播放页是任务根路由时）
+// ```
+// 前两轮把复位挂在播放页 `dispose` / `HomeShell.initState`：
+//   · `dispose`：调用发生了，但窗口没转（平台层不应用）
+//   · `HomeShell.initState`：只在**冷启动**跑一次（它一直在栈底，不 unmount）
+//   · `RouteAware.didPopNext`：只覆盖"直接下层是首页"，**漏掉详情页**
+//
+// ## 根治：在**导航层**统一处理，而不是逐页挂回调
+// 逐页挂是打地鼠 —— 每加一个页面都要记得挂，漏一个就复现。
+// 这里改成监听**全局路由变化**：任何一次导航完成后，
+// 若当前路由**不是播放器**，就把方向复位成竖屏。
+//
+// 新增页面**自动覆盖**（不需要记得挂任何东西），
+// 只有播放页需要横屏 —— 判断条件是"当前路由不在 /play 下"。
+class AutoPortraitObserver extends NavigatorObserver {
+  AutoPortraitObserver();
+
+  /// 当前路由是否是播放器（播放器需横屏，不能复位）。
+  bool _isPlayerRoute(Route<dynamic>? route) {
+    final name = route?.settings.name ?? '';
+    return name.startsWith('/play');
+  }
+
+  void _enforce(Route<dynamic>? route) {
+    if (_isPlayerRoute(route)) return;
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPush(route, previousRoute);
+    // push 播放器时**不复位**（它自己会锁横屏）；
+    // push 其他页面 → 确保竖屏
+    _enforce(route);
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPop(route, previousRoute);
+    // ★ 核心场景：从播放器 pop 回来后，对**落点路由**强制竖屏。
+    //   这里检查 previousRoute（落点），而不是被 pop 掉的 route。
+    _enforce(previousRoute);
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    super.didReplace(newRoute: newRoute, oldRoute: oldRoute);
+    _enforce(newRoute);
+  }
+}
+
+/// 全局单例观察者（挂到 GoRouter.observers）。
+///
+/// ⚠️ 必须是**顶层**：写进函数体会变成局部变量，
+///    外部（HomeShell 等）访问不到 —— 我第一版就犯了这个错。
+final AutoPortraitObserver appRouteObserver = AutoPortraitObserver();
+
 GoRouter buildRouter({required SessionGate gate, String? initialLocation}) {
   return GoRouter(
+    observers: [appRouteObserver],
     initialLocation: initialLocation ?? Routes.home,
     refreshListenable: gate.listenable,
     // 未匹配路径统一进首页：本项目没有值得单独做的 404 页，
