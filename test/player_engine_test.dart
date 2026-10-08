@@ -93,6 +93,10 @@ class MinimalKernel implements PlayerKernel {
   @override
   void flushPendingPosition() {}
 
+  /// 假内核不做属性回读（接口默认实现只对 extends 生效）
+  @override
+  Future<String?> getOption(String name) async => null;
+
   @override
   KernelState get state => const KernelState(
         position: Duration.zero,

@@ -298,6 +298,31 @@ class NativeKernel implements PlayerKernel {
   Future<void> ensureInitialized() async {
     await ensureTexture();
     await _method.invokeMethod('initialize');
+    // ⚠️ 用 `unawaited`：自检是**诊断**，不该阻塞起播。
+    //    （`ensureInitialized` 在 `open()` 里被 await，
+    //      若自检挂起会直接拖慢起播 —— 实测就是这个现象。）
+    // （自检已移至 PlayerFlowPage._verifyMpvConfig —— 此处会阻塞 open()，见该方法的说明）
+  }
+
+
+  /// 读回 mpv 属性（见 `PlayerKernel.getOption` 的说明）。
+  ///
+  /// ⚠️ **必须加超时**：实测不加时 `getProperty` 会挂起不返回，
+  ///    导致依赖它的日志永远打不出来（排查花了好几轮）。
+  ///    300ms 足够正常读取；超时返回 null（记为"读不到"）。
+  @override
+  Future<String?> getOption(String name) async {
+    try {
+      // 300ms 超时：mpv 的 `mpv_get_property` 对某些属性可能阻塞，
+      // 而这是**起播路径上的诊断调用**，绝不能拖住播放。
+      return await _method
+          .invokeMethod<String>('getProperty', {'name': name})
+          .timeout(const Duration(milliseconds: 300));
+    } catch (_) {
+      // 读不到就返回 null —— 调用方据此判定"未生效"，
+      // **不该因为诊断失败而影响播放**。
+      return null;
+    }
   }
 
   @override

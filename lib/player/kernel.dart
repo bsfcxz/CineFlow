@@ -355,6 +355,22 @@ abstract class PlayerKernel {
 
   KernelState get state;
 
+  /// 读回引擎的运行时选项/属性（**默认返回 null**）。
+  ///
+  /// ## 用途
+  /// 排查"选项配了却没生效"—— `setOptionString` 对**未知选项不报错**，
+  /// mpv 只记一行日志然后忽略。有回读才能确认。
+  ///
+  /// ## ⚠️ 实现方必须加超时
+  /// mpv 的 `mpv_get_property` 对某些渲染器属性在视频轨未就绪时
+  /// **可能阻塞**（实测：不加超时时整个自检永远不返回）。
+  /// 这是诊断接口，**绝不能拖住播放**。
+  ///
+  /// ## 为什么有默认实现
+  /// 只有 mpv 内核有"可回读的 mpv 属性"概念；Media3 的配置是
+  /// 构建期定的（`ExoPlayer.Builder`），没有等价回读 ⇒ 返回 null。
+  Future<String?> getOption(String name) async => null;
+
   /// 补发被限流的最后一次位置（**默认空实现**）。
   ///
   /// ## 为什么在接口上有默认实现

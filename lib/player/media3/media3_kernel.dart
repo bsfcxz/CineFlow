@@ -244,6 +244,12 @@ class Media3Kernel implements PlayerKernel {
   @override
   KernelState get state => _state;
 
+  /// Media3 的配置是**构建期**定的（`ExoPlayer.Builder`），
+  /// 没有"运行时可回读的属性"概念 ⇒ 恒返回 null。
+  /// （`implements` 要求实现所有接口成员，接口默认实现只对 `extends` 生效。）
+  @override
+  Future<String?> getOption(String name) async => null;
+
   /// Media3 的 `state` 事件来自 Kotlin 侧 250ms 的定时上报
   /// （见 `Media3Channel.PROGRESS_INTERVAL_MS`），**频率本来就低**，
   /// 不需要像 mpv 内核那样限流 → 本方法为空实现。

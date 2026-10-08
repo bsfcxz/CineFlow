@@ -102,6 +102,79 @@ class PlayerFlowPage extends ConsumerStatefulWidget {
 
   @override
   ConsumerState<PlayerFlowPage> createState() => _PlayerFlowPageState();
+  /// **回读 mpv 关键选项**，确认真的生效（2026-10-09）。
+  ///
+  /// ## 为什么需要
+  /// `setOptionString` 对**不存在的选项不报错** —— mpv 只写一行日志
+  /// 然后**默默忽略**。"配了却没效果"且排查无线索。
+  /// 本项目已多次踩这类坑（`default_rate` 有读无写、HDR 信息接线断、
+  /// `episodeLabel` 未被填充）。
+  ///
+  /// ## 输出格式
+  /// ```
+  /// [MPV-CFG] tone-mapping=bt.2390 hdr-compute-peak=yes ...
+  /// [MPV-CFG] ⚠️ N 项未生效: ...
+  /// ```
+  /// 用 `grep MPV-CFG` 即可确认。
+  ///
+  /// ## 只查"新增且影响最大"的项
+  /// 全查会刷屏；其余项（字体路径等）已在其它轮真机验证过。
+  static Future<void> _verifyMpvConfig(PlayerKernel kernel) async {
+    // ---- ① 先做**通道自检**：读一个必然存在的属性 ----
+    //
+    // ## 为什么必须先做这一步
+    // 第一版直接读 `tone-mapping` 等选项，全部返回**空**，
+    // 于是"配置没生效"和"读取通道不工作"**无法区分**。
+    //
+    // 用 `mpv-version`（mpv 自己的版本串，永远可读）当**对照**：
+    // · 若它也读不到 ⇒ **通道问题**（`getProperty` 方法/C 层有问题）
+    // · 若它能读到 ⇒ 通道正常，问题在"选项名不是属性名"
+    // ## 为什么先读 `mpv-version`
+    // 它是**必然存在**的属性 —— 用它区分两种失败：
+    // · 读不到 ⇒ **通道问题**（`getProperty` 没工作）
+    // · 读得到 ⇒ 通道正常，再看具体选项
+    //
+    // ⚠️ 实测踩过的坑：默认播的片源若被自动适配判给 **Media3**，
+    //    则 `getOption` 走的是 Media3 的**空实现**（返回 null），
+    //    与"mpv 配置没生效"**表现得一模一样**。
+    //    ⇒ 看到全 `?` 时**先确认当前用的是哪个内核**
+    //      （`[Kernel] ... -> mpv|media3` 埋点）。
+    final probe = await kernel.getOption('mpv-version') ?? '';
+    debugPrint('[MPV-CFG] 内核=${kernel.engine} '
+        'mpv-version="${probe.isEmpty ? "不可读（非 mpv 内核或通道故障）" : probe}"');
+
+    // ---- ② 读选项：**必须用 `option/` 前缀** ----
+    //
+    // ⚠️ mpv 里**选项（option）与属性（property）是两套命名空间**：
+    // · `tone-mapping` 写在配置里是**选项**
+    // · 运行时用 `mpv_get_property` 读它要用 **`option/tone-mapping`**
+    //
+    // 我第一版直接用裸名读 → 全部返回空（不是"没生效"，是"读错命名空间"）。
+    // 临时：只查 1 项（配合 [MPV-DBG] 定位通道问题）
+    // 临时：打印 kernel 的实际运行时类型（定位 getOption 未被 override）
+    debugPrint('[MPV-CFG] kernel = ${kernel.runtimeType} '
+        '(engine=${kernel.engine})');
+
+    const expect = {
+      'tone-mapping': 'bt.2390',
+    };
+    final got = <String>[];
+    final bad = <String>[];
+    for (final e in expect.entries) {
+      // ⚠️ `getOption` 自带 300ms 超时（见其实现）：
+      //    mpv 属性读取可能挂起，而这里是**起播路径**，
+      //    诊断绝不能拖住播放。
+      final v = await kernel.getOption(e.key) ?? '';
+      final short = e.key.replaceFirst('option/', '');
+      got.add('$short=${v.isEmpty ? "?" : v}');
+      if (v != e.value) bad.add('$short(期望${e.value} 实际$v)');
+    }
+    debugPrint('[MPV-CFG] ${got.join(" ")}');
+    if (bad.isNotEmpty) {
+      debugPrint('[MPV-CFG] ⚠️ ${bad.length} 项与期望不符: ${bad.join("; ")}');
+    }
+  }
+
   // ---------- 顶栏文案（用户 2026-10-09 反馈）----------
 
   /// 顶栏主标题：**集数 + 名称**（用户要求"增加显示集数的名称"）。
@@ -367,7 +440,43 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     _wireKernel(kernel);
 
     setState(() {}); // textureId 就绪，build 换成真视频层
+
+    // ---- ★ mpv 配置自检（2026-10-09）----
+    //
+    // ## 为什么放在这里（而不是 NativeKernel 内部）
+    // 最初把自检挂在 `NativeKernel.ensureInitialized()`，但实测
+    // **一行日志都没输出** —— 而同为 `debugPrint` 的 `[Startup]` 埋点
+    // （就在本方法里）正常可见。
+    // ⇒ 与其继续查"那段为什么没跑到"，不如放在**确定会执行**的位置：
+    //    本方法已有 `_stage()` 在稳定输出。
+    //
+    // ## 为什么必须用 Dart 侧 debugPrint
+    // Kotlin 侧的 `Log.*` 会被 R8 **全部剥离**
+    // （dex 取证：`Log;->i/w/e/d(` 均不存在，仅 `Landroid/util/Log;` 类名残留）
+    // ⇒ Java 日志在 release 包里**一条都看不到**。
+    //     Dart 的 `debugPrint`（`I/flutter`）可见。
+    //
+    // ## 查什么
+    // `setOptionString` 对**未知选项不报错**（mpv 只记日志然后忽略），
+    // 故必须回读确认。查本轮新增且影响最大的项。
     await _startEpisode(resumeSeconds: _resumeSeconds);
+
+    // ---- ★ mpv 配置自检（**必须在起播之后**，2026-10-09）----
+    //
+    // ## ⚠️ 时机很关键（实测踩过）
+    // 第一版把自检放在 `_startEpisode` **之前** —— 结果读到
+    // **全空值**（`tone-mapping=? hdr-compute-peak=? ...`），
+    // 一度误以为"配置全没生效"。
+    //
+    // 真实原因：mpv 的 `initialize()` 发生在
+    // `_startEpisode` → `k2.open()` → `ensureInitialized()` 里。
+    // 自检跑在它之前 ⇒ **mpv 还没初始化** ⇒ `mpv_get_property` 读不到东西。
+    //
+    // ⇒ 自检必须在**起播之后**（此时 mpv 已 initialized、属性可读）。
+    //
+    // （与本项目此前多次踩的"时序"类坑同源：`textureId` 要在 build 前就绪、
+    //   `wid` 要在 `mpv_initialize` 前设好……）
+    unawaited(PlayerFlowPage._verifyMpvConfig(kernel));
   }
 
   /// 把一个内核的状态流接到 providers 上（**单向同步**，与 harness 同款）。
