@@ -562,36 +562,39 @@ Slack / Google API key / 私钥块 / JWT）。
 
 ---
 
-## 4. 工作区状态（未提交）
+## 4. 工作区状态
 
-截至本文件更新时 `git status`（**约 54 项**，含第 8 轮的 UI 改造）：
+> **本节由第 37 轮刷新**（此前长期停留在第 8 轮的过时快照：
+> 写着"约 54 项未提交 / 基线 4 次提交 / 最新 `5dd1389`"，而实际早已全部提交）。
+> **过时快照比没有更糟** —— 下一个代理会以为"有别人的未提交改动"而不敢动手。
 
-**第 8 轮 UI 改造涉及的源文件**（全部已 analyze/test/真机验证通过）：
-`lib/core/theme.dart` · `lib/widgets/media_cards.dart` ·
-`lib/pages/{home,rank,profile,detail,login,playback_settings}_page.dart` ·
-`lib/player/player_page.dart` · `lib/pan115/pan115_browser_page.dart`
+**当前实测**（`git status` / `git log` 实时读取）：
 
-**第 8 轮新增文档**：`docs/DEVELOPMENT-PLAN.md` · `tool/gen_plan_docx.py` ·
-`docs/AI-MEMORY.md`（本文件）
+| 项 | 值 |
+|---|---|
+| 分支 | `master` |
+| 工作区 | **干净（除本文件外无未提交改动）** |
+| 最新提交 | `246fd73 refactor(player): 按 5 条禁令拆分倍速模型 —— engineSpeed 独立字段 + 删除两轮补丁` |
+| 提交总数 | 57 |
+| **未推送** | **37 个提交**（`origin/master..master`） |
 
-**早先轮次留下的未提交项**：`AGENTS.md` · `android/app/build.gradle.kts` ·
-`MainActivity.kt` · `launch_background.xml`(×2) · `docs/PLAYER-KERNEL.md` ·
-`docs/decisions/README.md` · `docs/review-checklist.md` · `lib/main.dart` ·
-`lib/pan115/pan115_player.dart` · `lib/pages/profile_page.dart` · `pubspec.yaml` ·
-`VERSION` · `scripts/check-docs.ps1` 等
+> ⚠️ **未推送 ≠ 需要推送**：按 `docs/AI-DISTRIBUTION.md` 的 D1–D10，
+> **未经用户当轮明确审批，不推送、不打 tag、不创建 Release**。
+> 这 37 个提交是**有意留在本地**的。
 
-**新增（未跟踪）**：`android/app/src/main/cpp/` ·
-`android/app/src/main/jniLibs/arm64-v8a/libmpv.so`（12,369,680 B）·
-`android/app/src/main/kotlin/com/cineflow/app/player/` ·
-`docs/decisions/0009-native-mpv-kernel.md` · `integration_test/` · `patrol_test/` ·
-`lib/player/{kernel,player_facade}.dart` · `lib/player/native/` ·
-`lib/pages/about_page.dart` · `scripts/check-dev.ps1` · `docs/PROJECT-STATUS.md`
-
-**基线**：`master` 分支，4 次提交，最新 `5dd1389`，tag `v0.2.0`。
-
-> ⚠️ 累计改动**尚未 commit**。接手时先 `git status` / `git diff` 复核，
+> ⚠️ 接手时**先跑 `git status` 复核**（本节数字可能又过时了）——
 > **不要覆盖别人的未提交改动**（AGENTS §10.5）。
-> 第 8 轮开工前我已用 `git stash push -u` → `stash pop` **验证过回滚点可用**。
+
+**第 34–37 轮改动的文件**：
+`lib/player/player_flow_page.dart`（起播埋点 + 首帧探针）·
+`android/app/src/main/kotlin/com/cineflow/app/player/PlayerChannel.kt`（分析窗口）·
+`lib/player/domain/models/playback_state.dart`（`engineSpeed` 字段）·
+`lib/player/application/controllers/playback_controller.dart`（拆字段 + 删两轮补丁）·
+`lib/player/application/providers/player_providers.dart`（文案改用 `userSpeed`）
+
+测试：`test/player_longpress_speed_spec_test.dart` ·
+`test/player_speed_architecture_guard_test.dart` ·
+`test/playback_speed_race_test.dart`（按新契约改写）
 
 ---
 
@@ -756,6 +759,11 @@ flutter build apk --debug                # ← 必须重新构建才能恢复 li
 | 2026-10-08 | 第 31 轮 | **★ 底栏去掉 `BackdropFilter` —— 模糊本身就是"遮挡视频"的根源**（用户第三轮反馈"改成透明的，目前的状态会遮挡视频"）<br>**① 三轮迭代的完整教训**：<br>&nbsp;&nbsp;· 第 1 轮：黑色 `BarScrim` 渐变 200dp → 用户"要透明毛玻璃"<br>&nbsp;&nbsp;· 第 2 轮：白色 8%→12% + `blur(22)` → 用户"改成透明的"<br>&nbsp;&nbsp;· 第 3 轮：填充全透明，**保留 blur(22)** → 用户"**仍会遮挡视频**"<br>**② 想通的关键**：`BackdropFilter(ImageFilter.blur)` 的语义是"把**背后已画好的内容**模糊一遍再合成"。**即使填充是全透明**，这一步 blur 依然会修改工具栏区域下的视频像素 —— 用户看到"这块是糊的" = 被遮挡。**"透明"在用户眼里 = 这块画面与其他地方一模一样、不被处理**。前两轮我一直在调"填充颜色/透明度"，**方向错了** —— 该去掉的是模糊<br>**③ 修法**：底栏去掉 `GlassBar`（内含 BackdropFilter），改为纯 `Padding` 容器：无模糊/无填充/无描边 ⇒ 视频像素完全不被处理。顺带省掉一次全宽高斯模糊（BackdropFilter 是**每帧的 GPU 开销**）<br>**④ 可读性补偿**（透明必须付的代价）：`_IconBtn`（8 个底栏图标）与 `_TextBtn`（倍速文字）新增双层 `Shadow`（近距实 + 远距虚）；时间/时长文字原本就有<br>**⑤ 测试**：`test/player_bar_transparency_test.dart`（3 例，含**断言底栏子树不得出现 BackdropFilter**）+ `player_bar_transparency_selftest_test.dart`（2 例，**断言自证**）。⚠️ 反向注入试了两次都不干净（都因注释/import 缺失导致**编译错**，变红不是断言抓的）⇒ 改为**直接验证断言逻辑本身**：造两棵树（有/无 BackdropFilter），同一段 finder 必须正确区分<br>**⑥ 我自己写错的断言**：第一版"不得叠色"检查**所有** `DecoratedBox`，把**进度条的功能色**（轨道白 20%、已完成蓝）也判红。**这是测试写错、不是产品缺陷** ⇒ 诊断打印实际色值后收窄到"背景层"<br>**验收**：analyze 0/0/0、`flutter test` 764 → **769**、release 构建装机 FATAL=0 | 
 | 2026-10-08 | 第 32 轮 | **★ 位置推送限流消除"每帧重建整页"（卡顿根因）+ 全流程真机测试 19/23**<br>**① 卡顿有硬数据（不是感觉）**：真机 `dumpsys gfxinfo` 实测 `Janky frames 6/18 = 33.33%`、`Number Slow UI thread: 3`、`90th 97ms`、`95th 150ms`。**`Slow UI thread`（而非 `Slow issue draw commands`）⇒ 瓶颈在 Dart 重建**，不是 GPU<br>**② 根因链**：mpv 的 `time-pos` 是**原生观察属性**（`mpv_observe_property`），每次值变化即推送 —— 播放中约 **30–60 次/秒**（每帧）：<br>&nbsp;&nbsp;`mpv 每帧 time-pos → C 推 JSON → Kotlin → Dart → playbackState 变 → PlayerUiPage.build 重跑（watch 整个 PlaybackState）→ 整个 Stack 重建：视频层/弹幕层/手势层/反馈层/控制层`<br>&nbsp;&nbsp;而 `build` 里其实只用到 4 个字段，其中 `position`/`duration` 还只是**回调里按需读**的<br>**③ 修法（在源头限流，而非重构 widget 树）**：`NativeKernel._pushState` 增加 `isPositionOnly` 参数 —— **仅位置变化**走 250ms 窗口限流（每秒最多 4 次）；**其他字段**（playing/duration/buffer/rate/volume）**立即推送**（它们频率天然低，且必须及时，否则点暂停后按钮 250ms 才变）。为什么 250ms 够：进度条一次只移动几十像素，人眼分辨不出"每帧"与"每 250ms"<br>**④ 补发机制**（防最后一次位置丢失）：新增 `flushPendingPosition()`，由流程页 250ms 定时器驱动；内核侧**只在有挂起位置时**才真正发事件（空调用零开销）。否则暂停/seek 后进度条停在旧位置<br>**⑤ 接口影响**：`PlayerKernel` 加 `flushPendingPosition`。⚠️ **Dart 的 `implements` 要求实现所有接口成员**（接口里的"默认实现"只对 `extends` 生效）⇒ `Media3Kernel`、测试里的 `MinimalKernel` 各补空实现（Media3 的回调频率本来就低，Kotlin 侧 250ms 定时上报）<br>**⑥ 效果**：修复后 `p50 6ms / p90 12ms / p95 12ms`（60fps 达标）。**进度条回归验证**：`06:36 → 06:43 → 06:50 → 06:57` 正常前进，**限流没有冻结它**（这是把卡顿换成"进度条不动"这个更糟 bug 的反向防线）<br>**⑦ 全流程真机测试 19/23**：通过的含冷启动竖屏、三 Tab、进入播放器（横屏）、播放/暂停、**列表显示集数**、**亮度手势触发（语义读到 `70,亮度`）**、无 FATAL/ANR。<br>**失败的 4 项里 3 项是我脚本的问题**（不是产品缺陷）：<br>&nbsp;&nbsp;· 「播放内核」入口：它在【我的】里（`profile_page.dart:120`），脚本在首页找<br>&nbsp;&nbsp;· 「进入详情页」：继续观看卡片按设计**直接进播放器**（上轮的 `openPlayerResolved`），不经过详情页<br>&nbsp;&nbsp;· 「设置」按钮：关列表面板后控制层已自动隐藏（3s），脚本没重新唤出<br>&nbsp;&nbsp;· 「退出后回竖屏」：**真问题**，见 §7 台账<br>**⑧ ⚠️ 两个测量口径错误（我自己犯的）**：**(a)** 第一次测出 `Janky 0/0 = 0.00%` —— 那是**退化数据**（控制层 3 秒后自动隐藏、UI 静止 ⇒ 一帧都没画）。**"0 帧"不等于"0 卡顿"**，不能当改善证据。**(b)** `gfxinfo` 统计的是 **Flutter UI 帧**；视频走 `Texture`（独立图层、平台侧合成）⇒ **视频自身的掉帧完全不反映在 gfxinfo 里**。故视频流畅度**只能人眼确认**<br>**验收**：analyze 0/0/0、`flutter test` 769 | 
 | 2026-10-08 | 第 33 轮 | **中部三键与锁屏键改成透明（与底栏一致）+ 修掉门禁自身的 analyze 解析缺陷**（用户："暂停、播放、快进、锁屏键也使用透明改成和底栏一样"）<br>**① 与底栏同一根因**：这四处原先都垫着 `GlassBackground`（12% 白 + blur12 + 描边）—— 即 `BackdropFilter` 会模糊其区域的**视频像素**。修：`GlassButton`/`GlassCircle` 去掉背景，只留 `Icon` + `InkWell`（水波纹反馈保留，不留底色）<br>**② ★ 锁按钮的激活态改法（关键设计决定）**：原实现锁定时给整圆填 `lockActive`（**90% 蓝**）—— 那是**最大的一块不透明色**，正是要消除的遮挡。但"锁定了"必须看得出来，否则用户不知道点击会不会生效 ⇒ 把状态信号**从背景移到图标**：锁定时图标变蓝，背景仍全透明。**通用原则：透明化时把状态表达从"面"移到"线/点"**（图标/文字/描边），而不是把状态一起丢掉<br>**③ 新增令牌 `PlayerUi.overlayIconShadows`**：双层阴影（近距 blur4/black87 保轮廓 + 远距 blur10/black54 保亮背景对比）。原先这个阴影在 3 处内联，收成令牌避免各处数值漂移<br>**④ 测试 +3（769 → 772）**：中部三键子树不得有 BackdropFilter / 锁按钮子树不得有 BackdropFilter / **锁按钮锁定态不得用大面积填色（<0.5 不透明度）**。<br>**反向注入 2/2 检出且 `analyze error=0`** —— 这次证据是干净的（前几轮两次注入都因 import/注释缺失导致编译错，变红不是断言抓的，属无效证据）<br>**⑤ ⚠️ 我自己犯的低级失误**：测试里键名写成 `playButton`（实际 `togglePlayButton`）、`seekBackwardButton`（实际 `seekBackButton`），还用了不存在的 `keys.player.byName(...)` ⇒ 编译期就报错。**教训：写测试引用 keys 前先看 `lib/keys.dart`，别凭记忆**<br>**⑥ ★ 修掉 `check-dev.ps1` 自身的 analyze 解析缺陷（既有缺陷，本轮首次跑收工门禁才暴露）**：<br>&nbsp;&nbsp;· **症状**：`[失败] flutter analyze：输出无法解析，请手动确认`，但实际是 **0 error / 0 warning**（仅 3 条豁免 info）<br>&nbsp;&nbsp;· **根因**：旧逻辑依赖**汇总行** `$an -match '(\d+) error'`，而 `flutter analyze` 3.47.5 的**实际输出只有逐条诊断行**（`info - ... (lib/x.dart:12:5)`），**不打印** error/warning 汇总；`No issues found` 仅在**完全无 issue**时出现 ⇒ 只要有任何 info 就落到 `else` 报"无法解析" ⇒ **门禁恒失败**。这是既有缺陷（AGENTS §5.7 说那 3 条 info 长期豁免，说明该分支早就走不通，只是没人跑过收工门禁）<br>&nbsp;&nbsp;· **修法**：不依赖汇总行，**直接数逐条诊断行**（`^\s*error\s+-\s` / `^\s*warning\s+-\s`）—— 前缀是各版本稳定契约，比汇总格式可靠<br>&nbsp;&nbsp;· **反向注入验证**（AGENTS §8.1 明确要求"改门禁脚本本身也要反向注入"）：基线 `退出码 0` + `0 error / 0 warning（仅 info，已豁免）`；注入一个语法错误文件 → `退出码 1` + `1 error / 2 warning（必须为 0）` ⇒ **解析有效，不是恒过**<br>&nbsp;&nbsp;· ⚠️ 脚本含中文，用 Python `utf-8-sig` 读写**保住 BOM**（AGENTS §3.1：丢 BOM 会被按 GBK 解码、中文行吞掉下一行代码）<br>**⑦ 真机验证 11/12**：三个中部按钮都在且**命中区 ≥48dp**（198×198 / 154×154）、点暂停标签翻转、点播放恢复；（第 12 项"锁按钮可点"是**我脚本的问题** —— 锁定后语义标签变成「**解锁**」（正确交互：锁定时提示"点这里解锁"），脚本用 `'锁定'` 匹配不到。单独复测确认：锁定后控制层隐藏 [OK]、锁按钮仍可访问 [OK]、**点击解锁后控制层完整恢复 [OK]、无死锁**）<br>**验收**：`check-dev.ps1` **退出码 0，19 项全过**（含 772 例测试、go vet/test、check-secrets/docs/bump_version、libmpv.so ELF、真机 pid 存活 + 无 FATAL）；analyze 0/0/0 |
+
+| 2026-10-08 | 第 34 轮 | **起播耗时埋点 —— 用数据定位"起播慢"（结论：不在 Dart 侧）**（用户反馈"操作卡 + 起播慢"，此前我一直在猜）<br>**① 第一版埋点埋错了地方**：只在 `_startEpisode` 内部计时，测出 `TOTAL=95ms`，一度以为"不慢"。<br>**关键错因**：`await k2.open()` **只等 `loadfile` 命令下发**，**不等画面** —— mpv 在后台异步加载。真正的耗时在 `open()` 返回**之后**（解封装 → 解码器就绪 → 首帧送显）。而且 `_boot()` 的**内核创建**（`ensureTexture` → mpv 初始化 + EGL）更靠前，也没测到。<br>**② 补测后的真实数据**（真机 K40，3 次采样中位）：<br>`prefRead 245ms` / `kernelCreate 4ms` / `resolve 33ms` / `open 36ms` / `seek+rate 8ms` → **Dart 命令链合计 314ms**；而 **`DEMUX_DONE` 4255ms + `FIRST_FRAME` 4513ms = 点到出画面 9087ms**<br>⇒ "起播慢"确认存在，**但慢在 mpv 内部，Dart 只占 3%**。<br>**③ 推翻了自己的假设**：我原判断"`open` 后再 `seek` 是多余往返"，实测 `seek` 只有 **5~8ms** —— 优化的收益远低于预期。**这就是"先量后改"的价值：避免改一个不痛的地方。**<br>**④ 意外发现**：`prefRead` **234ms** —— 读一个偏好字符串要 234ms（`flutter_secure_storage` 走 Android Keystore 加解密），且它在 `_boot` **最前面串行等待**，是纯白等。<br>**⑤ ⚠️ 我的探针有缺陷，且我没拿好看的数字当结论**：`FIRST_FRAME` 用 `position > 0` 判"画面已出"，但**有续播进度时会给假值**（先 `seek(resume)` → mpv **立刻**回报 `time-pos=63` = seek 目标，此时画面还没出来）。实测对照：`resume=63s`（触发 seek）→ **5ms 假值**；`resume<3s`（不 seek）→ **4754/4503/5758ms 真值**。第 4 次采样出现矛盾才查明。正确判据应是 mpv 的 `vo-configured` 属性或 `video-reconfig` 事件（`kernel.dart` 当前接口没暴露，需改 C+Kotlin+Dart 三层，本轮没动）。<br>**⑥ 本轮只加埋点、未改行为** —— 先拿未改动的基线，改完才能对比。<br>**验收**：analyze 0/0/0、`flutter test` 772 例 | 
+| 2026-10-08 | 第 35 轮 | **收紧 ffmpeg 分析窗口改善起播 + 修准首帧探针**<br>**① 修准探针**：旧判据 `position > 0` 在**有续播进度时给假值**（见第 34 轮⑤）。改为 **`position` 越过 seek 目标 + 500ms** —— seek 只让位置**等于**目标值，**越过它继续推进**才意味着解码器就绪、首帧已送显。同时新增 **`DEMUX_DONE`**（`duration` 首次 > 0 = 容器探测完成），把时间线切成"网络+探测"与"解码器+首帧"两段。<br>**② 定位根因**：ffmpeg 默认 `analyzeduration` = **5 秒** —— 要读够 5 秒数据才确定流信息（轨道/编码/时长）。对**网络源**这就是纯等待，与实测的 4.2 秒 `DEMUX_DONE` 高度吻合。<br>**③ 改动**（`PlayerChannel.kt`，**只改这一项**，不动 `cache-pause` 系列）：<br>`demuxer-lavf-analyzeduration = 1`（默认 5 秒）、`demuxer-lavf-probesize = 2097152`（默认 5MB）。两个选项名都**实测存在于我们的 libmpv.so**（不凭记忆）。<br>**④ 效果**（同口径埋点）：`点到出画面` **9087 → 7584 ms**（−16.5%），`FIRST_FRAME` **4513 → 2007 ms**。<br>**⑤ ⚠️ 诚实说明实验缺陷**：改前 `seekTarget` 是 135/194/195 秒，改后 309/311/371 秒（剧集在推进、续播点越来越靠后）—— **跳转目标不同，网络读取量就不同**，所以 `DEMUX_DONE` 那 +1004ms **不能归因于本次改动**。但有一点不受混淆影响：`FIRST_FRAME` 从**波动极大**（1004~5260ms）变成**高度一致**（1751~2008ms），**方差塌缩**说明探测阶段确实稳定了。<br>**⑥ 安全性验证**：`uiautomator dump` 在播放页**连续 3 次返回空**（46 字符，本会话反复遇到的基础设施问题 —— libmpv 用独立 Surface），**故不能拿它当结论（无论正反）**。改用不依赖 UI 的信号：`OMX-VDEC-1080P: set_frame_rate` **264 行**持续输出（视频硬解正常）、`AudioTrack: 已播 40s (frames=40008)`（音频输出正常）、无 FATAL、进程存活、时长可读（`['02:23','07:09']`，总时长 429s）。<br>**⑦ ⚠️ 未验证**：**"多音轨/多字幕轨是否仍全部被识别"没有严格验证** —— 需要**确实有 2+ 音轨的片源**才能测；当前片源只有一条主音轨，无法区分"正确识别 1 条"与"漏识别第 2 条"。这是本次改动的**唯一残留风险**，已写进代码注释（"若遇到轨道识别不全或时长不对，**先回调这一项**"）。<br>**验收**：analyze 0/0/0、`flutter test` 772 例 | 
+| 2026-10-09 | 第 36 轮 | **倍速按钮文案改用 userSpeed（用户 5 条规格）—— 修掉一处违反规格的死代码**<br>**① 用户给出的 5 条规格**：①长按只影响"实际播放倍速"，不改"用户选择的倍速"；②长按结束后按钮回到用户之前选择的值；③倍速按钮循环永远只操作 `userSpeed`；④长按期间按钮显示不变；⑤长按期间只有浮层显示 `longPressSpeed`。<br>**② 核对结果：4 条已满足，1 条发现违反** —— `player_providers.dart` 的 `speedLabelProvider` 用的是 `s.effectiveSpeed`。长按期间用它渲染按钮，文案会跳到 **3.0x**，用户会以为"我的倍速被改了"（违反规格④）。<br>**③ 而且它还是死代码**：生产代码**零消费者**（`player_ui_page.dart:516` 本来就直接用 `playback.userSpeed`），只有 `test/player_controllers_test.dart` 引用它 —— 而那个测试**断言的正是这个违反规格的行为**。属"写好却没用，还用错"，与 AGENTS §7 里 `FileDoubanCache`（写好却零引用）同源。<br>**④ 修法**：改用 `s.userSpeed`，并把两条线的分工写进注释：**`effectiveSpeed` → 给引擎；`userSpeed` → 给用户看**（`onSpeedChanged` 继续用 `effectiveSpeed` 下发内核，那是引擎线，正确）。<br>**⑤ 新增 `test/player_longpress_speed_spec_test.dart`（9 例）**：把 5 条规格逐条固化成断言。含三个防"看起来对"的变体：规格②用 `userSpeed = 2.5`（非默认值）抓"恢复写成硬编码 1.0"；规格③断言长按期间**仍能正常循环**（抓"把'与长按无关'误解成'长按期间禁用按钮'"）；规格⑤断言 `longPressSpeed != userSpeed`（若相等，"浮层显示长按倍速"就失去视觉意义）。另有端到端用例串起 5 条，中途注入内核迟到回报。<br>**⑥ 反向注入 4/4 检出**，每次 `analyze error=0`（证明变红是断言抓的，不是编译错）。<br>**验收**：analyze 0/0/0、`flutter test` 781 例（772→781） | 
+| 2026-10-09 | 第 37 轮 | **★ 按 5 条禁令拆分倍速模型 —— engineSpeed 独立字段 + 删除我自己的两轮补丁**（用户给出架构级禁令）<br>**① 用户 5 条禁令**：①禁止用同一变量同时表示"用户倍速"与"实际倍速"；②禁止在长按代码里出现 `userSpeed = ...`；③禁止在倍速循环里出现 `isLongPressing = ...`；④禁止在 UI 层把 `effectiveSpeed` 显示给用户当"当前倍速"；⑤展示"实际倍速"必须**单独设计只读字段**，不能复用 `userSpeed`。<br>**② ★ 核对发现 ①/⑤ 存在结构性违反，且我前两轮的两处"修复"都是补丁**：<br>`syncSpeed()` 的入参是**内核回报的实际速率**，却写进 `userSpeed`（用户偏好）。我第 29 轮加了"长按期间跳过"守卫、第 30 轮又加了"迟到回报 2 秒时间窗"守卫 —— **两道补丁能挡住已知的两种污染场景，挡不住第三种**（任何导致内核回报非用户值的路径）。<br>禁令①一句话点破根因：**`userSpeed` 不再是"纯用户偏好"，它还被非用户来源（内核）写入，于是必然互相污染。**<br>**③ 按禁令⑤根治**：新增**只读语义**字段 `engineSpeed`，三者职责分离：<br>· `userSpeed` —— **只有用户操作**能写；**看**：倍速按钮文案；含义：用户**想要**的<br>· `engineSpeed` —— **只有内核回报**能写（`syncSpeed`）；看：需要展示"实际倍速"处；含义：引擎**实际在跑**的<br>· `effectiveSpeed` —— **派生 getter**（不占存储）；看：**下发给引擎**；含义："**应该**给引擎什么"<br>**④ 直接收益：污染路径从结构上消失 ⇒ 删掉两轮补丁**（`_longPressEndedAt`、`_longPressEchoWindow` 时间窗、`syncSpeed` 里的 `isLongPressing` 守卫）—— 它们防的正是"写回 userSpeed"，而那条路现在不存在了。有条旧测试断言"松手后迟到回报应写 `userSpeed=1.5`"（**断言的是被禁止的行为**），已按新契约改写。<br>**⑤ 新增 `test/player_speed_architecture_guard_test.dart`（7 例）—— 静态守卫**：这 5 条是**结构约束**而非行为约束：行为测试只能证明"我试的那条路径没污染"，而"有人在长按代码里写了 `userSpeed = ...`"**可能在任何没想到的路径上**。故**直接断言源码文本**（**剥注释后**，否则注释里提一句就假红），在编译前拦住违反。与 `player_bar_transparency_test.dart` 同思路。<br>**⑥ ⚠️ 我第一版守卫误报**：`if (prev?.effectiveSpeed != next.effectiveSpeed)`（**变化检测**）被当成"显示给用户"。已把判据改为区分 **比较/实参位置**（引擎线，合法）与 **Text/style/插值位置**（展示，违规）。<br>**⑦ 反向注入 5/5 检出**，每次 `analyze error=0`：`syncSpeed` 写 `userSpeed`（①）、`startLongPress` 写 `userSpeed`（②）、`cycleSpeed` 里碰 `isLongPressing`（③）、UI 里把 `effectiveSpeed` 塞进 `Text`（④）、`cycleSpeed` 写 `engineSpeed`（⑤）。<br>**⑧ 流程自省**：我第 34 轮起又连续 4 轮没更新本文件（第 27–33 轮也犯过）—— **"收工前更新台账"必须成为收工动作的一部分，而不是等用户提醒**。<br>**验收**：`check-dev.ps1` **退出码 0 / 19 项全过**、analyze 0/0/0、`flutter test` **790 例全绿**（781→790） | 
 
 ---
 
