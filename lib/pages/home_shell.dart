@@ -5,6 +5,8 @@
 /// 不再作为一级入口。首页的继续观看/最近添加/合集与各详情页仍可正常进入播放。
 library;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'
+    show DeviceOrientation, SystemChrome, SystemUiMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/providers.dart';
@@ -30,6 +32,30 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     const RankPage(),
     ProfilePage(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    // ---- 强制回到竖屏 + 恢复系统 UI（防御式兜底，真机 bug）----
+    //
+    // ## 为什么主页要自己做（2026-10-08 用户实测："退出后首页也是横的"）
+    // 播放页会 `setPreferredOrientations(landscape)` + `immersiveSticky`。
+    // 它的复位本应在其 `dispose()` 里做，但实测**不可靠**：
+    //   · 手势返回退出（PopScope → maybePop）时复位调用可能被丢弃
+    //   · App 被系统回收（或 force-stop）后再启动，方向**残留横屏**
+    //     ——连 force-stop 重启都无法自愈，说明系统记住了方向偏好
+    //
+    // 把"正确的方向"挂在**接收页**而不是"退出页"，是防御式设计：
+    // 无论哪个页面忘了清理、清理调用是否被平台丢弃，
+    // 回到主页时方向与系统栏**必然**被纠正。
+    //
+    // ## 代价与边界
+    // 幂等、无依赖（SystemChrome 是静态平台通道 API）。
+    // 若将来加入需要横屏的一级页面，把这段挪进"竖屏页"的公共基类，
+    // 而不是在这里做条件判断。
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  }
 
   void _switchTab(int i) => setState(() => _index = i);
 
