@@ -11,10 +11,10 @@ import '../core/router.dart';
 import '../core/theme.dart';
 import '../data/emby_provider.dart';
 import '../data/models.dart';
-import '../player/player_routes.dart';
 import '../state/providers.dart';
 import '../widgets/media_cards.dart';
 import 'detail_page.dart';
+import 'open_player_resolved.dart';
 
 class HomePage extends ConsumerWidget {
   const HomePage({super.key});
@@ -69,7 +69,11 @@ class HomePage extends ConsumerWidget {
                         itemBuilder: (_, i) => ContinueCard(
                             item: d.resume[i],
                             api: ref.read(embyApiProvider)!,
-                            onTap: () => openPlayer(context, d.resume[i])),
+                            // ★ 改用 openPlayerResolved：剧集条目会先解析出分集列表再进播放器，
+//     播放列表面板才有"第 N 集"与进度（用户反馈它缺失）。
+//     直接 openPlayer 会把剧集当单条视频，列表为空。
+                        onTap: () =>
+                            openPlayerResolved(context, d.resume[i], ref)),
                       ),
                     ),
                   ),
