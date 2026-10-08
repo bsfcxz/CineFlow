@@ -108,25 +108,22 @@ class PlaybackController extends Notifier<PlaybackState> {
   /// 用"特定值 + 时间窗"而不是"无限期忽略该值"——
   /// 因为用户**主动**循环到 3.0x 是合法的，不能永远屏蔽。
   void syncSpeed(double speed) {
-    if (state.isLongPressing) return;
-    // 长按刚结束：内核可能还在回放长按期间的迟到回报
-    final endedAt = _longPressEndedAt;
-    if (endedAt != null &&
-        speed == state.longPressSpeed &&
-        DateTime.now().difference(endedAt) < _longPressEchoWindow) {
-      return;
-    }
-    if (state.userSpeed == speed) return;
-    state = state.copyWith(userSpeed: speed);
+    // ★ 只写 `engineSpeed`，**绝不碰 `userSpeed`**（用户禁令①⑤）。
+    //
+    // ## 为什么这里可以这么简单了
+    // 重构前这里写的是 `userSpeed`，于是"长按的临时速率"会被固化成
+    // 用户偏好 —— 我为此加过两道守卫（长按期间 return、迟到回报时间窗），
+    // 但**每一道都是补丁**：它们只能挡住"已知的"污染场景。
+    //
+    // 按禁令⑤把"实际速率"拆成独立字段后，**污染路径从结构上消失**：
+    // 内核回报多少都只写 `engineSpeed`，用户偏好不受任何影响。
+    // 那两道守卫因此被删除（不再需要）。
+    //
+    // 唯一保留的短路：值没变就不产生新状态（避免无谓重建）。
+    if (state.engineSpeed == speed) return;
+    state = state.copyWith(engineSpeed: speed);
   }
 
-  /// 长按结束时刻（用于过滤内核的**迟到回报**，见 [syncSpeed]）。
-  DateTime? _longPressEndedAt;
-
-  /// 迟到回报的容忍窗口。内核回报通常在几百毫秒内到达，
-  /// 2 秒足够覆盖网络/解码抖动，又不会把用户手动切到 3.0x 的操作挡掉
-  /// （用户从长按结束到手动点倍速按钮至少要 1 秒，且点 4 次才到 3.0）。
-  static const Duration _longPressEchoWindow = Duration(seconds: 2);
 
   // ---- 用户操作（事件处理器调用）----
 
@@ -192,10 +189,10 @@ class PlaybackController extends Notifier<PlaybackState> {
   /// 这里只需翻 `isLongPressing`，**不可能忘记恢复 userSpeed**。
   void endLongPress() {
     if (!state.isLongPressing) return;
+    // 只翻标志位。**不碰 userSpeed**（禁令②），
+    // 也不碰 engineSpeed —— 后者由内核回报驱动，UI 会据
+    // `effectiveSpeed` 变化把新速率下发给内核，内核再回报回来。
     state = state.copyWith(isLongPressing: false);
-    // 记录结束时刻 —— 内核的迟到回报（rate=3.0）会在此后几百毫秒内
-    // 到达 syncSpeed，需要按时间窗过滤（见 syncSpeed 的注释）。
-    _longPressEndedAt = DateTime.now();
   }
 
   /// 切换媒体时重置与"这一条媒体"绑定的字段。
