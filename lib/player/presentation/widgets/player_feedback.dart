@@ -91,10 +91,15 @@ class PlayerFeedbackLayer extends StatelessWidget {
     // ⚠️ 不用 `_CenterSlot`（居中）—— 那会正好压住画面主体，
     //    而长按是持续状态，遮挡时间最久。
     if (isLongPressing) {
+      // 位置选右上的理由（不是"居中随便挪个角"）：
+      //   · 居中会压住画面主体，且长按是持续状态，遮挡最久
+      //   · 左上角与顶栏返回按钮同区（顶栏全宽，y<480）
+      //   · 右上、顶栏**下方**：不撞顶栏，也不撞右中部的锁按钮
+      //     （锁按钮实测 y 474..606；徽章放 top≈90..300 一带）
       return Align(
-        alignment: Alignment.topLeft,
+        alignment: Alignment.topRight,
         child: Padding(
-          padding: const EdgeInsets.only(left: 16, top: 56),
+          padding: const EdgeInsets.only(right: 16, top: 90),
           child: _LongPressBadge(speed: longPressSpeed),
         ),
       );

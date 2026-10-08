@@ -71,7 +71,28 @@ class PlaybackController extends Notifier<PlaybackState> {
   }
 
   /// 引擎已实际应用的倍速（用于校正：用户在别处改了倍速）。
+  ///
+  /// ## ⚠️ 长按期间必须跳过（真机 bug，2026-10-07 用户反馈）
+  ///
+  /// 用户反馈："长按结束后播放速度恢复原来的设置（不改变倍速设置）"。
+  ///
+  /// 长按快进的实现是：`isLongPressing=true` → UI 监听
+  /// `effectiveSpeed` 变化 → 把内核 `setRate(3.0)`。
+  /// 内核随后回报 `rate=3.0`，而这条回报会流进 [syncSpeed] ——
+  /// 若此时照常写入 `userSpeed`，**长按的临时倍速就被固化成用户偏好**：
+  ///
+  /// ```
+  /// 长按 → effectiveSpeed=3.0 → 内核 setRate(3.0)
+  ///      → 内核回报 rate=3.0 → syncSpeed(3.0) ⇒ userSpeed 被改成 3.0 ❌
+  /// 松手 → isLongPressing=false → effectiveSpeed = userSpeed = 3.0
+  ///      → 用户发现"倍速变成 3.0 且回不去了"
+  /// ```
+  ///
+  /// 修法：`isLongPressing` 期间直接 return —— 那段内核速率是**临时值**，
+  /// 不是用户偏好，不该被记录。这与 `effectiveSpeed` 用派生 getter 的
+  /// 设计是同一条防线的两半：getter 防"忘了存回"，这里防"反向污染"。
   void syncSpeed(double speed) {
+    if (state.isLongPressing) return;
     if (state.userSpeed == speed) return;
     state = state.copyWith(userSpeed: speed);
   }

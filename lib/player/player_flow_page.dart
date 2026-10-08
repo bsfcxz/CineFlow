@@ -959,6 +959,22 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     unawaited(ScreenBrightness().resetApplicationScreenBrightness());
     Navigator.of(context).maybePop();
+
+    // ---- ★ 延迟兜底复位（真机实测必要，2026-10-08）----
+    //
+    // 真机取证（verify_orient_v2 判 BAD）：上面 pop **之前**的复位 +
+    // `dispose` 里的复位，都没能让窗口转回竖屏（`cur` 仍 2400x1080）。
+    //
+    // 推断：pop 根路由时 Activity 进入 stopping，与 Flutter 的平台通道
+    // 交互正被拆解，复位请求**不被应用**；等主页重新 resumed 时，
+    // 没有人再发一次（HomeShell.initState 只在冷启动跑一次）。
+    //
+    // 故在 pop 之后排一个兜底：那时主页已恢复显示、Activity 已 resumed，
+    // 平台调用会被应用。幂等 —— 与前两次设置同样的值，无副作用。
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 600), () {
+      SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }));
   }
 
   @override
