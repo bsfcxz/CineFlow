@@ -154,7 +154,26 @@ class _IconBtn extends StatelessWidget {
   Widget build(BuildContext context) {
     return IconButton(
       onPressed: onTap,
-      icon: Icon(icon),
+      // ---- 图标加阴影（透明底栏下的可读性保障）----
+      //
+      // ## 为什么必须加（用户第三轮反馈引发）
+      // 底栏原先垫着 `BackdropFilter` 毛玻璃，图标压在上面读得到。
+      // 用户要求"完全不影响视频" → 去掉模糊后，**纯白图标压在亮画面上
+      // 会看不见**（白字压白墙）。
+      //
+      // 阴影是"不修改背景也能读"的通行做法（与同文件 Text 的做法一致）：
+      // 深色描边式阴影让白色图标在任何亮度背景上都有对比。
+      //
+      // ⚠️ 用 `Shadow`（boxShadow）而不是给 Icon 加描边 ——
+      //    Icon 不支持 outline，而 `shadows` 可直接作用到字形轮廓。
+      icon: Icon(
+        icon,
+        shadows: const [
+          // 两层阴影：近距实（保证轮廓）+ 远距虚（保证亮背景上的对比）
+          Shadow(blurRadius: 4, color: Colors.black87),
+          Shadow(blurRadius: 10, color: Colors.black54),
+        ],
+      ),
       iconSize: 22,
       color: Colors.white,
       disabledColor: Colors.white24,
@@ -198,6 +217,11 @@ class _TextBtn extends StatelessWidget {
               color: active ? PlayerUi.progressFilled : Colors.white,
               fontSize: PlayerUi.segmentSize,
               fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+              // 同 _IconBtn：透明底栏下白字压亮画面的可读性保障
+              shadows: const [
+                Shadow(blurRadius: 4, color: Colors.black87),
+                Shadow(blurRadius: 10, color: Colors.black54),
+              ],
             ),
           ),
         ),

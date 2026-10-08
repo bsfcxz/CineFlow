@@ -478,25 +478,29 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ---- 底栏：透明毛玻璃（用户明确要求）----
+              // ---- 底栏：**完全不影响视频**（用户第三轮反馈）----
               //
-              // ⚠️ 这里**不再**垫 `BarScrim` 黑色渐变压暗。
-              //    原先的结构是「BarScrim（黑渐变，200dp）+ 内部 GlassPanel」，
-              //    用户看到的是**黑色遮罩**而不是"透明玻璃" ——
-              //    因为在玻璃背后压了一层黑，透出来的自然是暗的。
+              // ## 三轮迭代的教训
+              // 1. BarScrim 黑渐变 200dp → "要透明毛玻璃"
+              // 2. 白色 8%→12% + blur 22 → "改成透明的"
+              // 3. 填充全透明但**保留 blur(22)** → "仍会遮挡视频" ✓ 本轮
               //
-              //    现在改为：整条栏自身就是毛玻璃（`GlassBar`），
-              //    背后直接是视频画面，模糊 22 把画面晕开，
-              //    既"透明"又保证文字可读（可读性由模糊 + 文字阴影保证，
-              //    见 `PlayerBottomBar` 里 Text 的 shadows）。
+              // ## 想通的关键
+              // `BackdropFilter(ImageFilter.blur)` 的语义是"把背后已画好的
+              // 内容模糊一遍再合成"。**即使填充全透明**，blur 也会修改
+              // 工具栏区域的视频像素 —— 用户看到"这块是糊的" = 被遮挡。
               //
-              //    内层不再套 GlassPanel（否则是"玻璃上再叠玻璃"，
-              //    两层半透明白叠加会发白，失去透明感）。
-              GlassBar(
-                child: Padding(
-                  // 顶部留一点：进度条太贴玻璃上边缘会显得挤
-                  padding: const EdgeInsets.only(top: 8, bottom: 2),
-                  child: PlayerBottomBar(
+              // **"透明"在用户眼里 = 这块画面与其他地方一模一样，不被处理。**
+              // 所以 BackdropFilter 必须整个去掉。
+              //
+              // ## 可读性靠什么（不放黑遮罩、不模糊）
+              // 文字/图标的 `Shadow(blurRadius:6, color: black54)` ——
+              // "白字压亮画面"的标准做法，不修改背景也能读。
+              // （`PlayerBottomBar` 内每段 Text 已自带该阴影。）
+              Padding(
+                // 顶部留一点：进度条太贴屏幕下边缘的控件行会显得挤
+                padding: const EdgeInsets.only(top: 8, bottom: 2),
+                child: PlayerBottomBar(
                     key: keys.player.controls,
                     progress: playback.progress,
                     position: playback.position,
@@ -544,7 +548,6 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
                         'fullscreen': keys.player.fullscreenButton,
                       },
                     ),
-                  ),
                 ),
               ),
             ],
