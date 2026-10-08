@@ -36,6 +36,44 @@ class SystemChannel(private val activity: Activity) {
         const val BRIGHTNESS = "com.cineflow.app/brightness"
         const val VOLUME = "com.cineflow.app/volume"
         const val WAKELOCK = "com.cineflow.app/wakelock"
+
+        /** 通知权限（K3 媒体会话用）。 */
+        const val NOTIFICATION = "com.cineflow.app/notification"
+
+        /** `POST_NOTIFICATIONS` 的请求码（取值任意，只需唯一）。 */
+        private const val REQ_POST_NOTIFICATIONS = 0x0F01
+
+        /**
+         * **API 33+ 起 `POST_NOTIFICATIONS` 是运行时权限。**
+         *
+         * 只在 manifest 声明**不够** —— 用户不授权时通知栏**完全不显示**
+         * 媒体控制，而且**不报错**（只有系统日志一行），极难排查。
+         * 这正是本项目反复踩的"配了没生效"类型。
+         */
+        const val PERM_POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS"
+    }
+
+    /**
+     * 申请通知权限（**必须在 Activity 前台时调**，否则系统直接拒绝且不弹窗）。
+     *
+     * @return 是否**已经**有此权限（true = 无需弹窗）。
+     *   注意：返回 false 只表示"已发起申请"，用户可能拒绝 ——
+     *   真正的结果要看下次 `hasNotificationPermission()`。
+     */
+    fun requestNotificationPermission(): Boolean {
+        if (hasNotificationPermission()) return true
+        // API < 33 无需申请（那时没有这个权限）
+        if (android.os.Build.VERSION.SDK_INT < 33) return true
+        activity.requestPermissions(arrayOf(PERM_POST_NOTIFICATIONS),
+            REQ_POST_NOTIFICATIONS)
+        return false
+    }
+
+    /** 当前是否已有通知权限。 */
+    fun hasNotificationPermission(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 33) return true
+        return activity.checkSelfPermission(PERM_POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
     fun register(flutterEngine: FlutterEngine) {
@@ -130,6 +168,24 @@ class SystemChannel(private val activity: Activity) {
                     activity.runOnUiThread {
                         activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     }
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // ---------------- 通知权限（K3 媒体会话）----------------
+        //
+        // ## 为什么单独一个通道而不塞进会话通道
+        // 权限请求**必须由 Activity 发起**（`requestPermissions`），
+        // 而 `SystemChannel` 正是持有 Activity 的那个类；
+        // `SessionChannel` 只有 Context。放这里职责也更清楚。
+        MethodChannel(messenger, NOTIFICATION).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "has" -> result.success(hasNotificationPermission())
+                // 必须在主线程请求（系统弹窗要求）
+                "request" -> {
+                    activity.runOnUiThread { requestNotificationPermission() }
                     result.success(true)
                 }
                 else -> result.notImplemented()
