@@ -50,10 +50,50 @@ Future<void> openPlayerResolved(
 ) async {
   final api = ref.read(embyApiProvider);
 
-  // ---- 非剧集（电影 / 无 seriesId）→ 直接播 ----
+  // ---- 非剧集（电影 / 无 seriesId）----
+  //
+  // ★ 2026-10-09：电影**不再直接播** —— 先看它是否属于某个**合集**
+  //   （用户报障："看复仇者联盟时列表没有下一部，也不显示部数"）。
+  //
+  // ## 为什么电影也要解析上下文
+  // 漫威这类系列在 Emby 里是 **BoxSet（合集）**：多部独立电影挂在同一
+  // 合集下，彼此**不是** Episode 关系。原实现电影直接 `openPlayer(item)`
+  // 不带列表 ⇒ 播放器认为"只有这一条" ⇒ 列表空、没有下一部。
+  //
+  // ## 拿不到合集时怎么办
+  // 照旧单条播放（`openPlayer`）—— 不能因为"没有合集"就打不开电影。
   final isEpisode = item.type == 'Episode' || item.seriesId != null;
-  if (api == null || !isEpisode) {
+  if (api == null) {
     openPlayer(context, item);
+    return;
+  }
+  if (!isEpisode) {
+    // `collectionIds` 需要调用方在 `Fields` 里请求过 `Collections`。
+    // 从首页/搜索进来的条目可能没带 ⇒ 那就只有单条（优雅降级）。
+    final cid = item.collectionIds.isEmpty ? null : item.collectionIds.first;
+    if (cid == null) {
+      openPlayer(context, item);
+      return;
+    }
+    try {
+      final siblings = await api.getCollectionItems(cid);
+      if (siblings.isEmpty) {
+        openPlayer(context, item);
+        return;
+      }
+      final ci = siblings.indexWhere((e) => e.id == item.id);
+      if (!context.mounted) return;
+      openPlayer(
+        context,
+        ci >= 0 ? siblings[ci] : item,
+        episodes: siblings,
+        index: ci >= 0 ? ci : 0,
+      );
+    } catch (_) {
+      // 取合集失败 → 退化成单条播放（总比打不开强）
+      if (!context.mounted) return;
+      openPlayer(context, item);
+    }
     return;
   }
 

@@ -117,6 +117,16 @@ class MediaItem {
   final String? parentThumbImageTag;
   final String? seriesPrimaryImageTag;
 
+  /// 条目所属的**合集** id 列表（Emby `Collections` 字段）。
+  ///
+  /// ## 用途：电影的"同系列其他部"
+  /// 电影没有 `seriesId`（那不是剧集）⇒ 播放列表拿不到兄弟片。
+  /// 用户在合集里看《复仇者联盟》时，期望列表能给出**这一系列的其他部**。
+  /// 合集体是唯一来源（见 `_parseCollections` 的字段依据说明）。
+  ///
+  /// ⚠️ 需要调用方在 `Fields` 里显式请求 `Collections`；未请求时为空列表。
+  final List<String> collectionIds;
+
   const MediaItem({
     required this.id,
     required this.name,
@@ -145,6 +155,7 @@ class MediaItem {
     this.parentThumbItemId,
     this.parentThumbImageTag,
     this.seriesPrimaryImageTag,
+    this.collectionIds = const [],
   });
 
   factory MediaItem.fromJson(Map<String, dynamic> j) {
@@ -187,7 +198,42 @@ class MediaItem {
       parentThumbItemId: j['ParentThumbItemId'] as String?,
       parentThumbImageTag: j['ParentThumbImageTag'] as String?,
       seriesPrimaryImageTag: j['SeriesPrimaryImageTag'] as String?,
+      collectionIds: _parseCollections(j['Collections']),
     );
+  }
+
+  /// 解析 `Collections`（条目所属的**合集**，如"漫威电影宇宙"）。
+  ///
+  /// ## 字段名是 `Collections` 而**不是** `BoxSetIds`（有依据，非猜测）
+  /// 依据 **Emby 官方 Go SDK** 的 `BaseItemDto`
+  ///（`Clients/Go/model_base_item_dto.go`，生成版本 4.10.1.0）：
+  /// ```go
+  /// Collections  []NameLongIdPair  `json:"Collections,omitempty"`
+  /// ```
+  /// Jellyfin 那边才叫 `BoxSetIds` —— 照 Jellyfin 写会**永远拿到 null**。
+  ///
+  /// ## 为什么这一项是"电影有下一部"的关键
+  /// 电影不是 Episode（没有 seriesId）⇒ 播放器拿不到列表 ⇒
+  /// 用户报障"看复仇者联盟时列表里没有下一部、也不显示部数"。
+  /// 合集体是"兄弟片"的**唯一**来源：拿到 id 后用官方端点
+  /// `GET /Collections/{Id}/Items` 取全部成员。
+  ///
+  /// ⚠️ **必须显式请求**：`Collections` 不在 Emby 默认返回字段里，
+  ///    调用方要在 `Fields` 里带上它（见 `EmbyProvider` 的详情/列表请求）。
+  ///    这里对形状容错 —— 拿不到就是空列表，不影响其他功能。
+  static List<String> _parseCollections(Object? raw) {
+    if (raw is! List) return const [];
+    final out = <String>[];
+    for (final e in raw) {
+      if (e is Map) {
+        final id = e['Id']?.toString();
+        if (id != null && id.isNotEmpty) out.add(id);
+      } else if (e is String && e.isNotEmpty) {
+        // 容错：个别版本可能直接给 id 字符串
+        out.add(e);
+      }
+    }
+    return out;
   }
 
   /// 可播放 / 可浏览的媒体条目。

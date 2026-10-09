@@ -72,6 +72,15 @@ class _FakeProvider implements MediaProvider {
   /// 记录调用（seriesId, limit），供断言参数传递正确
   final List<(String, int)> calls = [];
 
+  /// 合集成员 —— 测试替身：返回空列表（**不伪造数据**）。
+  ///
+  /// 生产实现在 `EmbyProvider.getCollectionItems`（`GET /Collections/{Id}/Items`）。
+  /// 这里给空列表是**诚实**的：替身没有真实服务端，编造成员会让
+  /// 依赖它的断言"绿得没意义"。
+  @override
+  Future<List<MediaItem>> getCollectionItems(String collectionId) async =>
+      const [];
+
   @override
   Future<List<MediaItem>> getNextUp(String seriesId, {int limit = 1}) async {
     calls.add((seriesId, limit));

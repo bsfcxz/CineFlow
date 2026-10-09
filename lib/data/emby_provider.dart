@@ -157,7 +157,11 @@ class EmbyProvider implements MediaProvider {
         queryParameters: {
           'Limit': limit,
           'Fields':
-              'PrimaryImageAspectRatio,ProductionYear,OfficialRating,CommunityRating,Genres,Overview,DateCreated',
+              // `Collections`：与 getResume 同理 —— 首页轮播/最近添加里的
+              // 电影也要能解析出合集体，否则从这些入口进播放器时
+              // "列表没有下一部"仍会复现。
+              'PrimaryImageAspectRatio,ProductionYear,OfficialRating,'
+                  'CommunityRating,Genres,Overview,DateCreated,Collections',
         }));
     final items = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
     // 单一事实源：可播性只在这里判定（Series 保留 —— 它是合法浏览入口，
@@ -171,7 +175,13 @@ class EmbyProvider implements MediaProvider {
         queryParameters: {
           'Limit': limit,
           'MediaTypes': 'Video',
-          'Fields': 'PrimaryImageAspectRatio,BasicSyncInfo',
+          // ★ `Collections` 必加（2026-10-09）：
+          //   "继续观看"是**用户点进电影的主要入口**（真机截图确认），
+          //   不带这个字段 ⇒ 电影条目拿不到合集体 ⇒
+          //   `openPlayerResolved` 的合集分支只能降级成单条播放 ⇒
+          //   "列表里没有下一部"（用户报障）在这条路径上**依然复现**。
+          //   ⚠️ 只补 `getItems`/`getItemDetail` 而漏这里 = 修了但没修全。
+          'Fields': 'PrimaryImageAspectRatio,BasicSyncInfo,Collections',
         }));
     return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
   }
@@ -190,19 +200,62 @@ class EmbyProvider implements MediaProvider {
 
   @override
   Future<List<MediaItem>> search(String keyword, {int limit = 30}) async {
+    // ★★ 2026-10-09 修："搜索剧集时出现一堆散乱单集"（用户报障）
+    //
+    // ## 根因
+    // 原实现 `IncludeItemTypes: 'Movie,Episode'` —— **直接请求单集**。
+    // 搜"斗罗大陆"时服务端把每一集都当独立结果返回 ⇒ 列表被
+    // `第 1 集 / 第 2 集 / 第 3 集…` 刷屏，而用户想找的是**那部剧**。
+    //
+    // ## 按 Emby 的口径修（不是自创规则）
+    // Emby 的"可浏览实体"是 **Series / Movie / BoxSet / Video**；
+    // `Episode` 属于 Series 的子项，不该作为搜索结果的平级条目。
+    // 官方 `ItemsService.GetItems` 的 `IncludeItemTypes` 就是为此设计的
+    //（见官方 Go SDK `api_items_service.go` 的参数表）。
+    //
+    // ## 为什么仍然请求 Episode，但**折叠**掉
+    // 有些单集的名字与剧名无关（搜"第 6 集"或某集专属标题时），
+    // 完全不请求会漏结果。故：
+    //   · 服务端返回 Series + Movie + BoxSet + Video + Episode
+    //   · **客户端把 Episode 折叠到它的剧集下**（`SeriesId` 已出现 ⇒ 丢弃该集）
+    //   · 剧集本身没出现时**保留该集**（否则用户搜不到）
+    // ⇒ 既不漏，也不刷屏；且折叠规则只依赖服务端给的 `SeriesId`。
+    //
+    // ## `MediaTypes: 'Video'` 已去掉
+    // 它会滤掉 `BoxSet`（合集不是视频类型）—— 而合集是"系列电影"的
+    // 载体（见 `collectionIds`）。去掉后由下面的 `isPlayable`/类型白名单收敛。
     final d = _ok(await _dio.get('/Users/${session.user.id}/Items',
         queryParameters: {
           'SearchTerm': keyword,
           'Limit': limit,
           'Recursive': true,
-          'IncludeItemTypes': 'Movie,Episode',
-          'Fields':
-              'PrimaryImageAspectRatio,ProductionYear,OfficialRating,CommunityRating',
-          'MediaTypes': 'Video',
+          'IncludeItemTypes': 'Movie,Series,BoxSet,Video,Episode',
+          // 按用户要求的排序：Emby 默认 `SortName`，与本服务器实测一致
+          'SortBy': 'SortName',
+          'SortOrder': 'Ascending',
+          'Fields': 'PrimaryImageAspectRatio,ProductionYear,OfficialRating,'
+              'CommunityRating,Collections,SeriesId',
         }));
-    // ⚠️ 实测：服务端无视类型筛选 → 客户端复筛
-    final items = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
-    return items.where((i) => i.isPlayable).toList();
+
+    final raw = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+
+    // ---- 折叠单集（见上方说明）----
+    final seriesIds = <String>{
+      for (final i in raw)
+        if (i.type == 'Series' || i.type == 'BoxSet') i.id,
+    };
+    final out = <MediaItem>[];
+    for (final i in raw) {
+      if (i.type == 'Episode') {
+        // 该集所属剧集已在结果里 ⇒ 丢弃（用户点剧集进去看分集）
+        final sid = i.seriesId;
+        if (sid != null && sid.isNotEmpty && seriesIds.contains(sid)) continue;
+      }
+      // 类型白名单（`isPlayable` 已含 Series/Movie/Episode/Video/…）
+      if (!i.isPlayable) continue;
+      out.add(i);
+    }
+    return out;
   }
 
   @override
@@ -241,7 +294,11 @@ class EmbyProvider implements MediaProvider {
           if (genres case final g? when g.isNotEmpty) 'Genres': g,
           if (years case final y? when y.isNotEmpty) 'Years': y,
           'Fields':
-              'PrimaryImageAspectRatio,ProductionYear,OfficialRating,CommunityRating,UserData',
+              // ★ `Collections` 必加：它是"电影所属合集"的唯一来源
+              //   （见 `MediaItem.collectionIds`）。缺它就永远拿不到
+              //   兄弟片 ⇒ 列表里没有"下一部"（用户报障场景）。
+              'PrimaryImageAspectRatio,ProductionYear,OfficialRating,'
+                  'CommunityRating,UserData,Collections',
         })) as Map<String, dynamic>;
     final items = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
     return ItemPage(
@@ -255,7 +312,10 @@ class EmbyProvider implements MediaProvider {
     final d = _ok(await _dio.get('/Users/${session.user.id}/Items/$itemId',
         queryParameters: {
           'Fields':
-              'MediaSources,People,Studios,Genres,Overview,Taglines,ProductionYear,OfficialRating,CommunityRating',
+              // ★ `Collections` 同 `getItems`：详情页也要用它才能知道
+              //   "这部属于哪个合集"（电影详情页的"同系列"入口依赖它）。
+              'MediaSources,People,Studios,Genres,Overview,Taglines,'
+                  'ProductionYear,OfficialRating,CommunityRating,Collections',
         })) as Map<String, dynamic>;
     return MediaItemDetail.fromJson(d);
   }
@@ -363,6 +423,37 @@ class EmbyProvider implements MediaProvider {
       'Limit': 12,
       'Fields': 'PrimaryImageAspectRatio,ProductionYear,CommunityRating',
     }));
+    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+  }
+
+  /// 合集成员（用户报障："看复仇者联盟时列表没有下一部"）。
+  ///
+  /// ## 端点依据（Emby 官方 Go SDK，非猜测）
+  /// `Clients/Go/api_collection_service.go` 里各方法的 `localVarPath`：
+  /// ```
+  /// localVarPath = a.client.cfg.BasePath + "/Collections/{Id}/Items"
+  /// ```
+  /// ⇒ `GET /Collections/{Id}/Items`。
+  ///
+  /// ## 参数取舍
+  /// · `UserId`：让每个成员带上 `UserData`（播放进度/是否看过）——
+  ///   列表要显示"看到 37%"就靠它。
+  /// · `Fields=Collections`：**为后续跳转保留合集体信息** ——
+  ///   用户在列表里点到另一部时，那一部同样需要知道自己的合集
+  ///   （否则连播到第二部后列表就断了）。
+  /// · 不传 `SortBy`：合集内顺序由服务端按合集设定给（实测通常按年份），
+  ///   自己按名字重排会把"按剧情顺序建合集"的库打乱。
+  ///
+  /// ⚠️ 路径**不带** `/Users/{uid}` 前缀 —— 与 `/Collections` 服务同族，
+  ///    带了会 404（对照 `getSimilar` 的同类实测结论）。
+  @override
+  Future<List<MediaItem>> getCollectionItems(String collectionId) async {
+    final d = _ok(await _dio.get('/Collections/$collectionId/Items',
+        queryParameters: {
+          'UserId': session.user.id,
+          'Fields': 'Collections,PrimaryImageAspectRatio,ProductionYear,'
+              'CommunityRating,RunTimeTicks,Overview',
+        }));
     return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
   }
 

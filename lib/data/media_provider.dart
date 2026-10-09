@@ -90,6 +90,28 @@ abstract interface class MediaProvider {
   /// 相似推荐
   Future<List<MediaItem>> getSimilar(String itemId);
 
+  /// **合集成员**（Emby BoxSet 内的条目），如"漫威电影宇宙"下的全部电影。
+  ///
+  /// ## 为什么需要它（用户报障）
+  /// 用户："当我观看复仇者联盟时，列表并没有显示它的下一部，
+  /// 也没有列出它的部数。"
+  ///
+  /// 电影不是剧集（没有 `seriesId`）⇒ 播放列表拿不到"兄弟片"⇒
+  /// 底栏列表只有当前这一部。合集体是唯一来源。
+  ///
+  /// ## 端点依据（Emby 官方 Go SDK，非猜测）
+  /// `Clients/Go/api_collection_service.go`：
+  /// ```
+  /// localVarPath = a.client.cfg.BasePath + "/Collections/{Id}/Items"
+  /// ```
+  /// 即 `GET /Collections/{Id}/Items`。
+  ///
+  /// [collectionId] 来自条目的 `Collections[].Id`
+  ///（见 `MediaItem.collectionIds` —— 注意**不是** Jellyfin 的 `BoxSetIds`）。
+  ///
+  /// ⚠️ 返回的成员**不含**当前正在播的那一部吗？—— 含。调用方按 id 过滤自己。
+  Future<List<MediaItem>> getCollectionItems(String collectionId);
+
   /// 章节标记（进度条刻度 / 跳过片头）
   Future<List<MediaChapter>> getChapters(String itemId);
 

@@ -65,6 +65,15 @@ class FakeMediaProvider implements MediaProvider {
 
   // ---- 媒体库 / 列表（播放页用不到，返回空即可）----
 
+  /// 合集成员 —— 测试替身：返回空列表（**不伪造数据**）。
+  ///
+  /// 生产实现在 `EmbyProvider.getCollectionItems`（`GET /Collections/{Id}/Items`）。
+  /// 这里给空列表是**诚实**的：替身没有真实服务端，编造成员会让
+  /// 依赖它的断言"绿得没意义"。
+  @override
+  Future<List<MediaItem>> getCollectionItems(String collectionId) async =>
+      const [];
+
   @override
   Future<List<MediaView>> getViews() async => const [];
 
