@@ -35,7 +35,33 @@ jobs:
         run: flutter pub get
 
       - name: 静态分析（必须 0 error / 0 warning）
-        run: flutter analyze
+        run: |
+          # ⚠️ **不能直接 `flutter analyze`**（判定标准是"0 error / 0 warning"，
+          #    不是退出码）。
+          #
+          # ## 为什么（长期存在的 CI 缺陷，2026-10-09 修）
+          # 本仓库有 **5 条已知豁免的 info**（AGENTS §5.7 记着 douban 那 3 条，
+          # 后又多 2 条）⇒ `flutter analyze` **退出码恒为 1** ⇒ CI 恒失败。
+          #
+          # 证据：v0.3.2 与 v0.3.1 的多次 run 都停在"静态分析与测试"。
+          #
+          # `scripts/check-dev.ps1` 早已处理对（直接数诊断行前缀），
+          # **但 CI 漏了** —— 两处从未对齐，正是"两个地方各写一遍必然走偏"。
+          #
+          # ## 判定
+          # 数 `error - ` / `warning - ` 前缀行（各版本稳定的契约），
+          # **不依赖汇总行**（check-dev 的注释记录过：3.47.5 只有逐条诊断行，
+          #  `No issues found` 仅在完全无 issue 时出现）。
+          ANALYZE_OUT=$(flutter analyze 2>&1 || true)
+          echo "$ANALYZE_OUT"
+          ERRS=$(printf '%s\n' "$ANALYZE_OUT" | grep -cE '^[[:space:]]*error[[:space:]]+-' || true)
+          WARNS=$(printf '%s\n' "$ANALYZE_OUT" | grep -cE '^[[:space:]]*warning[[:space:]]+-' || true)
+          echo "analyze: error=$ERRS warning=$WARNS"
+          if [ "$ERRS" != "0" ] || [ "$WARNS" != "0" ]; then
+            echo "::error::flutter analyze 有 $ERRS 个 error / $WARNS 个 warning"
+            exit 1
+          fi
+          echo "✅ 0 error / 0 warning（info 已豁免）"
 
       - name: 单元测试
         run: flutter test
