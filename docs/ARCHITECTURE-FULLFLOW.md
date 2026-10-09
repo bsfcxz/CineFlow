@@ -278,11 +278,12 @@ player_routes.playerRoute():
 ```
 
 ```dart
-// player_flow_page.dart:59
-const useNewPlayerUi = bool.fromEnvironment('CF_NEW_PLAYER', defaultValue: false);
+// player_flow_page.dart
+// ★ 第 53 轮已把默认值从 false 翻转为 true（新页成为默认路径）
+const useNewPlayerUi = bool.fromEnvironment('CF_NEW_PLAYER', defaultValue: true);
 ```
 
-**⚠️ 实测发现（见 [`AUDIT-2026-10-09.md`](AUDIT-2026-10-09.md)）**：
+**✅ 该问题已于第 53 轮修复**（下方保留事故经过，因为它是本仓库最有价值的一课）：
 
 | 包 | 编进去的页面 |
 |---|---|
@@ -293,17 +294,24 @@ const useNewPlayerUi = bool.fromEnvironment('CF_NEW_PLAYER', defaultValue: false
 ⇒ 新页被 tree-shaking 删掉。全仓**只有这一个**编译期开关，
 而 4 个构建脚本（`release.yml`/`ci.yml`/`build_apk.sh`/`build_apk.bat`）**都没传它**。
 
-**⚠️ 且新页并非旧页的超集** —— 实测缺 4 项：
+**⚠️ 新页与旧页的能力差异（本节已在第 53 轮更正）**
 
-| 功能 | 旧页 | 新页 |
-|---|---|---|
-| 跳过片头 | ✅ | ❌ |
-| 锁屏按钮 | ✅ | ❌ |
-| 章节刻度 | ✅ | ❌ |
-| 双击播放/暂停 | ✅ | ❌ |
-| （新页独有）投屏 | ❌ | ✅ |
+> **更正说明**：原写"新页缺 4 项"是**误报**。
+> 当时只 grep 了 `player_flow_page.dart` **一个文件**，
+> 而新页是**分层**的（flow → `presentation/player_ui_page.dart` → `widgets/*`，共 14 文件）。
+> 按整条依赖链重查后，**双击播放/暂停**与**锁屏按钮**新页**早就有**。
+> ⇒ 这类"扫描范围不足导致结论出错"与 §8.4 的教训同型。
 
-⇒ **删旧页前必须先补这 4 项**（否则是功能倒退）。
+| 功能 | 旧页 | 新页（实际） | 处置 |
+|---|---|---|---|
+| 双击播放/暂停 | ✅ | **✅ 早就有** | `player_ui_page.dart` 的 `_tapCount` 状态机 |
+| 锁屏按钮 | ✅ | **✅ 早就有** | 同文件，含语义标签 |
+| 跳过片头 | ✅ | ❌ → ✅ | **第 53 轮已补齐** |
+| 章节刻度 | ✅ | ❌ → ✅ | **第 53 轮已补齐** |
+| （新页独有）投屏 | ❌ | ✅ | — |
+
+⇒ **两项已补齐并各有守卫测试 + 反向注入 19/19**，
+故**"切默认页会功能倒退"这个顾虑已解除**。
 
 ---
 
@@ -729,8 +737,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-dev.ps1
 
 | 级别 | 问题 | 影响 |
 |---|---|---|
-| 🔴 **P0** | **发布包跑旧播放页** | 双内核/会话层/HDR/音量/WakeLock **全未进发布包** |
-| 🟡 P1 | 新页缺 4 项旧页功能 | 跳过片头 / 锁屏 / 章节刻度 / 双击播放暂停 |
+| ✅ **已修** | ~~发布包跑旧播放页~~ | **第 53 轮已修**：翻转 `CF_NEW_PLAYER` 默认值为 `true`；无 flag 构建的产物**字节级确证**编入新页（旧页串 0/6、新页串 6/8）|
+| ✅ **已修** | ~~新页缺功能~~ | **第 53 轮已补齐章节刻度 + 跳过片头**；另 2 项（双击/锁屏）经复查**新页早就有**（原判断为误报）|
 | 🟡 P1 | 设计令牌采用率 10% | 裸 `fontSize` 253 处 vs 令牌 28 处 |
 | 🟡 P1 | `screen_brightness` 插件仍在 | 与新页自研 `BrightnessService` 重复（同能力两套实现）|
 | 🟡 P1 | 抽象绕过 13 处 | 6 个 `pages/` 直接 import `emby_provider.dart`（§7.13）|
