@@ -318,7 +318,7 @@ MCP `flutter` 服务器提供等价的封装工具：`devices` / `run_app` / `ru
   且 `aid` 关闭时字面量是 `no`——裸拼会让 Dart 侧 `jsonDecode` 抛异常后**静默丢事件**。
 - **dispose 仍不能同步**（沿用旧坑）：退出走"先上报 Stop + pause → 延迟 ≥350ms 释放"。
   `NativeKernel.dispose` 内部还会 `detachSurface` + join 事件线程。
-- **无 WakeLock / 无画中画**：见 §7.11。
+- **WakeLock 已接线**（播放中常亮；暂停允许熄屏）；**画中画仍未做** —— 见 §7.11。
 - **控制层全部自绘**：页面里**不再有** `NoVideoControls` 这类插件开关
   （media_kit 已移除）；视频层是 `_player.videoView(fit:…, tick:…)`。
 - **`_player` 是异步创建的**：`_boot()` 完成后才非空，
@@ -537,12 +537,18 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 |---|---|---|---|
 | 7.7 | **无 401 统一处理**：拦截器只注入头，token 失效只能看错误页 | `emby_provider.dart:43-48` | README "自动重连"未实现 |
 | 7.10 | **文档与代码不符**：README 称"自动重连"、"6h/24h 缓存"仍未兑现（"Start→Progress→Stopped"已随 7.1 修复变为事实） | `README.md:20`/`:38` | 误导后续代理，**改代码时必须顺手修正** |
-| 7.11 | **无 WakeLock / 无画中画**：manifest 仅申请 `INTERNET` | `android/app/src/main/AndroidManifest.xml` | 播放中可能熄屏 |
+| 7.11 | **无画中画**（WakeLock 部分**已于 2026-10-09 修复**，见下） | — | 播放中切到其他 App 不会浮窗 |
 | 7.13 | **UI 层仍有文件直接 import `emby_provider.dart`**（主要为 `MediaException`），违反约定 §5.1。注：边界**类型**已中立化（§7.19（已归档 → [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)）），但 `EmbyException` 本身仍来自实现文件 | detail/player/login/profile/search/home/providers | 接入第二个走 `MediaProvider` 的源时会被这处挡住（115 不受影响，它走独立页面） |
 | 7.18 | **仓库卫生**：`tool/icon/_gen/profile/` 混入 256 个 Edge 浏览器配置文件（已在 `.gitignore` 忽略）；`build/` 占 3.4GB（已忽略）；仓库历史里无垃圾文件 | — | 见 §9 |
 | 7.20 | **`models.dart` 仍含 Emby 线格式**：`fromJson` 工厂里是 Emby 专属键名（`UserData`/`MediaSources`/`ImageTags` 等）。要真正"第二 provider 可插拔"，需把线格式解析抽到独立的 Emby 适配器（`lib/data/emby/`），使中立模型层不含 Emby 词汇 | `models.dart`（434 行） | 目前 115 走独立页面故不受影响（ADR 0007）；但若将来再接入第二个**走 `MediaProvider`** 的源，这层必须先抽 |
 | 7.21 | **退出播放页后屏幕方向不复位**（用户反馈"退出后首页也是横的"）。真机取证：退出播放页后 App 仍在运行（`topResumedActivity` 是本 App、pid 存活）、**当前就在 App 自己的首页/详情页**，但窗口仍是 `cur=2400x1080`（横）。**已试 4 种方案全部失败**：① `player_flow_page.dispose()` 里复位（调用发生但窗口不转）；② `HomeShell.initState` 复位（只在冷启动跑一次 —— 它一直在导航栈底部，不会 unmount）；③ `RouteAware.didPopNext`（只覆盖"直接下层是首页"，实测落点是**详情页**）；④ 导航层统一处理 `AutoPortraitObserver`（监听全局路由变化）→ 仍横屏。<br>**决定性取证**：App 未运行时是竖屏、冷启动后也是竖屏 ⇒ 横屏偏好**没有**被系统持久化、我们的复位调用**是有效的**；但从播放页返回后窗口保持横屏，且**连系统级** `settings put system user_rotation 0` **都无法让它转回** ⇒ 有东西在**持续请求横屏**。<br>**下一轮入口**：`player_flow_page.dart` 的 initState **绕过**了新分层的 `SystemUiService` 直接调 `SystemChrome.setPreferredOrientations(landscape)`；而 `lib/player/infrastructure/system/system_services.dart` 里已有 `lockLandscape()` / `unlockOrientation()`，后者注释明确写着"退出播放器时**必须**调这个，否则整个 App 仍锁在横屏"。建议让 `PlayerFlowPage` 改用 `SystemUiService`，把"成对性"交给服务保证，而不是靠每个调用点记得复位。⚠️ 另注：诊断时**不要**用 `settings put system user_rotation` —— 那会把系统锁成强制横屏，此时任何 App 的 `setPreferredOrientations` 都无效，会制造假象（已踩过）。 | `player_flow_page.dart` initState / `home_shell.dart` / `router.dart` | 用户离开播放器后 App 内页面仍横屏，观感错乱（需手动转手机） |
 | — | **已修复项已归档**（共 13 条） | 见 [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md) —— 含每条的实测依据与验证手法。**标题说的"未修复"指上表**；已修项不在本表，别去翻它找待办 | — |
+
+> **§7.11 的 WakeLock 部分已修（2026-10-09）**：`WakelockService` 的 Kotlin 通道
+> 早已实现（`SystemChannel` 的 `FLAG_KEEP_SCREEN_ON`），但 Dart 侧**零调用** ⇒
+> 播放中照常熄灭。已接线到 `stateStream` 的 `playing` 变化（播放中常亮 /
+> 暂停允许熄屏 / 退出清掉），并加守卫测试 + 真机验证：**熄屏超时设 15s、
+> 等 20s 后 `mWakefulness` 仍为 `Awake`**。画中画仍未做。
 
 ---
 
@@ -811,6 +817,7 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 | 审查清单（提交前逐条打勾） | `docs/review-checklist.md`（§0–§7） |
 | **验证纪律：三类"假绿"怎么避免** | [`docs/VERIFICATION-DISCIPLINE.md`](docs/VERIFICATION-DISCIPLINE.md)（§8.4 只有摘要；含注释满足断言 / 注入没注到真代码 / 数字靠推算的实例与规则）|
 | **已修复缺陷的实测依据与验证手法** | [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)（§7 只留**未修复**项；已修 13 条归档在这里，含"反向注入怎么做的""用什么物证确认的"）|
+| **双内核的思维链 / 优化链 / 待优化项** | [`docs/DUAL-KERNEL-OPTIMIZATION.md`](docs/DUAL-KERNEL-OPTIMIZATION.md)（为什么这么设计、每步优化的实测收益、**还能优化什么**（含风险与验证方式）、**明确拒绝过什么及理由**）|
 | **按键/交互元素是否可用** | **`python tool/audit_buttons.py out.txt`**（查空实现/死按钮/命中区过小/失败被吞；清单见 `docs/UI-DESIGN.md` §3.3.2） |
 | **设计令牌采用率（字号/间距/断点/圆角）** | **`python tool/audit_tokens.py`**（人读报告）；**`--check`** 只看圆角是否收敛（退出码 0/1，可进 CI）。⚠️ **"定义了令牌" ≠ "用了令牌"** —— U1 实测：排版令牌只用了 24 处而裸 `fontSize` 有 232 处、`clampTextScale`/`CfBreakpoints` **真代码采用 0 处** |
 | 技术技能与开源借鉴（S1–S10） | `docs/TECH-SKILLS.md` + 技能 `cineflow-tech-skills` |
