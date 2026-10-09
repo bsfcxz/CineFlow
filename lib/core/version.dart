@@ -16,7 +16,7 @@
 library;
 
 /// 应用版本（与仓库根 `VERSION` 保持一致）。
-const String kAppVersion = '0.3.1';
+const String kAppVersion = '0.3.2';
 
 /// Emby 协议头 `Version="..."` 用的客户端版本。
 ///
