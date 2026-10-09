@@ -505,8 +505,25 @@ if ($SkipDevice) {
         # Flutter 对 `--split-per-abi` 的 release 会自动加 `1000 x ABI_VERSION`
         # （见 android/app/build.gradle.kts:91；arm64 的 ABI_VERSION=2）。
         # 故"设备上是 release、待装是 debug"时，debug 永远装不回去。
+        # ⚠️ 判据不能**单独**用"差值整除 1000"（2026-10-09 修：门禁自身缺陷）。
+        #
+        # 旧写法隐含假设两个包的**构建号相同**：
+        #   早先 设备 2003（0.3.1+3 ⇒ 2000+3）/ debug 3 ⇒ 差 2000，%1000=0 ⇒ 跳过（对）
+        #   本轮 设备 2004（0.3.2+4 ⇒ 2000+4）/ debug 3 ⇒ 差 2001，%1000=1 ⇒ **试图安装**
+        #        → INSTALL_FAILED_VERSION_DOWNGRADE → 门禁退出码 1 报"安装失败"
+        # 真实原因是 Flutter split-APK 的既定行为，**不是缺陷** ——
+        # 这是"门禁自身的假失败"，比漏报更烦人（会让人开始无视红灯）。
+        #
+        # 改用**语义判据**：设备上是拆分 release（versionCode 含 1000×ABI_VERSION
+        # 偏移 ⇒ ≥1000），待装是未拆分 debug（无偏移 ⇒ <1000）⇒ 必然降级，
+        # 与构建号是否相同无关。与旧判据**取或**：同构建号时旧判据仍成立，不损失覆盖。
+        $isSplitReleaseOnDevice = ($devCode -ge 1000) -and ($apkCode -lt 1000)
         $abiDowngrade = ($devCode -gt 0) -and ($apkCode -gt 0) -and
-                        ($devCode -gt $apkCode) -and ((($devCode - $apkCode) % 1000) -eq 0)
+                        ($devCode -gt $apkCode) -and
+                        (
+                            ((($devCode - $apkCode) % 1000) -eq 0) -or
+                            $isSplitReleaseOnDevice
+                        )
 
         if ($abiDowngrade) {
             Warn ("设备上是 release 包（versionCode=$devCode，含 ABI 偏移 +$($devCode-$apkCode)），" +
