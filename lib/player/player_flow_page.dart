@@ -660,6 +660,19 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       // `SessionStateSync` 内部做**秒级去重**：进度是每 250ms 推一次的，
       // 不去重会让通知栏被刷爆（CPU 白耗 + 通知闪烁）。
       _sessionSync.sync(s);
+
+      // ---- ★ 唤醒锁：跟随"是否在播"（K3.6）----
+      //
+      // 播放中 → 屏幕常亮；暂停 → 允许熄屏。
+      //
+      // 为什么挂在这里：这里是**所有**状态变化的汇聚点（与 `_sessionSync`
+      // 同一位置）。挂到播放/暂停按钮里会漏掉手势、自动连播、媒体键等路径。
+      //
+      // ⚠️ 只在实际变化时调：`enable/disable` 是 MethodChannel 往返，
+      //    每次状态推送都调会白耗（进度是 250ms 推一次的）。
+      if (_wakelock.enabled != s.playing) {
+        unawaited(s.playing ? _wakelock.enable() : _wakelock.disable());
+      }
       // ---- ★ 首帧到达计时（用户感知的"起播时间"）----
 //
 // ## 实测数据（3 次有效采样，2026-10-08，真机 K40）
@@ -1318,6 +1331,11 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     _volumeService.onSystemChanged = null;
     unawaited(_volumeService.stopListening());
 
+    // K3.6：退出时**确保**清掉常亮 flag。
+    // 虽然 flag 随 Activity 失效，但播放页退出后 Activity 仍在 ——
+    // 不清的话首页会一直亮屏（用户会以为手机坏了）。
+    unawaited(_wakelock.disable());
+
     if (_finalized) return;
     _finalized = true;
     final api = _api;
@@ -1531,6 +1549,18 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   /// ⚠️ **唯一例外**：音频焦点 `duck` 仍走内核（见 `case 'duck'` 的说明）——
   /// 改系统音量会把用户手机的音量改小且**不会自动恢复**。
   final VolumeService _volumeService = VolumeService();
+
+  /// 唤醒锁：**播放中保持屏幕常亮**。
+  ///
+  /// ## 为什么必须接线（曾被遗漏）
+  /// Kotlin 侧早已实现该通道，但 Dart 侧**零调用** ⇒ 播放中屏幕照常熄灭。
+  /// 看剧时每隔几十秒黑屏是很明显的体验问题。
+  ///
+  /// ## 语义：跟随"是否在播"，不是"是否在播放页"
+  /// 暂停时**允许熄屏**（用户可能在回消息/看弹幕）；
+  /// 恢复播放时再点亮。故挂在 `stateStream` 的 `playing` 变化上，
+  /// 而不是在 `initState`/`dispose` 里一刀切。
+  final WakelockService _wakelock = WakelockService();
 
   /// 闪避前的**内核**音量（`duck` 时记下，`unduck` 时精确还原）。
   ///
