@@ -476,46 +476,92 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
   ) {
     return [
       // 顶栏（含渐变压暗）
+      //
+      // ══════════════════════════════════════════════════════════════
+      // ★★ 2026-10-09 修：横屏下返回键/标题被推到屏幕 1/3 处
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 症状（用户截图 + 真机实测）
+      // 横屏 2400x1080 下：
+      //     返回按钮  [102,341][234,473]   y1 = 31.6%
+      //     标题      [234,356][1028,414]   y1 = 33.0%
+      // 而它**应该**贴左上角（y ≈ 1%）。
+      //
+      // ## 根因：`BarScrim` 被当成**布局子节点**
+      // 原结构是：
+      //     Column(children: [ BarScrim(height: 120), Padding(顶栏) ])
+      // `BarScrim` 本该是一层**背景**，但放进 `Column` 后它**占掉 120dp 布局高度**
+      // ⇒ 顶栏被整体向下推 120dp。
+      //     120dp × 2.75(density) = 330px = 屏幕高的 30.6%
+      // 与实测 y1=31.6% **精确吻合** ⇒ 根因确认。
+      //
+      // 横屏只有 1080px 高，这 330px 直接把顶栏压到中间偏上 ——
+      // 观感上"返回键飘在半空"，且**遮住了更多视频内容**。
+      //
+      // ## 修法：用 `Stack` 把 `BarScrim` 变回**真正的背景**
+      // `Stack` 的子节点**不参与彼此的布局** —— 渐变层铺满、顶栏内容
+      // 由自己的 Padding 决定位置 ⇒ 互不挤压。
+      //
+      // ⚠️ 为什么不用 `Column + Positioned`：`Positioned` 只在 `Stack` 里有效。
+      // ⚠️ 为什么不动底栏：底栏**没有** BarScrim（第 31 轮已换成透明布局，
+      //    见 L557-575 的三轮迭代记录）⇒ 它本来就没这个问题。
       Positioned(
         top: 0,
         left: 0,
         right: 0,
         child: UiElementDetector(
           hitTest: _hitTest,
-          child: Column(
+          // ⚠️ `Stack` 要 `alignment: topLeft` —— 默认是 `topStart`（等价），
+          //    但显式写出以表达意图（用户明确要求"不要 Center / centerLeft"）。
+          child: Stack(
+            alignment: Alignment.topLeft,
             children: [
-              const BarScrim(height: PlayerUi.topBarFade, fromTop: true),
+              // ---- 背景渐变（不占布局：Stack 子节点各自独立）----
+              const Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: BarScrim(height: PlayerUi.topBarFade, fromTop: true),
+              ),
+              // ---- 顶栏内容（贴左上角，高度仅为内容高度）----
               Padding(
-                // ★ 顶部安全区（用户要求"退出箭头放在左上角"，2026-10-09）
+                // ★ 顶部安全区 + 用户指定的内边距（12dp 顶 / 24dp 左）
                 //
-                // ## 为什么加 `MediaQuery.paddingOf(context).top`
-                // 原来只有 4px：在**竖屏**（用户主要用法）下，
-                // 左上角的返回按钮会被状态栏/挖孔屏压住或贴得太紧，
-                // 视觉上不像"左上角的独立按钮"。
-                //
-                // 竖屏 padding.top ≈ 状态栏高度；全屏（沉浸式）时为 0
-                // ⇒ 两种模式都自然。
-                //
-                // ## 为什么不改成 Positioned 单独定位
-                // `keys.player.topBar` / `keys.player.backButton` 是测试依赖的键，
-                // 且顶栏整体参与 z 序与命中判定（`UiElementDetector`）。
-                // 脱离 Row 会破坏这两点 ⇒ 在 Row 内调边距即可。
+                // ## 为什么用 `SafeArea` 而不是手算 `MediaQuery.paddingOf`
+                // 二者等价，但 `SafeArea` 把"避开刘海/状态栏/挖孔"的意图写在类型上。
+                // ⚠️ 保留 `MediaQuery.paddingOf` 的**显式参与**：`SafeArea` 的
+                //    `minimum` 用不上"仅顶部"的语义（它会四边都加），故这里
+                //    仍以 `MediaQuery.paddingOf(context).top` 表达"只关心顶部安全区"，
+                //    再由 `SafeArea(bottom:false)` 兜住其余边。
                 padding: EdgeInsets.only(
-                  top: 4 + MediaQuery.paddingOf(context).top,
-                  left: 4, // 贴左 ⇒ 返回按钮锚在左上角
+                  top: 12 + MediaQuery.paddingOf(context).top,
+                  left: 24,
                 ),
-                child: Row(
-                  key: keys.player.topBar,
-                  children: [
-                    Expanded(
-                      child: PlayerTopBar(
-                        title: widget.slots.title,
-                        subtitle: widget.slots.subtitle,
-                        onBack: widget.callbacks.onBack,
-                        onBackKey: keys.player.backButton,
+                child: SafeArea(
+                  // bottom/left/right 不需要：顶栏只在顶部；
+                  // 且左右已由上面的 24dp 显式给出（避免叠加成 48dp）
+                  bottom: false,
+                  left: false,
+                  right: false,
+                  child: Row(
+                    key: keys.player.topBar,
+                    children: [
+                      // ⚠️ 必须 `Expanded`：`PlayerTopBar` 内部有 `Expanded`
+                      //    （标题行要 `ellipsis` 收敛）—— 若外层不给有界宽度，
+                      //    它会抛 "RenderFlex children have non-zero flex but
+                      //    incoming width constraints are unbounded"（实测崩溃）。
+                      //    而 `Positioned(top/left/right)` 已给出**有限宽度**
+                      //    ⇒ 这里是安全的。
+                      Expanded(
+                        child: PlayerTopBar(
+                          title: widget.slots.title,
+                          subtitle: widget.slots.subtitle,
+                          onBack: widget.callbacks.onBack,
+                          onBackKey: keys.player.backButton,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -595,6 +641,18 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
                       hasNext: playlist.hasNext,
                       danmakuEnabled: danmaku.enabled,
                       fullscreen: ui.fullscreen,
+                      // ★ 用户要求：选集按钮显示「第几集 / 共几集」（如 3/24）
+                      //
+                      // ## 为什么在**调用方**组装字符串
+                      // `PlayerActionBar` 刻意不依赖 `PlaylistState`
+                      // （保持"只吃 props"的可测性，见其文件头）。
+                      // 且"该不该显示"是个判断，放这里更清楚：
+                      // · 列表只有 1 项（电影）⇒ 不显示 —— `1/1` 是无信息的噪声
+                      // · 列表未就绪 ⇒ 不显示 —— 宁可少显示，也不要闪一个错的数字
+                      playlistCount: playlist.entries.length > 1
+                          ? '${playlist.currentIndex + 1}/'
+                              '${playlist.entries.length}'
+                          : null,
                       // ★ 转发给宿主（宿主才做得了"切集播放"）。
                       //    原实现直接调 `playlist.previous()/next()` ——
                       //    那只改列表高亮，画面不动 = 用户说的"无用"。

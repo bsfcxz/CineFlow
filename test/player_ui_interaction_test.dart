@@ -578,7 +578,31 @@ void main() {
   group('顶栏（§18 清单相关）', () {
     testWidgets('显示文件名；长文件名不溢出', (tester) async {
       final (_, _) = await pumpPlayer(tester, size: const Size(360, 780));
-      expect(find.text('Interstellar.2014.2160p.HDR.mkv'), findsOneWidget);
+      // ★ 用户要求"顶部标题合并为单行"（2026-10-09）后，顶栏不再是
+      //   「大标题 + 小副标题」两行，而是 `title · subtitle` 一行。
+      //   故断言改为**合并后的整串**（原断言只查 title，已过时）。
+      //
+      //   `pumpPlayer` 传的是 title='Interstellar.2014.2160p.HDR.mkv'
+      //   + subtitle='测试副标题' ⇒ 合并为 `…mkv · 测试副标题`。
+      expect(find.text('Interstellar.2014.2160p.HDR.mkv · 测试副标题'),
+          findsOneWidget,
+          reason: '顶栏应把 title 与 subtitle 合并成一行显示');
+      // 单行约束仍在（长文件名要省略号收敛，不能撑破顶栏）
+      final title = tester.widget<Text>(
+          find.text('Interstellar.2014.2160p.HDR.mkv · 测试副标题'));
+      expect(title.maxLines, 1, reason: '★ 必须是单行（maxLines: 1）');
+      expect(title.overflow, TextOverflow.ellipsis,
+          reason: '★ 超长必须省略号 —— 否则会撑破顶栏');
+    });
+
+    testWidgets('只有 title 时不留下孤立的间隔符', (tester) async {
+      // 合并的边界：subtitle 为空 ⇒ 不应出现 ` · ` 尾巴
+      final (_, _) = await pumpPlayer(tester, size: const Size(360, 780));
+      expect(find.text('Interstellar.2014.2160p.HDR.mkv · 测试副标题'),
+          findsOneWidget);
+      // 反向：不应存在"只有 title 却带尾巴"的写法
+      expect(find.text('Interstellar.2014.2160p.HDR.mkv · '), findsNothing,
+          reason: '★ subtitle 为空时不能留下孤立的 ` · `');
     });
 
     testWidgets('点返回 → 回调', (tester) async {

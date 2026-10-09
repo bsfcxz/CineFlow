@@ -31,48 +31,84 @@ class PlayerTopBar extends StatelessWidget {
     return Row(
       children: [
         const SizedBox(width: 4),
+        // ---- 返回按钮：半透明圆底 + ≥48dp 命中区（用户要求，2026-10-09）----
+        //
+        // ## 为什么加圆底
+        // 顶栏压在视频上，纯白箭头压亮画面会看不清（"白字压白墙"）。
+        // 圆底给图标一个**稳定的衬底**，比只靠阴影更可靠。
+        //
+        // ## ⚠️ 刻意**不加** `BackdropFilter`（与第 31/33 轮的决定一致）
+        // 用户曾三轮反馈"模糊本身就是遮挡视频的根源"：
+        //   `BackdropFilter(blur)` 会**修改其区域的视频像素**（哪怕填充全透明）
+        //   ⇒ 用户看到"这块是糊的" = 被遮挡。
+        // 故这里只用 **`Colors.black26` 半透明填充**（不模糊任何像素）——
+        // 观感上仍是"圆形背景"，但**不处理背后画面**。
+        //
+        // ## 命中区
+        // `IconButton` 默认即 `kMinInteractiveDimension = 48×48`；
+        // 这里**显式**写出，避免将来有人改主题时静默变小（`visualDensity` 会改它）。
         IconButton(
           key: onBackKey,
           onPressed: onBack,
-          icon: const Icon(Icons.arrow_back),
+          icon: Container(
+            width: 36,
+            height: 36,
+            decoration: const BoxDecoration(
+              color: Colors.black26,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.arrow_back, size: 20),
+          ),
           color: Colors.white,
-          iconSize: 22,
+          iconSize: 20,
           tooltip: '返回',
+          // 显式 48dp（视觉 36dp，命中 48dp —— U5/U8 已确立的纪律）
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+          padding: EdgeInsets.zero,
         ),
         Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                title,
-                // 规格 §7.2：单行 + 省略号（长文件名不能撑破顶栏）
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
-                ),
-              ),
-              if (subtitle case final s? when s.isNotEmpty)
-                Text(
-                  s,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 11,
-                    shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
-                  ),
-                ),
-            ],
+          // ★ 用户要求：顶部标题**合并为单行**
+          //
+          // ## 为什么改（原先两行）
+          // 原实现是 `Column(title, subtitle)` —— 竖屏下占两行高度，
+          // 而顶栏压在视频上，两行会把画面挤得更小、也更挡视线。
+          //
+          // ## 怎么合并
+          // `title` 与 `subtitle` 用 ` · ` 拼成一行；subtitle 为空时
+          // **不留下多余的间隔符**（否则末尾会出现一个孤立的 `·`）。
+          //
+          // ⚠️ 两者**不是同一个值**（第 46 轮修过"顶栏集数重复显示"）：
+          //    title    = `第 N 集 · 本集名`
+          //    subtitle = 剧名
+          //    合并后 = `第 N 集 · 本集名 · 剧名`
+          //    若两者相同（异常数据），只显示一次 —— 防重复。
+          child: Text(
+            _mergedTitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+            ),
           ),
         ),
         const SizedBox(width: 12),
       ],
     );
+  }
+
+  /// 合并后的单行标题。
+  ///
+  /// 抽成 getter 是**为了可测**：单行合并的边界（无 subtitle / 两者相同 /
+  /// subtitle 为空串）在这里可精确断言，不必起 UI。
+  String get _mergedTitle {
+    final s = subtitle;
+    if (s == null || s.isEmpty) return title;
+    // 两者相同 ⇒ 只显示一次（否则会出现 `X · X`）
+    if (s == title) return title;
+    return '$title · $s';
   }
 }
 
