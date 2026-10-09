@@ -403,6 +403,48 @@ MPVLib.command(arrayOf("loadfile", url, "replace",
 > （`if (start != null && start.inSeconds > 3) await seek(start)`），
 > 但它走的是**两次调用**，不是 `loadfile` 的 `start=`。
 > ⇒ 改动点是把它换成单次命令。
+>
+> ### ⚠️★ 版本陷阱：`loadfile` 的参数位**在 mpv 0.38 变过**（务必读）
+>
+> 上面那行第 3 参数写法**只对我们当前版本正确**。官方手册在 0.38 的
+> `.. warning::` 里专门写了这条：
+>
+> > Since mpv 0.38.0, an insertion index argument is added as the third argument.
+> > This breaks all existing uses of this command which make use of the argument
+> > to include the list of options to be set while the file is playing. To address
+> > this problem, the third argument now needs to be set to `-1` if the fourth
+> > argument needs to be used.
+>
+> | 版本 | 签名 | `start=` 位置 |
+> |---|---|---|
+> | **我们的 `v0.36.0-549-g78d43740f5`** | `loadfile <url> [<flags> [<options>]]` | **第 3 个** ✅ |
+> | mpv **0.38.0+**（含 master） | `loadfile <url> [<flags> [<index> [<options>]]]` | 第 4 个，**第 3 个必须填 `-1`** |
+>
+> **为什么这条必须写下来**：本文档 P2 正建议**重建 libmpv**。
+> 一旦升级到 0.38+，老的 3 参数写法**不会报错、不会崩**，
+> 只会**静默不跳转**（片子从 0:00 开始）——
+> 这正是本仓库反复栽过的"静默失败"形态（§6.7 的弹幕颜色、
+> §6.8 的 115 取址都是同类）。
+>
+> **建议的写法**（对两个版本都安全，不靠版本号猜）：
+> ```kotlin
+> // 不看版本号，而是**按参数位兼容**：先试 4 参数（0.38+），
+> // 失败或未跳转再退回 3 参数。或直接读 mpv 版本决定。
+> // 更稳的做法：只用官方一直支持的组合 ——
+> //   loadfile url replace ""  （第 3 参数给空字符串）
+> // 仍不可靠 ⇒ 最稳妥仍是**保留一次显式 seek**，把合并当"优化"而非"必需"。
+> ```
+>
+> **验证方式**（改完必须做）：续播一部有进度的片子，
+> 看 `[Startup]` 埋点里 `seek` 段是否仍在、以及**首帧位置是否为续播点**。
+> 只测"能播"是测不出来的 —— 从 0:00 播也算"能播"。
+>
+> ### 证据出处（可自行复核）
+> · 本机 `libmpv.so` 内嵌版本串：`v0.36.0-549-g78d43740f5`
+> · 该 commit 的官方手册：GitHub contents API
+>   `GET /repos/mpv-player/mpv/contents/DOCS/man/input.rst?ref=78d43740f5`
+>   → 签名为 3 参数版
+> · master 版手册 → 4 参数版 + 上述 warning
 
 ### 🟢 P0：`cache-pause-wait` 收紧（低风险）
 
