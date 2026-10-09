@@ -93,7 +93,22 @@ class UiElementDetector extends StatelessWidget {
 /// · `opaque` → 吃掉所有事件，上面的 UI 按钮就点不到了
 /// · `deferToChild` → 子节点（视频纹理）不参与命中时会漏掉手势
 /// · `translucent` → **自己收到事件的同时仍让上层 UI 拿到** —— 正确选择
-class PlayerGestureLayer extends StatelessWidget {
+///
+/// ## ★ 双指缩放/平移（用户 2026-10-09 要求第 5 条）
+/// `Listener` 天然收**每一个**指针的独立事件（down/move/up 各带
+/// `pointer` 标识），这里维护 `Set<int> _pointers`：
+/// · 第 1 根手指按下 → 照旧走单指手势
+/// · 第 2 根手指落下 → `onPinchStart`（宿主进 pinch 模式，
+///   单指手势与长按计时**全部短路**）
+/// · 进行中 → 每次 move 用"两指间距比值 + 中点位移"回调
+/// · 最后一根抬起 → `onPinchEnd`
+///
+/// ## 为什么不用 `GestureDetector.onScaleUpdate`
+/// 它与本层的 `Listener` 会形成**识别器竞争**（同一 pointer 上排他），
+/// 一旦 scale 识别器赢走事件，单击/长按/拖动全失效 —— 那正是本仓库
+/// 当初从 `GestureDetector` 换到 `Listener` 的原因（见文件头）。
+/// 直接在原始指针流上算 pinch，零竞争。
+class PlayerGestureLayer extends StatefulWidget {
   const PlayerGestureLayer({
     super.key,
     required this.hitTest,
@@ -101,6 +116,9 @@ class PlayerGestureLayer extends StatelessWidget {
     required this.onPointerMove,
     required this.onPointerUp,
     required this.onPointerCancel,
+    this.onPinchStart,
+    this.onPinchUpdate,
+    this.onPinchEnd,
     this.enabled = true,
   });
 
@@ -110,17 +128,106 @@ class PlayerGestureLayer extends StatelessWidget {
   final VoidCallback onPointerUp;
   final VoidCallback onPointerCancel;
 
+  /// 双指开始/更新/结束（见类注释）。单指场景不触发。
+  final VoidCallback? onPinchStart;
+  final void Function(double scaleRatio, Offset focalDelta)? onPinchUpdate;
+  final VoidCallback? onPinchEnd;
+
   /// 锁定时置 false（规格 §9.5：PointerDown 直接 return）。
   final bool enabled;
+
+  @override
+  State<PlayerGestureLayer> createState() => _PlayerGestureLayerState();
+}
+
+class _PlayerGestureLayerState extends State<PlayerGestureLayer> {
+  /// 当前按下的指针集合（**含**第 1 根；size ≥ 2 = pinch 中）。
+  final Set<int> _pointers = {};
+
+  /// 各指针最近位置（算间距与中点用）。
+  final Map<int, Offset> _positions = {};
+
+  /// pinch 起始时两指间距（比值基准，避免首帧抖动）。
+  double _startSpan = 0;
+
+  /// pinch 起始时两指中点（平移基准）。
+  Offset _startFocal = Offset.zero;
+
+  bool get _pinching => _pointers.length >= 2;
+
+  void _down(PointerDownEvent e) {
+    _pointers.add(e.pointer);
+    _positions[e.pointer] = e.localPosition;
+    if (_pointers.length == 2) {
+      // 第 2 根手指落下：进入 pinch。
+      // ⚠️ 此刻必须**取消**单指语义（含长按计时器）——
+      //    由宿主在 onPinchStart 里调 `gestureStateProvider.notifier.abort()`。
+      _startSpan = _span;
+      _startFocal = _focal;
+      widget.onPinchStart?.call();
+      return; // pinch 态下不派发单指 down
+    }
+    if (!_pinching) widget.onPointerDown(e.localPosition);
+  }
+
+  void _move(PointerMoveEvent e) {
+    _positions[e.pointer] = e.localPosition;
+    if (_pinching) {
+      if (_startSpan <= 0) return; // 尚未成对（首帧保护）
+      widget.onPinchUpdate?.call(_span / _startSpan, _focal - _startFocal);
+      return;
+    }
+    widget.onPointerMove(e.localPosition);
+  }
+
+  void _up(PointerUpEvent e) {
+    _pointers.remove(e.pointer);
+    _positions.remove(e.pointer);
+    if (_pinching) return; // 还有手指在屏上，继续 pinch
+    if (_startSpan > 0) {
+      // 最后一根手指抬起且之前在 pinch ⇒ 结束 pinch
+      _startSpan = 0;
+      widget.onPinchEnd?.call();
+      return;
+    }
+    widget.onPointerUp();
+  }
+
+  void _cancel(PointerCancelEvent e) {
+    final wasPinch = _pinching || _startSpan > 0;
+    _pointers.remove(e.pointer);
+    _positions.remove(e.pointer);
+    if (wasPinch) {
+      _startSpan = 0;
+      widget.onPinchEnd?.call();
+      return;
+    }
+    widget.onPointerCancel();
+  }
+
+  double get _span {
+    final it = _pointers.toList();
+    if (it.length < 2) return 0;
+    return (_positions[it[0]]! - _positions[it[1]]!).distance;
+  }
+
+  Offset get _focal {
+    final it = _pointers.toList();
+    if (it.length < 2) return _positions[it.first] ?? Offset.zero;
+    return Offset(
+      (_positions[it[0]]!.dx + _positions[it[1]]!.dx) / 2,
+      (_positions[it[0]]!.dy + _positions[it[1]]!.dy) / 2,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerDown: (e) {
-        if (!enabled) return;
+        if (!widget.enabled) return;
         // 本次序列起始时重置标记（上一次的 consume 不该影响这一次）
-        hitTest.reset();
+        widget.hitTest.reset();
         // ⚠️ 这里读 `consumed` **只在[手势层不在最底层]时才有意义**。
         //
         // 正常布局下（本层是 Stack 第一个子节点）点在 UI 元素上时，
@@ -134,23 +241,23 @@ class PlayerGestureLayer extends StatelessWidget {
         // ❌ 曾经的错说法：「UI 元素的 Listener 先于本层执行，故 consumed 已置位」。
         //    那是错的，且与文件头的机制说明自相矛盾 —— 已由
         //    `test/player_gesture_mechanism_test.dart` 实证纠正。
-        if (hitTest.consumed) return;
-        onPointerDown(e.localPosition);
+        if (widget.hitTest.consumed) return;
+        _down(e);
       },
       onPointerMove: (e) {
-        if (!enabled) return;
-        if (hitTest.consumed) return;
-        onPointerMove(e.localPosition);
+        if (!widget.enabled) return;
+        if (widget.hitTest.consumed) return;
+        _move(e);
       },
-      onPointerUp: (_) {
-        if (!enabled) {
+      onPointerUp: (e) {
+        if (!widget.enabled) {
           // 锁定状态下也要复位，否则解锁后残留 active 手势
-          onPointerCancel();
+          widget.onPointerCancel();
           return;
         }
-        onPointerUp();
+        _up(e);
       },
-      onPointerCancel: (_) => onPointerCancel(),
+      onPointerCancel: (e) => _cancel(e),
       child: const SizedBox.expand(),
     );
   }

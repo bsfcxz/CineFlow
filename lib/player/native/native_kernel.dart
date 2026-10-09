@@ -248,12 +248,19 @@ class NativeKernel implements PlayerKernel {
       case 'track-list':
         _tracks = _parseTracks(data);
         if (!_tracksController.isClosed) _tracksController.add(_tracks);
-      case 'width':
-      case 'height':
+      // ★ 2026-10-09：`width/height` → `dwidth/dheight`（C 层已同步改观察名）
+      //
+      // ## 为什么必须用显示尺寸
+      // `width/height` 是**编码**尺寸 —— 手机竖拍视频常是 1920x1080 +
+      // rotate=90，按它算出 16:9，画面被横置拉宽（方向适配无从谈起）。
+      // `dwidth/dheight` 是 mpv **已应用旋转与像素宽高比(SAR)** 的
+      // 显示尺寸 ⇒ 竖屏视频得到 9:16，横屏得到 16:9，与"显示"一致。
+      case 'dwidth':
+      case 'dheight':
         final v = (data as num?)?.toInt() ?? 0;
         if (v <= 0) return;
         final before = aspectRatio;
-        if (name == 'width') {
+        if (name == 'dwidth') {
           _videoWidth = v;
         } else {
           _videoHeight = v;

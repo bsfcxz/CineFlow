@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../application/providers/player_providers.dart';
+import '../application/controllers/video_transform_controller.dart';
 import '../domain/models/media_state.dart';
 import '../domain/models/panel_state.dart';
 import '../domain/player_constants.dart';
@@ -265,6 +266,8 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
     final playback = ref.watch(playbackStateProvider);
     final ui = ref.watch(uiVisibilityProvider);
     final gesture = ref.watch(gestureStateProvider);
+    // ★ 双指缩放/平移状态（Transform 用；pinch 中还会抑制控制层自动隐藏）
+    final videoTransform = ref.watch(videoTransformProvider);
     final panel = ref.watch(panelStateProvider);
     final playlist = ref.watch(playlistStateProvider);
     final video = ref.watch(videoStateProvider);
@@ -282,7 +285,26 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
           return Stack(
             children: [
               // ---- 1. 视频层（最底）----
-              Positioned.fill(child: widget.slots.video),
+              // ★ 双指缩放/平移：`Transform` 包住视频层（用户 2026-10-09 第 5 条）
+              //
+              // ## 为什么用 `Transform` 而不是改画幅 ratio
+              // 缩放是**视图变换**（平移+放大），改 ratio 会重新布局、
+              // 且与"自动适配 16:9"语义打架；`Transform` 是纯绘制层
+              // 变换，不参与布局，与任何画幅档位正交。
+              //
+              // ## 平移边界
+              // offset 已在 `VideoTransformMath.update` 里按
+              // `_videoSize` 钳制 ⇒ 画面边缘不会跑进视口。
+              Positioned.fill(
+                child: Transform(
+                  alignment: Alignment.center,
+                  transform: Matrix4.identity()
+                    ..translate(videoTransform.offset.dx,
+                        videoTransform.offset.dy)
+                    ..scale(videoTransform.scale),
+                  child: widget.slots.video,
+                ),
+              ),
 
               // ---- 2. 弹幕层（视频之上、控制层之下；不吃手势）----
               if (widget.slots.danmakuLayer case final d?)
@@ -320,6 +342,31 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
                   },
                   onPointerCancel: () =>
                       ref.read(gestureStateProvider.notifier).onPointerCancel(),
+                  // ---- ★ 双指缩放/平移（用户 2026-10-09 第 5 条）----
+                  //
+                  // ## 为什么 pinchStart 里要 `abort()`
+                  // 第 2 根手指落下时，第 1 根可能已经触发了
+                  // 长按计时器（500ms）或亮度/音量手势 —— 若不中断，
+                  // 缩放时会**同时**改音量（实测级灾难）。
+                  // `abort()` 与"面板打开中断手势"是同一机制。
+                  //
+                  // ## 为什么 viewport 用 `_videoSize`
+                  // 平移边界按**视频层实际尺寸**算（缩放的是视频层）；
+                  // 用屏幕尺寸会在竖屏（视频区高度 ≠ 屏高）时给出
+                  // 过大的平移自由度，画面会被推出视口。
+                  onPinchStart: () {
+                    ref.read(gestureStateProvider.notifier).abort();
+                    ref.read(videoTransformProvider.notifier).pinchStart();
+                  },
+                  onPinchUpdate: (ratio, focal) => ref
+                      .read(videoTransformProvider.notifier)
+                      .pinchUpdate(
+                        scaleRatio: ratio,
+                        panDelta: focal,
+                        viewport: _videoSize,
+                      ),
+                  onPinchEnd: () =>
+                      ref.read(videoTransformProvider.notifier).pinchEnd(),
                 ),
               ),
 
@@ -454,8 +501,20 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
         _tapCount = 0;
       });
     } else {
-      // 双击：播放/暂停
+      // 双击：播放/暂停 —— **但先检查缩放态**（用户 2026-10-09 第 5 条）
       _tapCount = 0;
+      // ★ 画面被双指缩放/平移过 ⇒ 双击的语义变成"复位画面"。
+      //   这是主流播放器惯例（YouTube/ bilibili 同款）：
+      //   缩放后用户最想要的不是暂停，而是"把画面弄回正常"；
+      //   若双击仍去切换播放，缩放态就成了"出不去"的死路
+      //   （单指手势在 pinch 后可能落在缩放后的画面上，体验混乱）。
+      //   ⚠️ 用 `ref.read`（事件处理器里不做订阅）。
+      final vt = ref.read(videoTransformProvider);
+      if (vt.scale > 1.0 || vt.offset != Offset.zero) {
+        ref.read(videoTransformProvider.notifier).reset();
+        if (_tapStartedVisible) uiCtl.show();
+        return;
+      }
       // 若第一次点击把控制层藏了，这里恢复 —— 双击不该顺带隐藏 UI
       if (_tapStartedVisible) uiCtl.show();
       widget.callbacks.onTogglePlay();
@@ -619,11 +678,28 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
               // 文字/图标的 `Shadow(blurRadius:6, color: black54)` ——
               // "白字压亮画面"的标准做法，不修改背景也能读。
               // （`PlayerBottomBar` 内每段 Text 已自带该阴影。）
-              Padding(
-                // 顶部留一点：进度条太贴屏幕下边缘的控件行会显得挤
-                padding: const EdgeInsets.only(top: 8, bottom: 2),
-                child: PlayerBottomBar(
-                    key: keys.player.controls,
+              SafeArea(
+                // ★ 用户要求：底栏**左右/底部安全边距**（2026-10-09）
+                //
+                // ## 为什么只用 top=false 的 SafeArea
+                // 顶栏已单独处理顶部安全区；底栏需要的是
+                // **底部手势条**（全面屏 navigation bar）与
+                // **横屏时的左右刘海**内边距。
+                // `top: false` 避免把状态栏高度加进底栏（那会让底栏整体下沉）。
+                top: false,
+                // `maintainBottomViewPadding`：沉浸式全屏下系统手势条仍会
+                // 占位，`SafeArea` 默认在 immersive 时拿不到 bottom padding
+                //（会被当 0），显式打开才能拿到真实手势条高度。
+                maintainBottomViewPadding: true,
+                child: Padding(
+                  // 顶部留一点：进度条太贴屏幕下边缘的控件行会显得挤。
+                  // 横屏（紧凑高度）下再收 2dp，给按钮行留更多垂直空间。
+                  padding: EdgeInsets.only(
+                    top: 8,
+                    bottom: ui.fullscreen ? 0 : 2,
+                  ),
+                  child: PlayerBottomBar(
+                      key: keys.player.controls,
                     progress: playback.progress,
                     position: playback.position,
                     duration: playback.duration,
@@ -685,12 +761,14 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
                       },
                     ),
                 ),
+                ),
               ),
             ],
           ),
         ),
       ),
-    ];  }
+    ];
+  }
 
   SettingsPanelActions _settingsActions(PanelState panel) {
     final vid = ref.read(videoStateProvider.notifier);

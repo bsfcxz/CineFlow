@@ -163,33 +163,72 @@ void main() {
     });
   });
 
-  group('★ 标题单行合并', () {
-    testWidgets('title + subtitle 合并为一行', (tester) async {
+  group('★★ 标题两行 + 剧名在上（用户第三次迭代）', () {
+    testWidgets('★ 上行剧名、下行集数名（顺序必须对调）', (tester) async {
       await tester.pumpWidget(
         _wrapTopBar(title: '第 1 集 · 星斗初涉', subtitle: '斗罗大陆Ⅱ绝世唐门'),
       );
       await tester.pump();
 
-      expect(find.text('第 1 集 · 星斗初涉 · 斗罗大陆Ⅱ绝世唐门'), findsOneWidget,
-          reason: '★ 顶栏应合并成一行（用户要求）');
+      // 两行都在
+      expect(find.text('斗罗大陆Ⅱ绝世唐门'), findsOneWidget,
+          reason: '★ 剧名必须显示');
+      expect(find.text('第 1 集 · 星斗初涉'), findsOneWidget,
+          reason: '★ 集数名必须显示');
+
+      // ## 核心断言：**上下顺序**
+      // 只断言"两个都在"是不够的 —— 那对"谁在上"完全不敏感。
+      // 用户明确要求"上方显示剧名，下方小标题显示剧集名"。
+      final upper = tester.getRect(find.text('斗罗大陆Ⅱ绝世唐门'));
+      final lower = tester.getRect(find.text('第 1 集 · 星斗初涉'));
+      expect(upper.top, lessThan(lower.top),
+          reason: '★ 剧名(top=${upper.top}) 必须在集数名(top=${lower.top}) **上方**。\n'
+              '    用户要求调换顺序：上方剧名、下方集数名。');
+
+      // 字号层级：主（剧名）> 次（集数名）
+      final upperSize =
+          tester.widget<Text>(find.text('斗罗大陆Ⅱ绝世唐门')).style!.fontSize!;
+      final lowerSize =
+          tester.widget<Text>(find.text('第 1 集 · 星斗初涉')).style!.fontSize!;
+      expect(upperSize > lowerSize, isTrue,
+          reason: '★ 剧名字号($upperSize) 应大于集数名($lowerSize) —— 否则无主次');
     });
 
-    testWidgets('无 subtitle 时不留孤立间隔符', (tester) async {
+    testWidgets('两行都单行 + 省略号（长文本不撑破顶栏）', (tester) async {
+      await tester.pumpWidget(
+        _wrapTopBar(title: '第 1 集 · 一个非常非常长的本集标题用来测试省略号行为',
+            subtitle: '一个同样非常非常长的剧名用来测试省略号行为'),
+      );
+      await tester.pump();
+
+      for (final t in tester.widgetList<Text>(find.byType(Text))) {
+        if (t.data == null) continue;
+        expect(t.maxLines, 1, reason: '★ 每行都必须单行：${t.data}');
+        expect(t.overflow, TextOverflow.ellipsis,
+            reason: '★ 超长必须省略号：${t.data}');
+      }
+    });
+
+    testWidgets('★ 无剧名（电影）时第一行回退成集数名，且不重复第二行', (tester) async {
+      // 电影：`subtitle` 为 null，`title` = 片名。
+      // 若第一行直接显示 `subtitle` ⇒ 电影顶栏会**一片空白**。
       await tester.pumpWidget(_wrapTopBar(title: 'Interstellar.mkv'));
       await tester.pump();
 
-      expect(find.text('Interstellar.mkv'), findsOneWidget);
-      expect(find.text('Interstellar.mkv · '), findsNothing,
-          reason: '★ subtitle 为空时不能留下 ` · ` 尾巴');
+      expect(find.text('Interstellar.mkv'), findsOneWidget,
+          reason: '★ 无剧名时必须回退显示集数名/片名（否则顶栏空白）');
+      // 且**不能**出现两行同文（第一行回退 + 第二行又显示一遍）
+      expect(find.text('Interstellar.mkv'), findsOneWidget,
+          reason: '★ 只应出现一次 —— 第二行不该再重复');
     });
 
-    testWidgets('subtitle 与 title 相同时只显示一次', (tester) async {
-      // 防御重复（第 46 轮修过"顶栏集数重复显示"）
+    testWidgets('★ 剧名与集数名相同时只显示一行（防重复）', (tester) async {
+      // 异常数据防御（第 46 轮修过"顶栏集数重复显示"）
       await tester.pumpWidget(_wrapTopBar(title: '同名', subtitle: '同名'));
       await tester.pump();
 
       expect(find.text('同名'), findsOneWidget,
-          reason: '★ 两者相同时不应出现 `同名 · 同名`');
+          reason: '★ 两者相同时不该出现上下两行同文');
     });
   });
 

@@ -269,9 +269,18 @@ static void handle_property(mpv_event_property *p) {
         if (p->format == MPV_FORMAT_DOUBLE) emit_property_number(p->name, *(double *)p->data);
         return;
     }
-    /* 视频原始尺寸：Dart 侧据此算宽高比（FittedBox 里用），
-     * 否则只能猜 16:9，遇到 4:3 / 2.35:1 片源会变形或留错黑边。 */
-    if (strcmp(p->name, "width") == 0 || strcmp(p->name, "height") == 0) {
+    /* 视频显示尺寸：Dart 侧据此算宽高比（FittedBox 里用），
+     * 否则只能猜 16:9，遇到 4:3 / 2.35:1 片源会变形或留错黑边。
+     *
+     * ★ 2026-10-09：`width`/`height` → **`dwidth`/`dheight`**
+     * 两者语义不同（mpv 手册）：
+     *   · width/height   = **编码**尺寸（不含旋转、不含 SAR）
+     *   · dwidth/dheight = **显示**尺寸（已应用旋转与像素宽高比）
+     * 手机竖拍视频常是 1920x1080 + rotate=90：按编码尺寸算出 16:9，
+     * 画面被横置拉宽；按显示尺寸才是 9:16。方向自适应（用户
+     * 2026-10-09 要求"横屏 16:9 / 竖屏 9:16"）必须建立在显示尺寸上。
+     * 本构建 libmpv 已含 dwidth/dheight 属性（字符串表核实过）。 */
+    if (strcmp(p->name, "dwidth") == 0 || strcmp(p->name, "dheight") == 0) {
         if (p->format == MPV_FORMAT_INT64) {
             emit_property_number(p->name, (double)(*(int64_t *)p->data));
         }
@@ -477,9 +486,9 @@ Java_com_cineflow_app_player_MPVLib_nativeInit(JNIEnv *env, jclass clazz) {
     mpv_observe_property(g_mpv, 0, "aid", MPV_FORMAT_STRING);
     mpv_observe_property(g_mpv, 0, "sid", MPV_FORMAT_STRING);
     mpv_observe_property(g_mpv, 0, "track-list", MPV_FORMAT_STRING);
-    /* 视频原始尺寸（宽高比要用） */
-    mpv_observe_property(g_mpv, 0, "width", MPV_FORMAT_INT64);
-    mpv_observe_property(g_mpv, 0, "height", MPV_FORMAT_INT64);
+    /* 视频显示尺寸（宽高比要用；dwidth/dheight 已含旋转与 SAR 修正） */
+    mpv_observe_property(g_mpv, 0, "dwidth", MPV_FORMAT_INT64);
+    mpv_observe_property(g_mpv, 0, "dheight", MPV_FORMAT_INT64);
 
     g_event_running = 1;
     if (pthread_create(&g_event_thread, NULL, event_loop, NULL) == 0) {

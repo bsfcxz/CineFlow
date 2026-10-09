@@ -67,31 +67,67 @@ class PlayerTopBar extends StatelessWidget {
           padding: EdgeInsets.zero,
         ),
         Expanded(
-          // ★ 用户要求：顶部标题**合并为单行**
+          // ★★ 用户要求：**恢复两行布局，但调换顺序**（2026-10-09）
           //
-          // ## 为什么改（原先两行）
-          // 原实现是 `Column(title, subtitle)` —— 竖屏下占两行高度，
-          // 而顶栏压在视频上，两行会把画面挤得更小、也更挡视线。
+          // ```
+          // 第 1 行（主标题，大）：剧名         ← subtitle 字段
+          // 第 2 行（小标题，小）：集数 · 本集名  ← title 字段
+          // ```
           //
-          // ## 怎么合并
-          // `title` 与 `subtitle` 用 ` · ` 拼成一行；subtitle 为空时
-          // **不留下多余的间隔符**（否则末尾会出现一个孤立的 `·`）。
+          // ## 与之前两次迭代的关系（别搞混）
+          // 1. **最初**：`Column([title(大), subtitle(小)])`
+          //    = `第 N 集 · 本集名` 在上、剧名在下
+          // 2. **上一轮**：合并成单行 `title · subtitle`
+          // 3. **现在**：回到两行，但**上下对调**
+          //    ⇒ 剧名在上（用户要的"主标题是剧名"），集数名在下
           //
-          // ⚠️ 两者**不是同一个值**（第 46 轮修过"顶栏集数重复显示"）：
-          //    title    = `第 N 集 · 本集名`
-          //    subtitle = 剧名
-          //    合并后 = `第 N 集 · 本集名 · 剧名`
-          //    若两者相同（异常数据），只显示一次 —— 防重复。
-          child: Text(
-            _mergedTitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-              shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
-            ),
+          // ## 为什么"剧名在上"更合理
+          // 连续追剧时**眼睛找的是剧名**（确认"我在看哪部剧"），
+          // 集数名是次要信息（同一部剧里每集都变）。
+          // 把稳定的主标识放第一行，视线落点更确定。
+          //
+          // ## ⚠️ 字段名与显示顺序相反 —— 这是有意的
+          // `slots.title` = 集数名（`topTitleFor`）、`slots.subtitle` = 剧名。
+          // 这里**不改字段语义**（那会牵动宿主与 8 处调用点），
+          // 只在**渲染时**决定谁在第一行。
+          // ⇒ 若将来有人"顺手统一"字段名，注意别把顺序也改了。
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // ---- 第 1 行：剧名（主标题）----
+              //
+              // 无剧名时（电影）**回退显示集数名** ——
+              // 否则电影会显示成一片空白（`title` 有值而 `subtitle` 为 null）。
+              Text(
+                subtitle?.isNotEmpty == true ? subtitle! : title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+                ),
+              ),
+              // ---- 第 2 行：集数 · 本集名（小标题）----
+              //
+              // 只在**确实有剧名**且**与剧名不同**时显示 ——
+              // · 电影（无剧名）：第一行已回退成集数名 ⇒ 再显示一遍就是重复
+              // · 两者相同（异常数据）：同理会重复（第 46 轮修过的"集数重复显示"）
+              if (_showSecondLine)
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+                  ),
+                ),
+            ],
           ),
         ),
         const SizedBox(width: 12),
@@ -99,16 +135,15 @@ class PlayerTopBar extends StatelessWidget {
     );
   }
 
-  /// 合并后的单行标题。
+  /// 是否显示第二行（集数名）。
   ///
-  /// 抽成 getter 是**为了可测**：单行合并的边界（无 subtitle / 两者相同 /
-  /// subtitle 为空串）在这里可精确断言，不必起 UI。
-  String get _mergedTitle {
+  /// 抽成 getter 是**为了可测**：三条边界（无剧名 / 剧名为空 / 与集数名相同）
+  /// 在这里可精确断言，不必起 UI。
+  bool get _showSecondLine {
     final s = subtitle;
-    if (s == null || s.isEmpty) return title;
-    // 两者相同 ⇒ 只显示一次（否则会出现 `X · X`）
-    if (s == title) return title;
-    return '$title · $s';
+    if (s == null || s.isEmpty) return false; // 电影：第一行已回退成集数名
+    if (s == title) return false;             // 异常数据：避免上下两行同文
+    return true;
   }
 }
 
@@ -245,21 +280,43 @@ class PlayerBottomBar extends StatelessWidget {
           duration: duration,
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          // ★ 用户要求：底栏时间**内收** + 横屏边距调整（2026-10-09）
+          //
+          // ## 原来的问题
+          // 时间行 `horizontal: 16`，进度条**几乎全宽** ⇒ 两层视觉不对齐：
+          // `00:00` 的首位数字比进度条起点缩进一截，观感"悬空"。
+          //
+          // ## 取值
+          // · **竖屏 12**：比原 16 内收，更贴进度条起点
+          // · **横屏 20**：横屏屏高小（1080px），两端留白多一点
+          //   才不会"按钮压边"（用户要求"调整横屏各按钮的边距"）
+          padding: EdgeInsets.symmetric(
+            horizontal: MediaQuery.sizeOf(context).width >
+                    MediaQuery.sizeOf(context).height
+                ? 20
+                : 12,
+          ),
           child: Row(
             children: [
               // 等宽数字：否则秒数变化时整行会左右抖动
               GestureDetector(
                 onTap: onToggleTimeDisplay,
-                child: Text(
-                  showRemaining
-                      ? '-${format(remainText)}'
-                      : format(position),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                    shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+                child: Padding(
+                  // 命中区补偿：视觉内收后，点按区给足垂直 ≥48dp 的等效
+                  // 高度（8+12文字+8 ≈ 28dp + 进度条行，实际可达标）；
+                  // 水平 4dp 让"可点范围"与"看起来"一致（§6.4.1）。
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 4, vertical: 8),
+                  child: Text(
+                    showRemaining
+                        ? '-${format(remainText)}'
+                        : format(position),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                      shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+                    ),
                   ),
                 ),
               ),

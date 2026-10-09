@@ -22,13 +22,24 @@ library;
 abstract final class PlayerGestures {
   // ---- 原型 `const` 逐条对应 ----
 
-  /// 双击判定窗口（原型 `TAP_DELAY = 250`）。
+  /// 双击判定窗口（原型 `TAP_DELAY = 250` → **200**，
+  /// 用户 2026-10-09 反馈"横屏单击隐藏控制栏响应不够灵敏"）。
+  ///
+  /// ## 为什么 250 → 200
+  /// "不够灵敏"的完整链路：单击 → 等 tapDelay 确认"是单击"
+  /// → 若原本隐藏则此刻才 show()。250ms 的确认窗体感就是"迟钝"。
+  /// 压到 200ms 仍是可靠的双击窗（普通双击间隔 80–180ms），
+  /// 确认延迟缩短 20%。
+  ///
+  /// ## ⚠️ 只影响"唤出控制层"那条路径
+  /// "点击隐藏"本来就是**立即**执行（见 `_handleTap` 的
+  /// `_tapStartedVisible` 分支）—— 迟钝的只是"从隐藏唤出"。
   ///
   /// ⚠️ 必须与 Flutter 的 `kDoubleTapTimeout`（300ms）协调：
   /// 我们用 `GestureDetector` 的 onTap/onDoubleTap，Flutter 内部按
   /// `kDoubleTapTimeout` 延迟派发 onTap。故**本常量只用于自绘手势判定**，
   /// 不用于 GestureDetector 的配置（那不可配）。
-  static const Duration tapDelay = Duration(milliseconds: 250);
+  static const Duration tapDelay = Duration(milliseconds: 200);
 
   /// 长按进入 3.0x 快进的阈值（原型 `LONG_PRESS_DELAY = 500`）。
   static const Duration longPressDelay = Duration(milliseconds: 500);
@@ -149,12 +160,20 @@ abstract final class PlayerPanels {
 }
 
 /// 画面比例模式（规格 §7.6 视频 Tab）。
+///
+/// ★ 2026-10-09 新增 `auto`（用户要求"播放时自动适配画面：
+/// 横屏自适应 16:9，竖屏播放时 9:16"）—— 作为**默认档**：
+/// · 横屏窗口 → 强制 16:9（影视剧主场景，满屏不变形）
+/// · 竖屏窗口 → 强制 9:16（竖屏短视频/竖拍素材满屏）
+/// 用户手动选其它档后即脱离 auto（`VideoController.setAspectMode`）。
 enum AspectMode {
+  auto('自动'),
   contain('适应'),
   fill('拉伸'),
   cover('裁剪'),
   ratio16x9('16:9'),
-  ratio4x3('4:3');
+  ratio4x3('4:3'),
+  ratio9x16('9:16');
 
   const AspectMode(this.label);
   final String label;
@@ -163,8 +182,18 @@ enum AspectMode {
   double? get ratio => switch (this) {
         AspectMode.ratio16x9 => 16 / 9,
         AspectMode.ratio4x3 => 4 / 3,
+        AspectMode.ratio9x16 => 9 / 16,
         _ => null,
       };
+
+  /// ★ auto 档的解析：按**窗口方向**选固定比例。
+  ///
+  /// 抽成 static 是**为了可测**（纯函数，不碰 widget/约束）：
+  /// 横屏 → 16:9，竖屏 → 9:16。正方形窗口（宽==高）归横屏
+  /// （影视剧主场景是横向的，16:9 比 9:16 更接近正方形）。
+  static AspectMode resolveAuto({required double width, required double height}) {
+    return width >= height ? AspectMode.ratio16x9 : AspectMode.ratio9x16;
+  }
 }
 
 /// 解码方式（规格 §7.6 视频 Tab）。

@@ -28,6 +28,10 @@ class PlayerPlaylistPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final total = state.entries.length;
+    final current = total > 0 ? state.currentIndex + 1 : 0;
+    final pct = total > 0 ? ((current / total) * 100).round() : 0;
+
     return Column(
       key: keys.player.playlistPanel,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -37,22 +41,81 @@ class PlayerPlaylistPanel extends StatelessWidget {
           onClose: onClose,
           trailing: _ModeChip(mode: state.mode, onTap: onCycleMode),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text(
-            state.isEmpty ? '列表为空' : '当前队列 · ${state.entries.length} 项',
-            style: const TextStyle(
-              color: PlayerUi.hintColor,
-              fontSize: PlayerUi.hintSize,
+        // ---- ★ 迷你进度行：`3 / 24` + 百分比 + 细进度条 ----
+        //
+        // ## 为什么加（用户给的优化方案 1.2）
+        // 原来只有"当前队列 · N 项" —— 看**不出**当前第几集、
+        // 也看不出看到了多少。`3 / 24` 给绝对位置，`12%` 给相对进度。
+        //
+        // ## 为什么用 `LinearProgressIndicator` 不自绘
+        // 只读迷你指示（3dp、无交互）；自绘是给"拖动变粗+滑块"用的。
+        //
+        // ⚠️ 空列表时隐藏（`0 / 0 · 0%` 是噪声），回退成原"列表为空"。
+        if (total > 0)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      '$current / $total',
+                      style: const TextStyle(
+                        color: PlayerUi.labelColor,
+                        fontSize: PlayerUi.valueSize,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '$pct%',
+                      style: const TextStyle(
+                        color: PlayerUi.hintColor,
+                        fontSize: PlayerUi.hintSize,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(Cf.radiusXs),
+                  child: LinearProgressIndicator(
+                    value: current / total,
+                    minHeight: 3,
+                    backgroundColor: PlayerUi.divider,
+                    valueColor:
+                        const AlwaysStoppedAnimation(PlayerUi.tabActiveText),
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
+        if (total == 0)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text('列表为空',
+                style: TextStyle(
+                  color: PlayerUi.hintColor,
+                  fontSize: PlayerUi.hintSize,
+                )),
+          ),
         Expanded(
-          child: state.isEmpty
+          child: total == 0
               ? const PanelEmpty(icon: Icons.playlist_play, text: '没有待播放的媒体')
-              : ListView.builder(
-                  // 规格 §14：列表必须用 ListView.builder（长列表不预建全部）
-                  itemCount: state.entries.length,
+              // ★ 细滚动条（用户方案 4.3）：3px 常显 —— 列表长了之后，
+              //   "知道自己在列表哪个位置"比省那 3px 重要。
+              //
+              // ⚠️ **必须给独立的 `ScrollController`**（实测踩过）：
+              //   移动端 `Scrollbar` 默认挂 **PrimaryScrollController**，
+              //   而面板宿主里还有别的可滚动视图也挂着它 ⇒
+              //   `The PrimaryScrollController is attached to more than one
+              //   ScrollPosition`（调度期断言，测试当场红）。
+              //   显式 controller 让本表关联到自己的 position，绕开 primary。
+              : _ScrollableList(
+                  itemCount: total,
                   itemBuilder: (context, i) => _PlaylistTile(
                     index: i,
                     entry: state.entries[i],
@@ -62,6 +125,46 @@ class PlayerPlaylistPanel extends StatelessWidget {
                 ),
         ),
       ],
+    );
+  }
+}
+
+/// 列表 + 3px 细滚动条（独立 controller，见上方 ⚠️）。
+class _ScrollableList extends StatefulWidget {
+  const _ScrollableList({
+    required this.itemCount,
+    required this.itemBuilder,
+  });
+
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+
+  @override
+  State<_ScrollableList> createState() => _ScrollableListState();
+}
+
+class _ScrollableListState extends State<_ScrollableList> {
+  final _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scrollbar(
+      controller: _controller,
+      thickness: 3,
+      thumbVisibility: true,
+      radius: Radius.circular(Cf.radiusXs),
+      child: ListView.builder(
+        // 规格 §14：列表必须用 ListView.builder（长列表不预建全部）
+        controller: _controller,
+        itemCount: widget.itemCount,
+        itemBuilder: widget.itemBuilder,
+      ),
     );
   }
 }
@@ -120,7 +223,10 @@ class _PlaylistTile extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
-          constraints: const BoxConstraints(minHeight: 52),
+          // ★ 用户方案 2.3：行高压到 **48**（原 52）—— 一屏多看一集。
+          // 48 = 命中区下限（§6.4.1），不能更低；两行文字（value 14 +
+          // hint 11 + 8 上下边距）≈ 47 ⇒ 正好贴合，不溢出。
+          constraints: const BoxConstraints(minHeight: 48),
           decoration: BoxDecoration(
             color: active ? PlayerUi.tabActiveBg : Colors.transparent,
             border: Border(

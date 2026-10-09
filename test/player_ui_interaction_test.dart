@@ -334,7 +334,12 @@ void main() {
 
       expect(find.text('第一集'), findsOneWidget);
       expect(find.text('第三集'), findsOneWidget);
-      expect(find.text('当前队列 · 3 项'), findsOneWidget);
+      // ★ 用户方案 1.2（2026-10-09）：头部改成迷你进度行
+      //   `当前第几 / 总数` + 百分比 + 细进度条（原"当前队列 · 3 项"已替换）
+      expect(find.text('1 / 3'), findsOneWidget,
+          reason: '★ 头部应显示绝对位置（当前第几 / 总数）');
+      expect(find.text('33%'), findsOneWidget,
+          reason: '★ 头部应显示相对进度百分比');
 
       await tester.tap(find.text('第三集'));
       await tester.pump(const Duration(milliseconds: 400));
@@ -576,33 +581,48 @@ void main() {
   });
 
   group('顶栏（§18 清单相关）', () {
-    testWidgets('显示文件名；长文件名不溢出', (tester) async {
+    testWidgets('两行：上行剧名，下行集数名', (tester) async {
       final (_, _) = await pumpPlayer(tester, size: const Size(360, 780));
-      // ★ 用户要求"顶部标题合并为单行"（2026-10-09）后，顶栏不再是
-      //   「大标题 + 小副标题」两行，而是 `title · subtitle` 一行。
-      //   故断言改为**合并后的整串**（原断言只查 title，已过时）。
+      // ★★ 用户要求（2026-10-09 第三次迭代）：**恢复两行 + 调换顺序**
       //
-      //   `pumpPlayer` 传的是 title='Interstellar.2014.2160p.HDR.mkv'
-      //   + subtitle='测试副标题' ⇒ 合并为 `…mkv · 测试副标题`。
-      expect(find.text('Interstellar.2014.2160p.HDR.mkv · 测试副标题'),
-          findsOneWidget,
-          reason: '顶栏应把 title 与 subtitle 合并成一行显示');
-      // 单行约束仍在（长文件名要省略号收敛，不能撑破顶栏）
-      final title = tester.widget<Text>(
-          find.text('Interstellar.2014.2160p.HDR.mkv · 测试副标题'));
-      expect(title.maxLines, 1, reason: '★ 必须是单行（maxLines: 1）');
-      expect(title.overflow, TextOverflow.ellipsis,
-          reason: '★ 超长必须省略号 —— 否则会撑破顶栏');
+      //   第 1 行（主，大字号）= 剧名      ← 传进来的 `subtitle`
+      //   第 2 行（小，小字号）= 集数名    ← 传进来的 `title`
+      //
+      // ⚠️ **字段名与显示顺序相反**，这是有意的（见 `PlayerTopBar` 注释）：
+      //    不改字段语义（会牵动宿主与多处调用点），只在渲染时决定谁在上。
+      //
+      // `pumpPlayer` 传的是
+      //   title='Interstellar.2014.2160p.HDR.mkv'（集数位）
+      //   subtitle='测试副标题'（剧名位）
+      // ⇒ 剧名 `测试副标题` 应在**上**，集数名在**下**。
+      expect(find.text('测试副标题'), findsOneWidget,
+          reason: '★ 主标题（大字号）应是**剧名**');
+      expect(find.text('Interstellar.2014.2160p.HDR.mkv'), findsOneWidget,
+          reason: '★ 小标题应是**集数名**');
+
+      // 两行的**上下次序**必须真的对调（不能只断言"两个都在"）
+      final upper = tester.getRect(find.text('测试副标题'));
+      final lower =
+          tester.getRect(find.text('Interstellar.2014.2160p.HDR.mkv'));
+      expect(upper.top, lessThan(lower.top),
+          reason: '★ 剧名必须在**上**、集数名在**下**（用户明确要求调换顺序）');
+
+      // 字号也要对应（主大 / 次小），否则"大标题"没有视觉层级
+      final upperStyle = tester.widget<Text>(find.text('测试副标题')).style!;
+      final lowerStyle = tester
+          .widget<Text>(find.text('Interstellar.2014.2160p.HDR.mkv'))
+          .style!;
+      expect(upperStyle.fontSize! > lowerStyle.fontSize!, isTrue,
+          reason: '★ 剧名字号应大于集数名（否则没有主次）');
     });
 
-    testWidgets('只有 title 时不留下孤立的间隔符', (tester) async {
-      // 合并的边界：subtitle 为空 ⇒ 不应出现 ` · ` 尾巴
+    testWidgets('长集数名用省略号收敛，不撑破顶栏', (tester) async {
       final (_, _) = await pumpPlayer(tester, size: const Size(360, 780));
-      expect(find.text('Interstellar.2014.2160p.HDR.mkv · 测试副标题'),
-          findsOneWidget);
-      // 反向：不应存在"只有 title 却带尾巴"的写法
-      expect(find.text('Interstellar.2014.2160p.HDR.mkv · '), findsNothing,
-          reason: '★ subtitle 为空时不能留下孤立的 ` · `');
+      final lower = tester
+          .widget<Text>(find.text('Interstellar.2014.2160p.HDR.mkv'));
+      expect(lower.maxLines, 1, reason: '★ 每行都必须单行');
+      expect(lower.overflow, TextOverflow.ellipsis,
+          reason: '★ 超长必须省略号 —— 否则会撑破顶栏');
     });
 
     testWidgets('点返回 → 回调', (tester) async {

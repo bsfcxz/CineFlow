@@ -13,6 +13,7 @@ library;
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:cineflow/player/domain/models/media_state.dart';
 import 'package:cineflow/player/domain/models/playback_state.dart';
 import 'package:cineflow/player/domain/models/ui_visibility_state.dart';
 import 'package:cineflow/player/domain/player_constants.dart';
@@ -173,8 +174,10 @@ void main() {
     test('源自 HTML 原型 JS 的实测值', () {
       expect(PlayerGestures.longPressDelay,
           const Duration(milliseconds: 500)); // LONG_PRESS_DELAY
+      // ★ 2026-10-09 用户反馈"单击唤出不够灵敏" ⇒ 250 → 200
+      //  （"点击隐藏"一直是立即执行，此值只影响"从隐藏唤出"）
       expect(PlayerGestures.tapDelay,
-          const Duration(milliseconds: 250)); // TAP_DELAY
+          const Duration(milliseconds: 200)); // TAP_DELAY（用户调优）
       expect(PlayerGestures.uiHideDelay, const Duration(seconds: 3)); // UI_HIDE_DELAY
       expect(PlayerGestures.moveSlop, 10); // Math.abs(dx) > 10
       expect(PlayerGestures.directionSlop, 15); // adx < 15 && ady < 15
@@ -217,14 +220,37 @@ void main() {
   });
 
   group('AspectMode / DecodeMode 文案（规格 §7.6）', () {
-    test('画面比例五档，文案与规格一致', () {
+    test('画面比例七档（auto 为默认），文案一致', () {
+      // ★ 2026-10-09 用户要求"自动适配（横 16:9 / 竖 9:16）"
+      //   ⇒ 新增首档 `自动` 与尾档 `9:16`
       expect(AspectMode.values.map((e) => e.label).toList(),
-          ['适应', '拉伸', '裁剪', '16:9', '4:3']);
+          ['自动', '适应', '拉伸', '裁剪', '16:9', '4:3', '9:16']);
+      // 默认档必须是自动（方向自适应是新默认行为）
+      expect(
+        const VideoState().aspectMode,
+        AspectMode.auto,
+        reason: '★ 默认应为 auto（用户要求的自动适配）',
+      );
     });
 
-    test('16:9 与 4:3 有固定比例，其余由引擎决定', () {
+    test('auto 按窗口方向解析：横→16:9、竖→9:16、正方归横', () {
+      // 横屏
+      expect(AspectMode.resolveAuto(width: 2400, height: 1080),
+          AspectMode.ratio16x9);
+      // 竖屏
+      expect(AspectMode.resolveAuto(width: 1080, height: 2400),
+          AspectMode.ratio9x16);
+      // 正方形：归横（影视剧主场景横向，16:9 比 9:16 更接近 1:1）
+      expect(AspectMode.resolveAuto(width: 1000, height: 1000),
+          AspectMode.ratio16x9);
+    });
+
+    test('16:9 / 4:3 / 9:16 有固定比例，其余由引擎决定', () {
       expect(AspectMode.ratio16x9.ratio, closeTo(16 / 9, 0.001));
       expect(AspectMode.ratio4x3.ratio, closeTo(4 / 3, 0.001));
+      expect(AspectMode.ratio9x16.ratio, closeTo(9 / 16, 0.001));
+      expect(AspectMode.auto.ratio, isNull,
+          reason: 'auto 本身无固定比例 —— 由 resolveAuto 按方向解析');
       expect(AspectMode.contain.ratio, isNull);
       expect(AspectMode.fill.ratio, isNull);
       expect(AspectMode.cover.ratio, isNull);

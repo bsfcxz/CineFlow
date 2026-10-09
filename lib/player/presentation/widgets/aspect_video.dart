@@ -27,8 +27,24 @@ class AspectVideo extends ConsumerWidget {
     final aspect = ref.watch(videoStateProvider.select((s) => s.aspectMode));
     final texture = Texture(textureId: textureId);
 
-    return switch (aspect) {
-      // 适应（默认）：视频完整可见，黑边留白
+    // ★ auto 档（用户 2026-10-09："横屏 16:9 / 竖屏 9:16"）
+    //
+    // ## 为什么在 widget 里解析而不是写进 provider
+    // 方向是**窗口属性**，随旋转实时变；写进 provider 会引入
+    // "方向变化要通知 provider"的额外链路。widget 里每次 build
+    // 直接读 `MediaQuery`，天然跟随旋转，无需任何事件。
+    //
+    // ## 纯函数解析（`AspectMode.resolveAuto`）
+    // 决策本身可单测（不碰 widget）。
+    final effective = aspect == AspectMode.auto
+        ? AspectMode.resolveAuto(
+            width: MediaQuery.sizeOf(context).width,
+            height: MediaQuery.sizeOf(context).height,
+          )
+        : aspect;
+
+    return switch (effective) {
+      // 适应（原默认）：视频完整可见，黑边留白
       AspectMode.contain => Center(
           child: AspectRatio(aspectRatio: videoRatio, child: texture),
         ),
@@ -55,6 +71,14 @@ class AspectVideo extends ConsumerWidget {
         ),
       AspectMode.ratio4x3 => Center(
           child: AspectRatio(aspectRatio: 4 / 3, child: texture),
+        ),
+      AspectMode.ratio9x16 => Center(
+          child: AspectRatio(aspectRatio: 9 / 16, child: texture),
+        ),
+      // auto 已在上面解析成固定档，逻辑上不会再走到这里；
+      // 保留分支以穷尽枚举（编译器要求），落到 contain 兜底。
+      AspectMode.auto => Center(
+          child: AspectRatio(aspectRatio: videoRatio, child: texture),
         ),
     };
   }

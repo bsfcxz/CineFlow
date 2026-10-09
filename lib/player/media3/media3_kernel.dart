@@ -117,6 +117,34 @@ class Media3Kernel implements PlayerKernel {
             if (d is Map<String, dynamic>) {
               _videoWidth = (d['width'] as num?)?.toInt() ?? 0;
               _videoHeight = (d['height'] as num?)?.toInt() ?? 0;
+              // ★ 2026-10-09：把旋转与 SAR 换算进**显示尺寸**
+              //
+              // Media3 的 `VideoSize` 语义（官方文档）：
+              //   · width/height               = 编码像素尺寸
+              //   · unappliedRotationDegrees    = **未应用**的旋转角（调用方自行处理）
+              //   · pixelWidthHeightRatio       = 像素宽高比（SAR ≠ 1 时宽要乘）
+              // 原实现只取 width/height ⇒ 竖拍视频（rotate=90）被当 16:9 显示。
+              //
+              // ## 换算顺序（先 SAR 后旋转，与 Android `TextureView` 一致）
+              // 1. SAR：显示宽 = width × ratio
+              // 2. 旋转 90/270：宽高**对调**
+              //
+              // 与 mpv 内核（dwidth/dheight）对齐后，两内核的
+              // `aspectRatio` 语义一致 —— 方向自适应（横 16:9/竖 9:16）
+              // 才能对两内核都成立。
+              final par = (d['pixelWidthHeightRatio'] as num?)?.toDouble() ?? 1.0;
+              final rot = (d['unappliedRotationDegrees'] as num?)?.toInt() ?? 0;
+              var dw = _videoWidth * par;
+              var dh = _videoHeight.toDouble();
+              if (rot == 90 || rot == 270) {
+                final t = dw;
+                dw = dh;
+                dh = t;
+              }
+              if (dw > 0 && dh > 0) {
+                _videoWidth = dw.round();
+                _videoHeight = dh.round();
+              }
             }
           }
         case 'end-file':

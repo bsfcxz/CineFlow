@@ -135,7 +135,11 @@ class AudioTrack {
 /// 视频参数状态。
 class VideoState {
   const VideoState({
-    this.aspectMode = AspectMode.contain,
+    // ★ 2026-10-09 默认档 contain → auto（用户要求"播放时自动适配：
+    // 横屏 16:9 / 竖屏 9:16"）。旧页与既有用户若手动选过档，
+    // 走的是会话内状态（未持久化），升级后第一次进播放页会落到 auto ——
+    // 与"新默认"一致，属预期。
+    this.aspectMode = AspectMode.auto,
     this.decodeMode = DecodeMode.hardware,
     this.brightness = 0,
     this.contrast = 0,

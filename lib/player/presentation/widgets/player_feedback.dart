@@ -86,20 +86,21 @@ class PlayerFeedbackLayer extends StatelessWidget {
 
   /// 只决定"显示哪个指示器"，**不负责**命中过滤（外层已统一处理）。
   Widget _buildIndicator(BuildContext context) {
-    // 长按倍速：**透明小徽章 + 左上角**（用户要求：不遮挡视频）
+    // 长按倍速：**视频上部中间**（用户 2026-10-09 明确指定）
     //
-    // ⚠️ 不用 `_CenterSlot`（居中）—— 那会正好压住画面主体，
-    //    而长按是持续状态，遮挡时间最久。
+    // ## 位置的三次迭代（别改回去）
+    // 1. 最初：屏幕正中 —— 压住画面主体，长按又是持续状态 ⇒ 被否
+    // 2. 上一版：右上角（topRight + top:90）—— 避开了主体但**不显眼**
+    // 3. 现在：**上部中间** —— 用户指定。top 96（顶栏之下、画面主体之上），
+    //    水平居中（`Alignment.topCenter`）。
+    //
+    // ⚠️ 仍然**不用 `_CenterSlot`**：那是 `Center`（垂直居中），
+    //    会落回画面主体上。这里只要"水平居中 + 贴顶"。
     if (isLongPressing) {
-      // 位置选右上的理由（不是"居中随便挪个角"）：
-      //   · 居中会压住画面主体，且长按是持续状态，遮挡最久
-      //   · 左上角与顶栏返回按钮同区（顶栏全宽，y<480）
-      //   · 右上、顶栏**下方**：不撞顶栏，也不撞右中部的锁按钮
-      //     （锁按钮实测 y 474..606；徽章放 top≈90..300 一带）
       return Align(
-        alignment: Alignment.topRight,
+        alignment: Alignment.topCenter,
         child: Padding(
-          padding: const EdgeInsets.only(right: 16, top: 90),
+          padding: const EdgeInsets.only(top: 96),
           child: _LongPressBadge(speed: longPressSpeed),
         ),
       );
@@ -169,11 +170,12 @@ class _CenterSlot extends StatelessWidget {
 /// ## 现在的设计
 /// | 维度 | 原 | 现 |
 /// |---|---|---|
-/// | 位置 | 屏幕正中 | **左上角**（避开画面主体） |
-/// | 底色 | `0xCC000000` 80% 黑 | `0x33FFFFFF` 20% 白（**很淡**） |
+/// | 位置 | 屏幕正中 | **上部中间**（用户 2026-10-09 指定）|
+/// | 底色 | `0xCC000000` 80% 黑 | `0x33FFFFFF` 20% 白（**很淡**）|
 /// | 字号 | 16 | 12 |
 /// | 图标 | 22 | 14 |
 /// | 内边距 | 18×12 | 8×4 |
+/// | 文案 | `3.0x` | **`3倍速播放中`**（用户指定：要"状态"不是"数值"）|
 ///
 /// ## 为什么底色用"淡白"而不是"更淡的黑"
 /// 视频画面可能是亮的也可能是暗的。黑色在暗画面上看不见（等于没提示），
@@ -189,7 +191,7 @@ class _LongPressBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     return IgnorePointer(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
           color: PlayerUi.longPressBg,
           borderRadius: BorderRadius.circular(Cf.radiusXs),
@@ -199,9 +201,12 @@ class _LongPressBadge extends StatelessWidget {
           children: [
             const Icon(Icons.fast_forward,
                 size: 14, color: PlayerUi.longPressText),
-            const SizedBox(width: 4),
+            const SizedBox(width: 5),
             Text(
-              '${speed.toStringAsFixed(1)}x',
+              // ★ 用户要求："3倍速播放中" —— 说的是**正在发生的状态**，
+              //   不是抽象的倍速数值。`toStringAsFixed(0)`：整数倍速不带
+              //   小数点（3.0 → 3）；若将来支持 1.25 这类再改格式化。
+              '${speed.toStringAsFixed(0)}倍速播放中',
               style: const TextStyle(
                 color: PlayerUi.longPressText,
                 fontSize: 12,
