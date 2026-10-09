@@ -818,6 +818,7 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 | **验证纪律：三类"假绿"怎么避免** | [`docs/VERIFICATION-DISCIPLINE.md`](docs/VERIFICATION-DISCIPLINE.md)（§8.4 只有摘要；含注释满足断言 / 注入没注到真代码 / 数字靠推算的实例与规则）|
 | **已修复缺陷的实测依据与验证手法** | [`docs/DEFECT-HISTORY.md`](docs/DEFECT-HISTORY.md)（§7 只留**未修复**项；已修 13 条归档在这里，含"反向注入怎么做的""用什么物证确认的"）|
 | **双内核的思维链 / 优化链 / 待优化项** | [`docs/DUAL-KERNEL-OPTIMIZATION.md`](docs/DUAL-KERNEL-OPTIMIZATION.md)（为什么这么设计、每步优化的实测收益、**还能优化什么**（含风险与验证方式）、**明确拒绝过什么及理由**）|
+| **全流程技术与实现细节（一次播放的完整链路）** | [docs/ARCHITECTURE-FULLFLOW.md](docs/ARCHITECTURE-FULLFLOW.md)（冷启动→数据层→播放→原生→系统集成→发布，含通道名/选项/坑）|
 | **按键/交互元素是否可用** | **`python tool/audit_buttons.py out.txt`**（查空实现/死按钮/命中区过小/失败被吞；清单见 `docs/UI-DESIGN.md` §3.3.2） |
 | **设计令牌采用率（字号/间距/断点/圆角）** | **`python tool/audit_tokens.py`**（人读报告）；**`--check`** 只看圆角是否收敛（退出码 0/1，可进 CI）。⚠️ **"定义了令牌" ≠ "用了令牌"** —— U1 实测：排版令牌只用了 24 处而裸 `fontSize` 有 232 处、`clampTextScale`/`CfBreakpoints` **真代码采用 0 处** |
 | 技术技能与开源借鉴（S1–S10） | `docs/TECH-SKILLS.md` + 技能 `cineflow-tech-skills` |

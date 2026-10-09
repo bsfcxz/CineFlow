@@ -375,7 +375,7 @@ Flutter 侧再用 `launch_background` 画一次。未声明前者时系统**回�
 → `_glassCircle` 已改为「视觉 `size` + 外层 ≥48dp 透明命中区」。
 
 **② 截图抓不到视频层 ≠ 没画面。** 实测播放 4K 时 `screencap` 得到 **12 KB / 0% 内容**，
-但同一时刻 `dumpsys SurfaceFlinger` 有 `SurfaceView(BLAST)` 图层、
+但同一时刻 `dumpsys SurfaceFlinger` 有 `SurfaceView--BLAST--` 图层、
 `MediaCodec` 持续 `Render: N, Drop: 0`、`VO: [gpu] 3840x2160 mediacodec`。
 **判"有没有画面"必须看图层与解码器统计，不能看截图。**
 
