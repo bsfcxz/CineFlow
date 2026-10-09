@@ -60,12 +60,32 @@ class AudioController extends Notifier<AudioState> {
   /// ±0.1s（UI 的减/加按钮）。
   void stepDelay(int steps) => setDelay(state.delay + step * steps);
 
-  /// 音量 0.0–1.0。
+  /// 音量 0.0–1.0（**用户操作**：滑块 / 手势）。
+  ///
+  /// 会触发 [onChanged] ⇒ 宿主据此**写系统音量**（K3.5 起的单一事实源）。
   void setVolume(double volume) {
     final v = volume.clamp(0.0, 1.0);
     if (state.volume == v) return;
     state = state.copyWith(volume: v);
     _emit();
+  }
+
+  /// 从**系统音量变化**同步（用户按了手机侧边键）。
+  ///
+  /// ## ★ 为什么故意**不**调 `_emit()`
+  /// `_emit()` 会触发宿主的 `onVolumeChanged` ⇒ 那会去**写系统音量** ⇒
+  /// 系统又发广播回来 ⇒ **"系统→UI→系统"回环**。
+  ///
+  /// 系统变化本来就是"既成事实"，UI 只需**跟随显示**，不该回写。
+  ///
+  /// ⚠️ 不 `_emit()` **不影响 UI 刷新** —— riverpod 的 `state` 一变，
+  /// 监听它的 widget 就会重建。`_emit()` 只服务于"副作用通道"
+  /// （把值应用到内核/系统），两件事是分开的（见本类头注释）。
+  void syncFromSystem(double volume) {
+    final v = volume.clamp(0.0, 1.0);
+    if (state.volume == v) return;
+    state = state.copyWith(volume: v);
+    // 故意不调 _emit()：见上面的回环说明。**不要"顺手补上"**。
   }
 
   /// 是否可以再减（延迟已到 −5s）。

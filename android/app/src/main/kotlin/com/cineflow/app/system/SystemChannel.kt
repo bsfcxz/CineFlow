@@ -2,8 +2,10 @@ package com.cineflow.app.system
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.view.WindowManager
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import kotlin.math.roundToInt
 
@@ -39,6 +41,16 @@ class SystemChannel(private val activity: Activity) {
 
         /** 通知权限（K3 媒体会话用）。 */
         const val NOTIFICATION = "com.cineflow.app/notification"
+
+        /// 系统音量变化事件（K3.5）。见 [registerVolumeListener] 的说明。
+        const val VOLUME_EVENT = "com.cineflow.app/volume/events"
+
+        /// 系统媒体音量变化广播。
+        ///
+        /// ⚠️ 这是**非公开（hidden）常量**，Android 未在 `AudioManager` 里公开它，
+        /// 故只能写字面量。参考实现（Next Player `VolumeState.kt:204`）同样如此。
+        /// 它自 API 1 起就存在且极稳定，业界普遍这么用。
+        const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
 
         /** `POST_NOTIFICATIONS` 的请求码（取值任意，只需唯一）。 */
         private const val REQ_POST_NOTIFICATIONS = 0x0F01
@@ -126,13 +138,21 @@ class SystemChannel(private val activity: Activity) {
         // 故必须除以 `getStreamMaxVolume` 归一到 0–100。
         val audio = activity.getSystemService(Context.AUDIO_SERVICE)
                 as android.media.AudioManager
+
+        /// 读当前系统媒体音量，归一到 0–100（档位整数 ÷ 最大值）。
+        ///
+        /// 抽成函数是为了让 `get` 与**音量监听广播**共用同一套换算 ——
+        /// 两处各写一遍必然会在某次修改后不一致（本项目多次踩过
+        /// "单位换算散在各调用点"的坑，见 `volumeToKernel` 的注释）。
+        fun currentVolumePercent(): Double {
+            val max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+            val cur = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+            return if (max <= 0) 0.0 else cur.toDouble() / max * 100.0
+        }
+
         MethodChannel(messenger, VOLUME).setMethodCallHandler { call, result ->
             when (call.method) {
-                "get" -> {
-                    val max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-                    val cur = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
-                    result.success(if (max <= 0) 0.0 else cur.toDouble() / max * 100.0)
-                }
+                "get" -> result.success(currentVolumePercent())
                 "set" -> {
                     val raw = call.argument<Double>("value") ?: 70.0
                     val max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
@@ -149,6 +169,65 @@ class SystemChannel(private val activity: Activity) {
                 else -> result.notImplemented()
             }
         }
+
+        // ---------------- 系统音量监听（K3.5）----------------
+        //
+        // ## 解决什么
+        // 用户按**手机侧边音量键**时，系统媒体音量变了 ——
+        // 但 App 的音量滑块**不动**（两条线各自独立，用户看到"不一致"）。
+        // 本通道把系统变化推给 Dart，由 Dart 同步 UI 与内核。
+        //
+        // ## ⚠️ 回环怎么防（方案提的坑）
+        // 我们自己调 `setStreamVolume` **也会**触发这个广播。
+        // **防护放在 Dart 侧按值去重**（收到后与 UI 现值比较，相同就丢弃）——
+        // 比在原生侧维护 `isSelfChange` 标志位可靠：
+        // 标志位在异常路径下会**残留**，而值比较是无状态的。
+        //
+        // ## 为什么用 EventChannel
+        // 音量变化是**持续事件**（用户可能连按侧边键），
+        // MethodChannel 的"请求-响应"模型不适合"原生主动推"。
+        EventChannel(messenger, VOLUME_EVENT).setStreamHandler(
+            object : EventChannel.StreamHandler {
+                private var receiver: android.content.BroadcastReceiver? = null
+
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    if (receiver != null) return
+                    val r = object : android.content.BroadcastReceiver() {
+                        override fun onReceive(ctx: Context?, intent: Intent?) {
+                            if (intent?.action != VOLUME_CHANGED_ACTION) return
+                            // ⚠️ 广播可能在非主线程回调；EventSink 必须主线程调
+                            activity.runOnUiThread {
+                                events?.success(currentVolumePercent())
+                            }
+                        }
+                    }
+                    // ⚠️ API 33+ 注册非导出广播要显式声明导出性，
+                    //    否则 `registerReceiver` 直接抛 SecurityException。
+                    //    这是系统广播 ⇒ RECEIVER_NOT_EXPORTED 正确。
+                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        activity.registerReceiver(
+                            r,
+                            android.content.IntentFilter(VOLUME_CHANGED_ACTION),
+                            Context.RECEIVER_NOT_EXPORTED,
+                        )
+                    } else {
+                        activity.registerReceiver(
+                            r,
+                            android.content.IntentFilter(VOLUME_CHANGED_ACTION),
+                        )
+                    }
+                    receiver = r
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    receiver?.let {
+                        // 注销失败不该崩（可能已随 Activity 销毁）
+                        runCatching { activity.unregisterReceiver(it) }
+                    }
+                    receiver = null
+                }
+            },
+        )
 
         // ---------------- 唤醒锁 ----------------
         //
