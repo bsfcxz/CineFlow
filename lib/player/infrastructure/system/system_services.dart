@@ -271,9 +271,17 @@ class VolumeService {
 /// （ADR 0009），而 `wakelock_plus` 只为一个 `FLAG_KEEP_SCREEN_ON`，
 /// 用 20 行 Kotlin 就能覆盖，不值得多一个依赖。
 ///
-/// ## ⚠️ 待办
-/// Kotlin 侧的 `com.cineflow.app/wakelock` 通道**尚未实现**，
-/// 故现在调它是空操作（会打日志）。补齐后无需改这里。
+/// ## 实现状态（2026-10-09 核实并修正过时注释）
+/// Kotlin 侧 `com.cineflow.app/wakelock` 通道**已实现**
+/// （`SystemChannel.kt` 的 `FLAG_KEEP_SCREEN_ON` 分支）。
+///
+/// ⚠️ 此前这里写着"尚未实现，调它是空操作"—— **那是过时的**（代码先落地了，
+/// 注释没跟上）。而更严重的是：因为"以为它没用"，**播放页从未调用它**，
+/// 导致播放中屏幕照常熄灭（本文件零调用点是实测确认的）。
+///
+/// ## 为什么用窗口 flag 而不是 `PowerManager.WakeLock`
+/// 后者需要 `WAKE_LOCK` 权限，且**忘记释放会持续耗电**；
+/// 窗口 flag 随 Activity 销毁自动失效（`SystemChannel.kt` 同一理由）。
 class WakelockService {
   WakelockService();
 

@@ -244,4 +244,52 @@ void main() {
               '    这是系统广播 ⇒ NOT_EXPORTED 正确。');
     });
   });
+
+  group('★ 唤醒锁必须真的被调用（播放中不熄屏）', () {
+    late String flow;
+    late String svc;
+
+    setUpAll(() {
+      flow = readCode('lib/player/player_flow_page.dart');
+      svc = readCode('lib/player/infrastructure/system/system_services.dart');
+    });
+
+    test('★ 播放页必须调用 WakelockService（否则播放中熄屏）', () {
+      // ## 守的是什么
+      // `WakelockService` 的 Kotlin 通道**早已实现**，但 Dart 侧曾**零调用** ⇒
+      // 播放中屏幕照常熄灭（看剧时每隔几十秒黑屏）。
+      //
+      // 这是"**服务写好了但没人调**"的形态 —— 能编译、静态分析全过、
+      // 类与方法都在，只是没有调用点。**只有断言调用点才能发现**。
+      expect(flow.contains('_wakelock'), isTrue,
+          reason: '★ 播放页必须持有并调用 WakelockService。\n'
+              '    零调用 ⇒ 播放中熄屏（用户很快会发现）。');
+      expect(flow.contains('_wakelock.enable()'), isTrue,
+          reason: '★ 播放时要启用常亮');
+      expect(flow.contains('_wakelock.disable()'), isTrue,
+          reason: '★ 暂停/退出要关掉 —— 否则首页也一直亮屏');
+    });
+
+    test('★ 唤醒锁跟随"是否在播"，不是"是否在播放页"', () {
+      // 暂停时允许熄屏（用户可能在回消息/看弹幕）；
+      // 恢复播放时再点亮。⇒ 必须挂在状态流上，而不是 initState 一刀切。
+      final i = flow.indexOf('_wakelock.enabled != s.playing');
+      expect(i, greaterThanOrEqualTo(0),
+          reason: '★ 应挂在 `stateStream` 的 playing 变化上。\n'
+              '    挂在 initState/dispose 会导致"暂停也常亮"（白耗电）。');
+    });
+
+    test('★ 只在变化时调（避免每次状态推送都往返）', () {
+      // 进度是 250ms 推一次的 —— 每次都调 enable/disable 会白耗。
+      expect(flow.contains('_wakelock.enabled != s.playing'), isTrue,
+          reason: '★ 需要变化判断（`enabled != playing`），\n'
+              '    否则每次进度推送都会做一次 MethodChannel 往返');
+    });
+
+    test('★ 过时注释不得复活（Kotlin 侧早已实现）', () {
+      expect(svc.contains('尚未实现'), isFalse,
+          reason: '★ 该注释是**过时的**：Kotlin 侧 `SystemChannel` 早有\n'
+              '    `FLAG_KEEP_SCREEN_ON` 实现。"以为它没用"正是不接线的起因。');
+    });
+  });
 }
