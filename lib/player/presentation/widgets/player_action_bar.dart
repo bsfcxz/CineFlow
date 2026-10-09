@@ -8,6 +8,8 @@
 /// 独立后：`player_bars.dart` 只管道具形状，本文件只管"按钮怎么排、点了调谁"。
 library;
 
+import 'dart:ui' show FontFeature;
+
 import 'package:flutter/material.dart';
 
 import '../player_ui_tokens.dart';
@@ -29,6 +31,7 @@ class PlayerActionBar extends StatelessWidget {
     required this.hasNext,
     required this.danmakuEnabled,
     required this.fullscreen,
+    this.playlistCount,
     this.keys = const {},
   });
 
@@ -47,6 +50,17 @@ class PlayerActionBar extends StatelessWidget {
   final bool hasNext;
   final bool danmakuEnabled;
   final bool fullscreen;
+
+  /// 选集按钮的进度计数（形如 `3/24`）。
+  ///
+  /// ## 为 null 的语义（重要）
+  /// **不显示计数**。适用两种情形：
+  /// · 播放列表只有一项（电影）—— `1/1` 是无信息的噪声
+  /// · 列表尚未就绪 —— 宁可少显示，也不要闪一个错的数字
+  ///
+  /// 由调用方组装成字符串（本组件不碰 `PlaylistState`，
+  /// 保持"只依赖 props"的可测性 —— 见文件头说明）。
+  final String? playlistCount;
 
   /// 测试键（`PlayerKeys` 里的项）。
   final Map<String, Key> keys;
@@ -85,10 +99,19 @@ class PlayerActionBar extends StatelessWidget {
             ),
           ),
           Flexible(
-            child: _TextBtn(
+            child: _IconBtn(
               key: keys['playlist'],
-              text: '列表',
+              // ★ 用户要求：文字「列表」→ **图标 + 进度计数**（如 3/24）
+              //
+              // ## 为什么用 `_CountBtn` 而不是普通 `_IconBtn`
+              // 用户要看到"当前第几集 / 共几集" —— 单看图标不够，
+              // 单看文字（列表）也没有进度信息。故图标与计数并排。
+              icon: Icons.playlist_play,
               onTap: onOpenPlaylist,
+              tooltip: '选集',
+              // 计数：`当前位置/总数`。无播放列表（单曲/电影）时为 null ⇒ 只显示图标
+              // （"1/1" 是噪声，用户看不出任何信息）。
+              badge: playlistCount,
             ),
           ),
           Flexible(
@@ -144,45 +167,95 @@ class _IconBtn extends StatelessWidget {
     required this.icon,
     required this.onTap,
     this.tooltip,
+    this.badge,
   });
 
   final IconData icon;
   final VoidCallback? onTap;
   final String? tooltip;
 
+  /// 图标右侧的小字（如 `3/24`）。
+  ///
+  /// ## 为什么不用 `IconButton` 的 `badge`
+  /// Material 3 的 `Badge` 是**右上角浮标**（用于未读数），
+  /// 而"第 3/24 集"是**并列信息**，横排更好读（也不遮图标）。
+  ///
+  /// ## 为什么省略号为 null 时不显示任何文字
+  /// 见 `PlayerActionBar.playlistCount` 的注释：`1/1` 是无信息的噪声。
+  final String? badge;
+
   @override
   Widget build(BuildContext context) {
+    final iconWidget = Icon(
+      icon,
+      shadows: const [
+        // 两层阴影：近距实（保证轮廓）+ 远距虚（保证亮背景上的对比）
+        Shadow(blurRadius: 4, color: Colors.black87),
+        Shadow(blurRadius: 10, color: Colors.black54),
+      ],
+    );
+
+    // 无计数时保持原有 `IconButton`（不改动既有布局预算 —— 见文件头
+    // 的 8 按钮宽度计算；多一个 Text 会挤到窄屏）。
+    if (badge == null || badge!.isEmpty) {
+      return IconButton(
+        onPressed: onTap,
+        icon: iconWidget,
+        iconSize: 22,
+        color: Colors.white,
+        disabledColor: Colors.white24,
+        splashRadius: 22,
+        tooltip: tooltip,
+        constraints: const BoxConstraints(minWidth: 38, minHeight: 44),
+        padding: EdgeInsets.zero,
+      );
+    }
+
+    // 有计数：**角标叠在图标右下**（不是并排）。
+    //
+    // ## ⚠️ 为什么不能并排（实测崩溃）
+    // 第一版写成 `Row([Icon(22), SizedBox(3), Text('3/24', 11px)])`
+    // ⇒ 内容宽 ≈ 52dp，而底栏给每个按钮的预算下限是 **38dp**
+    //（320dp 屏 / 8 按钮 ⇒ 38.5；见 `PlayerActionBar.build` 的宽度计算）
+    // ⇒ 实测 `RenderFlex overflowed by 16 pixels`（被
+    //   `player_ui_interaction_test` 抓到，正是那道防线的价值）。
+    //
+    // ## 叠放后宽度 = 图标宽度
+    // 角标画在图标**右下角外侧**，不增加布局宽度 ⇒ 仍满足 38dp 预算。
+    // 代价：角标会略微超出图标边界（用 `Positioned` 负偏移），
+    // 但按钮本身有 38×44 的约束，实际不会被裁（`IconButton` 不裁剪 child）。
     return IconButton(
       onPressed: onTap,
-      // ---- 图标加阴影（透明底栏下的可读性保障）----
-      //
-      // ## 为什么必须加（用户第三轮反馈引发）
-      // 底栏原先垫着 `BackdropFilter` 毛玻璃，图标压在上面读得到。
-      // 用户要求"完全不影响视频" → 去掉模糊后，**纯白图标压在亮画面上
-      // 会看不见**（白字压白墙）。
-      //
-      // 阴影是"不修改背景也能读"的通行做法（与同文件 Text 的做法一致）：
-      // 深色描边式阴影让白色图标在任何亮度背景上都有对比。
-      //
-      // ⚠️ 用 `Shadow`（boxShadow）而不是给 Icon 加描边 ——
-      //    Icon 不支持 outline，而 `shadows` 可直接作用到字形轮廓。
-      icon: Icon(
-        icon,
-        shadows: const [
-          // 两层阴影：近距实（保证轮廓）+ 远距虚（保证亮背景上的对比）
-          Shadow(blurRadius: 4, color: Colors.black87),
-          Shadow(blurRadius: 10, color: Colors.black54),
-        ],
-      ),
-      iconSize: 22,
-      color: Colors.white,
-      disabledColor: Colors.white24,
-      splashRadius: 22,
       tooltip: tooltip,
-      // ⚠️ 38×44：宽度受「8 个按钮在 320dp 屏上的预算」约束
-      //    （见 PlayerActionBar.build 里的计算）。用 44 会在 320dp 屏上溢出。
+      splashRadius: 22,
       constraints: const BoxConstraints(minWidth: 38, minHeight: 44),
       padding: EdgeInsets.zero,
+      icon: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          iconWidget,
+          Positioned(
+            // 右下角：`right: -6` 让它探出图标一点（图标 22 宽，视觉重心仍在按钮内）
+            right: -7,
+            bottom: -3,
+            child: Text(
+              badge!,
+              // 等宽数字：计数会随切集变化，不加会让整行左右抖动
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+                height: 1.0,
+                fontFeatures: [FontFeature.tabularFigures()],
+                shadows: [
+                  Shadow(blurRadius: 3, color: Colors.black87),
+                  Shadow(blurRadius: 8, color: Colors.black54),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
