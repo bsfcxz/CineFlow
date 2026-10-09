@@ -82,6 +82,20 @@ abstract final class PlayerUi {
   /// 命中区高度（视觉 3–6dp，命中要 ≥48 —— 与 U5 的结论一致）。
   static const double progressHitHeight = 48;
 
+  /// 章节刻度线宽度。
+  ///
+  /// 取 2：在 3dp 高的轨道上足够看清（1dp 在低密度屏会被抹掉），
+  /// 又不至于把轨道切成几段（那看起来像进度条坏了）。
+  static const double chapterTickWidth = 2;
+
+  /// 章节刻度颜色。
+  ///
+  /// 用**半透明白**而不是纯白：刻度是"背景参考信息"，
+  /// 不该比已播段（`progressFilled` 蓝）更抢眼 —— 否则用户会盯着刻度
+  /// 而忽略"播到哪了"这个主要信息。
+  /// 0x99 = 60%：在深色遮罩与亮色画面上都可辨（实测两种背景下均可见）。
+  static const Color chapterTick = Color(0x99FFFFFF);
+
   // ---- 面板（原型 `.side-panel`）----
   static const Color panelBg = Color(0xF20D1328);
   static const Color panelMask = Colors.black54;

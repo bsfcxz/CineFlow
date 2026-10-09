@@ -106,6 +106,7 @@ class PlayerPageSlots {
     this.subtitle,
     this.danmakuLayer,
     this.buffered,
+    this.chapters = const [],
   });
 
   final String title;
@@ -119,6 +120,16 @@ class PlayerPageSlots {
 
   /// 缓冲进度 0.0–1.0。
   final double? buffered;
+
+  /// 章节起点（**秒**）—— 供进度条画刻度。
+  ///
+  /// ## 为什么放在 slots 而不是让 UI 自己去取
+  /// 章节来自 `PlaybackLaunch.chapters`（服务端已在 `PlaybackInfo` 里给好），
+  /// **只有宿主页拿得到** —— 本页不碰 `MediaProvider`（架构约定 §5.1）。
+  /// 故由宿主经 slots 传入，与 [buffered] 同一模式。
+  ///
+  /// 默认空列表：无章节的片源（多数电影）行为完全不变。
+  final List<double> chapters;
 }
 
 /// 组装后的播放页。
@@ -575,6 +586,7 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
                     onToggleTimeDisplay: () =>
                         setState(() => _showRemaining = !_showRemaining),
                     progressKey: keys.player.progressBar,
+                    chapters: widget.slots.chapters,
                     onSeek: (v) => widget.callbacks
                         .onSeekTo(playback.duration * v),
                     actions: PlayerActionBar(
