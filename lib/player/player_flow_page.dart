@@ -52,6 +52,7 @@ import 'player_facade.dart' show FacadeAudioTrack, FacadeSubtitleTrack;
 import 'presentation/player_ui_page.dart';
 import 'presentation/widgets/aspect_video.dart';
 import 'track_aligner.dart';
+import 'infrastructure/system/system_services.dart';
 import 'infrastructure/session/session_bridge.dart';
 
 /// `--dart-define=CF_NEW_PLAYER=true` 时路由切到新播放 UI。
@@ -73,6 +74,20 @@ double volumeToKernel(double v) => (v * 100).clamp(0.0, 100.0);
 /// 60% 以上则几乎听不出被压低（失去闪避的意义）。
 /// 数值可调，但**不要**改成 0 —— 那会让用户以为播放器卡住了。
 const double kDuckVolume = 30;
+
+/// 内核音量在当前架构下的**恒定值**（unity，即"不衰减"）。
+///
+/// ## 为什么是"恒定"而不是"可变"
+/// K3.5 起**用户音量全部由系统通道负责**（`VolumeService` →
+/// `AudioManager.STREAM_MUSIC`）。内核音量保持 unity，音量就只衰减一次。
+///
+/// **若哪天有人把手势改回内核音量，就会立刻重现双重衰减** ——
+/// 现象是"系统音量 50% 时，滑块拉到 100% 也只有一半响度"。
+/// 这条常量与 `_startEpisode` 里的显式设置、以及
+/// `test/player_volume_architecture_guard_test.dart` 一起守住这个约束。
+///
+/// 量纲：mpv `volume` 属性与 Media3 的 0–100 表示（内核侧换算成 1.0）。
+const double kKernelUnityVolume = 100;
 
 /// 手势亮度（0–100）→ `ScreenBrightness` 的 0.0–1.0。
 ///
@@ -129,7 +144,28 @@ class PlayerFlowPage extends ConsumerStatefulWidget {
   ///
   /// ## 只查"新增且影响最大"的项
   /// 全查会刷屏；其余项（字体路径等）已在其它轮真机验证过。
-  static Future<void> _verifyMpvConfig(PlayerKernel kernel) async {
+  static Future<void> _verifyMpvConfig(PlayerKernel? kernel) async {
+    // `_kernel` 可能为 null（页面已清理）—— 那就不查，别抛异常。
+    if (kernel == null) return;
+
+    // ★ 只在 **mpv 内核**上查（Media3 没有可回读的 mpv 选项）。
+    //
+    // ## 为什么必须加这个守卫（真机暴露）
+    // `Media3Kernel.getOption` 是**空实现**（返回 null）——
+    // 它的配置是构建期定的（`ExoPlayer.Builder`），本就没有
+    // "运行时可回读的属性"概念。
+    // 不守卫的话，切到 Media3 后会打出：
+    // ```
+    // [MPV-CFG] 内核=media3 mpv-version="不可读"
+    // [MPV-CFG] ⚠️ 1 项与期望不符: tone-mapping(期望bt.2390 实际)
+    // ```
+    // 这是**误报** —— 不是"tone-mapping 没生效"，而是"当前不是 mpv 内核"。
+    // 排查时极容易被带偏（我本人就被骗过一次，一度以为 tone-mapping 失效）。
+    if (kernel.engine != 'native') {
+      debugPrint('[MPV-CFG] 当前内核=${kernel.engine}（非 mpv），'
+          '跳过 mpv 选项自检');
+      return;
+    }
     // ---- ① 先做**通道自检**：读一个必然存在的属性 ----
     //
     // ## 为什么必须先做这一步
@@ -394,12 +430,22 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
         // `duck`/`unduck`：压低声量而不是暂停 —— 用户不该因一条通知
         // 就中断观看（这是 Android 推荐做法）。
         case 'duck':
-          _volumeBeforeDuck = ref.read(audioStateProvider).volume;
+          // 闪避：压到 30%。⚠️ **不暂停** —— 用户不该因一条通知中断观看。
+          //
+          // ★ 这里**必须**改内核音量，不能改系统音量：
+          //   改系统音量会把**用户手机的音量**改小，且**不会自动恢复** ——
+          //   用户退出 App 后发现手机声音莫名变小（很糟的体验）。
+          //
+          // 先记下**内核**当前值，unduck 时精确还原（不猜值）。
+          _volumeBeforeDuck = k?.state.volume;
           unawaited(k?.setVolume(kDuckVolume) ?? Future.value());
         case 'unduck':
-          // 精确还原（走与 `onVolumeChanged` **同一个**换算函数）
+          // 还原到 duck 前记下的**内核**音量；没记到就回到 unity。
+          //
+          // ⚠️ 这里**不经过** `volumeToKernel` —— 那是"UI 0–1 → 内核 0–100"
+          //    的用户音量换算；而内核现在恒定 unity，语义不同。
           unawaited(
-            k?.setVolume(volumeToKernel(_volumeBeforeDuck ?? 1.0)) ??
+            k?.setVolume(_volumeBeforeDuck ?? kKernelUnityVolume) ??
                 Future.value(),
           );
           _volumeBeforeDuck = null;
@@ -576,7 +622,12 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     //
     // （与本项目此前多次踩的"时序"类坑同源：`textureId` 要在 build 前就绪、
     //   `wid` 要在 `mpv_initialize` 前设好……）
-    unawaited(PlayerFlowPage._verifyMpvConfig(kernel));
+    // 自检**已由 `_startEpisode` → `_adaptKernel` 统一触发**（见那里的说明）——
+    // 这里不再重复调，否则日志每行出现两次（真机实测就是如此）。
+    //
+    // ⚠️ 历史教训：这里曾传**创建时的局部** `kernel`，而 `_adaptKernel`
+    //    会替换 `_kernel` ⇒ 换内核后自检查的是**旧对象**，
+    //    表现为"切到 media3 了却仍报 engine=native + 误报 tone-mapping 未生效"。
   }
 
   /// 把一个内核的状态流接到 providers 上（**单向同步**，与 harness 同款）。
@@ -773,6 +824,49 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       //
       // ## 为什么在这里（open 之后）
       // 此时才知道"放的是哪一集" —— 标题要进通知栏。
+      // ---- ★ 内核音量固定为 unity（K3.5）----
+      //
+      // ## 为什么必须显式设
+      // 音量现在**全部**由系统通道负责（`VolumeService`）。
+      // 若内核音量还留着旧值，就会变成"系统音量 × 内核音量"的**双重衰减**。
+      //
+      // ## 为什么不是"不管它"
+      // 内核默认确实是 unity（mpv `volume=100`、Media3 `volume=1.0`），
+      // 但**上一次播放可能把它改低了**（尤其换内核/换集时）。
+      // 显式设置才能保证每次起播都回到干净状态。
+      //
+      // ⚠️ 唯一会临时改它的地方是**音频焦点 duck**（见 `case 'duck'`），
+      //    那个路径结束时会还原到 unity。
+      // ⚠️ 用 `_kernel` 而不是局部 `k`：此处 `k` 尚未定义
+      //    （`k` 在 `_startEpisode` 的稍后位置才赋值）。
+      unawaited(_kernel?.setVolume(kKernelUnityVolume) ?? Future.value());
+
+      // ---- ★ 系统音量：读初值 + 开始监听（K3.5）----
+      //
+      // ## 为什么必须读初值
+      // 进播放页前系统音量可能是任意值（用户刚才调过、或上次播放留下的）。
+      // 不读 ⇒ 滑块显示默认 70，与**实际响度不符** —— 用户会以为 App 坏了。
+      //
+      // ## 为什么必须监听
+      // 用户按**手机侧边音量键**时系统音量变了，而 App 的滑块不动 ⇒
+      // UI 与实际不一致。监听后同步（这是本轮的**核心需求**）。
+      //
+      // ⚠️ 回环防护在 `VolumeService` 内部（按值去重），
+      //    且 `syncFromSystem` **故意不触发 onChanged**（见其注释）——
+      //    两者缺一就会形成"系统→UI→系统"回环。
+      unawaited(() async {
+        await _volumeService.init();
+        if (!mounted) return;
+        ref
+            .read(audioStateProvider.notifier)
+            .syncFromSystem(_volumeService.value / 100);
+        _volumeService.onSystemChanged = (v) {
+          if (!mounted) return;
+          ref.read(audioStateProvider.notifier).syncFromSystem(v / 100);
+        };
+        _volumeService.startListening();
+      }());
+
       unawaited(SessionBridge.instance.start());
       if (mounted) {
         // 复用与页面顶栏**同一对纯函数**（`topTitleFor` / `subtitleFor`）——
@@ -854,6 +948,16 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       _decision = decision;
       debugPrint('[Kernel] $traits -> ${decision.kernel.name}'
           '（${decision.reason}）');
+      // ★ 这条路径**也要自检**。
+      //
+      // ## 为什么（真机踩过）
+      // 绝大多数情况走这条（同分辨率同格式的连续剧集内容）——
+      // 若只在"换内核"时自检，则**正常起播根本没有自检日志**，
+      // 真机实测就是如此（只有切 4K 那次有日志，看起来像"自检没跑"）。
+      //
+      // ⚠️ 必须在 `return` **之前**调 —— 放到 return 后面就是死代码
+      //    （本项目已有"写在 return 后"的同类疏忽）。
+      unawaited(PlayerFlowPage._verifyMpvConfig(current));
       return current;
     }
 
@@ -889,6 +993,10 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     } finally {
       _switching = false;
     }
+
+    // ★ 换内核后**必须自检**：配置属于新实例，旧结论不再适用。
+    //   放在 `try` **之后**（此时 `_kernel` 确已是 `next`，且 `_switching` 已复位）。
+    unawaited(PlayerFlowPage._verifyMpvConfig(_kernel));
 
     // 用新内核重新起播（进度保持）；递归调用会命中"决策未变"分支
     final k = _kernel;
@@ -1203,6 +1311,13 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     _sessionSync.clear();
     unawaited(SessionBridge.instance.stop());
 
+    // K3.5：停掉系统音量监听。
+    // 不停的话，退出播放器后原生仍注册着 BroadcastReceiver ——
+    // 用户每次按侧边键都会唤醒 Flutter 侧回调（无谓开销），
+    // 且回调里若用了已 dispose 的 ref 会抛异常。
+    _volumeService.onSystemChanged = null;
+    unawaited(_volumeService.stopListening());
+
     if (_finalized) return;
     _finalized = true;
     final api = _api;
@@ -1403,11 +1518,24 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   /// 且能被单测覆盖（见 test/player_session_sync_test.dart）。
   final SessionStateSync _sessionSync = SessionStateSync();
 
-  /// 闪避前的音量（`duck` 时记下，`unduck` 时精确还原）。
+  /// 系统媒体音量服务（K3.5：音量的**唯一事实源**）。
   ///
-  /// ## 为什么要"记"而不是"复原成固定值"
-  /// 用户可能已把音量调到 40%。若 unduck 一律还原成 100%，
-  /// 就是把用户的设置冲掉了 —— `duck` 应该是**可逆**的。
+  /// ## 为什么音量统一走它，而不是内核
+  /// 旧实现手势改**内核音量** ⇒ 两个后果：
+  /// · 按手机侧边键时，App 的滑块**不动**（用户以为坏了）
+  /// · 系统音量 × 内核音量 = **双重衰减**（系统 50% × 内核 50% = 实际 25%）
+  ///
+  /// 参考实现（mpv-android `MPVActivity.kt:2102`、Next Player
+  /// `VolumeState.kt:169`）都把手势落到系统音量。本项目 2026-10-09 对齐。
+  ///
+  /// ⚠️ **唯一例外**：音频焦点 `duck` 仍走内核（见 `case 'duck'` 的说明）——
+  /// 改系统音量会把用户手机的音量改小且**不会自动恢复**。
+  final VolumeService _volumeService = VolumeService();
+
+  /// 闪避前的**内核**音量（`duck` 时记下，`unduck` 时精确还原）。
+  ///
+  /// ⚠️ 记的是**内核**音量（K3.5 起恒定 unity），**不是**系统音量 ——
+  /// 用户音量现在由系统通道负责，与这里无关。见 `case 'duck'` 的说明。
   double? _volumeBeforeDuck;
 
   /// 本次暂停是否**因失焦造成**（音频焦点路径设置）。
@@ -1597,7 +1725,13 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
         _reportEvent(ProgressEvent.playbackRateChange);
       },
       // ⚠️ 单位换算：面板 0–1 → 内核 0–100（harness 实测约束，勿删）
-      onVolumeChanged: (v) => _kernel?.setVolume(volumeToKernel(v)),
+      // ★ K3.5：音量走**系统通道**（不再改内核）
+      //
+      // 契约：`onVolumeChanged` 收 **0.0–1.0**，`VolumeService.set` 要 **0–100**。
+      //
+      // 为什么改：旧实现改内核音量 ⇒ 侧边键与 App 滑块脱节 + 双重衰减。
+      // 内核音量已固定为 100（unity），见 `_startEpisode` 里的说明。
+      onVolumeChanged: (v) => _volumeService.set(v * 100),
       // ⚠️ **单位契约**：`onBrightnessChanged` 收的是**手势的 0–100**
       //    （见 `GestureController.onBrightness`），
       //    而 `ScreenBrightness.setApplicationScreenBrightness` 要 **0.0–1.0**。

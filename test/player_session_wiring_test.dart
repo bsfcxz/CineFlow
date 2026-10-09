@@ -188,4 +188,51 @@ void main() {
           reason: '失败必须有可见痕迹');
     });
   });
+
+  group('★ 自检对象必须是"当前内核"（真机暴露的缺陷）', () {
+    late String flow;
+
+    setUpAll(() {
+      flow = readCode('lib/player/player_flow_page.dart');
+    });
+
+    test('★ _verifyMpvConfig 传 _kernel，不传创建时的局部变量', () {
+      // ## 守的是什么
+      // `_adaptKernel` 会在自动适配时**替换** `_kernel`（如 4K 片源切 Media3），
+      // 而 `_boot` 里的局部 `kernel` 仍指向创建时那个实例。
+      // 传局部变量 ⇒ 换内核后自检查的是**已废弃的对象**：
+      // ```
+      // [Kernel] 换内核 mpv -> media3（2160p 高分辨率…）
+      // [MPV-CFG] kernel = JK (engine=native)     ← 仍报 mpv！
+      // [MPV-CFG] ⚠️ tone-mapping 未生效          ← 误报
+      // ```
+      // 危害不只是日志难看 —— 它会**误导排查**（我本人被骗了一次）。
+      //
+      // ⚠️ 断言用**整行**而不是裸 `_verifyMpvConfig` ——
+      //    该方法名在文件里出现多处（定义 + 调用），
+      //    只匹配名字等于没断言（AGENTS §8.4①）。
+      expect(
+        flow.contains('_verifyMpvConfig(_kernel)'),
+        isTrue,
+        reason: '★ 自检必须针对**当前** `_kernel`。\n'
+            '    传创建时的局部 `kernel` 会在换内核后查旧对象 ⇒ 结论错误。',
+      );
+      expect(
+        flow.contains('_verifyMpvConfig(kernel)'),
+        isFalse,
+        reason: '★ 不得传局部变量 `kernel`（换内核后就过期了）。\n'
+            '    这与第 39 轮 `_index` vs `playlist.currentIndex` 同源 ——\n'
+            '    两个变量表示同一个东西，必然有一个会过期。',
+      );
+    });
+
+    test('★ 换内核后要重新自检（旧结论不再适用）', () {
+      final i = flow.indexOf('_kernel = next;');
+      expect(i, greaterThanOrEqualTo(0), reason: '找不到换内核赋值');
+      final body = flow.substring(i, (i + 500).clamp(0, flow.length));
+      expect(body.contains('_verifyMpvConfig'), isTrue,
+          reason: '★ 换内核后必须重查 —— 配置属于新实例，\n'
+              '    不重查会一直显示上一次内核的自检结果');
+    });
+  });
 }

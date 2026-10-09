@@ -16,6 +16,7 @@
 /// 竖屏播放（短视频场景）会被强行转过去。
 library;
 
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -148,25 +149,56 @@ class BrightnessService {
   }
 }
 
-/// 音量服务。
+/// **系统媒体音量服务**（K3.5 起是音量的**唯一事实源**）。
 ///
-/// ## ⚠️ 与播放器音量是两件事
-/// · **系统音量**（本服务）：影响整个设备
-/// · **播放器音量**（`AudioState.volume`）：只影响这个播放器
+/// ## ★ 架构：所有音量入口都落到系统音量
+/// | 入口 | 落到哪 |
+/// |---|---|
+/// | 左半屏上下滑动手势 | 本服务 → `AudioManager.STREAM_MUSIC` |
+/// | 设置面板音量滑块 | 本服务（同上）|
+/// | **手机侧边音量键** | 系统直接改，本服务**监听**后同步 UI |
+/// | 音频焦点 duck | **内核**（临时压低，见下）|
 ///
-/// 规格 §9.3 的右半屏手势调的是**系统音量**（与 MX Player 一致），
-/// 而设置面板里的"音量"滑块调的是**播放器音量**。
-/// 两者混用会让用户困惑"为什么面板调到 0 还有声音"。
+/// 内核音量**恒定 1.0** ⇒ 不再有"系统 × 内核"的**双重衰减**。
+///
+/// ## 为什么不再区分"系统音量 / 播放器音量"
+/// 旧实现有两条独立音量线（本服务 + `AudioState.volume`），
+/// 后果是用户困惑：
+/// · 按侧边键，App 里的滑块**不动**（看起来像坏了）
+/// · 两者相乘：系统 50% × 播放器 50% = 实际 25%，"音量不对劲"
+///
+/// 参考实现（mpv-android `MPVActivity.kt:2102`、Next Player
+/// `VolumeState.kt:169`）**都**把手势落到系统音量。本项目 2026-10-09 对齐。
+///
+/// ## ⚠️ 唯一例外：音频焦点 `duck` 仍走内核
+/// "闪避"（别的 App 播报时压低我们的声音）**必须**改内核音量：
+/// 改系统音量会把**用户的手机音量**改小，且**不会自动恢复** ——
+/// 用户退出 App 后发现手机声音莫名变小，是很糟的体验。
+/// 见 `PlayerChannel` 的 `multiply volume` 与播放页的 duck/unduck 实现。
+///
+/// ## 回环防护（见 [startListening]）
+/// 我们自己 `set()` 也会触发系统广播。靠**按值去重**滤掉，
+/// 不用 `isSelfChange` 标志位（那在异常路径下会残留）。
 class VolumeService {
   VolumeService();
 
   static const MethodChannel _ch = MethodChannel('com.cineflow.app/volume');
+  static const EventChannel _events =
+      EventChannel('com.cineflow.app/volume/events');
 
   double _value = 70;
 
   /// 当前系统音量 0–100。
   double get value => _value;
 
+  StreamSubscription<dynamic>? _sub;
+
+  /// 系统音量变化回调（**只在值真的变了**时触发）。
+  ///
+  /// UI 层订阅它来同步滑块；**不要**在这里再调 [set]（那会回环）。
+  void Function(double value)? onSystemChanged;
+
+  /// 读取当前系统音量（应用启动/进播放页时调一次）。
   Future<void> init() async {
     try {
       final v = await _ch.invokeMethod<num>('get');
@@ -176,6 +208,51 @@ class VolumeService {
     }
   }
 
+  /// 开始监听系统音量变化（用户按侧边键时会触发）。
+  ///
+  /// ## ★ 回环防护：按值去重
+  /// 收到广播 → 与 [_value] 比较 → **相同就丢弃**。
+  ///
+  /// 为什么这样够：我们自己 [set] 时**先把 `_value` 更新成本地值**，
+  /// 随后系统回的广播值与之相同 ⇒ 天然被滤掉。
+  ///
+  /// 为什么不用 `isSelfChange` 标志位：那需要在"设置前后"成对维护，
+  /// **异常路径（如 set 抛异常）会让标志位残留**，之后所有系统变化
+  /// 都被误吞 —— 用户按侧边键彻底失效，且极难排查。
+  /// 值比较是**无状态**的，不存在这个风险。
+  void startListening() {
+    if (_sub != null) return;
+    _sub = _events.receiveBroadcastStream().listen(
+      (e) {
+        final v = (e as num?)?.toDouble();
+        if (v == null) return;
+        final c = v.clamp(0.0, 100.0);
+        // ★ 去重：相同值直接丢弃（这就是防回环）
+        if ((c - _value).abs() < 0.01) return;
+        _value = c;
+        // 记一条日志：让"监听是否工作"**可观测**。
+        //
+        // 本项目已多次踩"静默失效"（R8 剥离日志、静默 catch、通知不贴…），
+        // 而"按侧边键滑块不动"在无日志时**完全无从排查**。
+        //
+        // 不会刷屏：① 只在值真变时打（去重之后）② 用户按键频率极低。
+        // ⚠️ 放在**去重之后** —— 放前面会在回环时刷屏。
+        debugPrint('[Volume] 系统音量变化 → 同步 UI: $c');
+        onSystemChanged?.call(c);
+      },
+      onError: (Object e) => debugPrint('[Volume] 监听出错（忽略）: $e'),
+    );
+  }
+
+  /// 停止监听（退出播放页时调，避免后台无谓唤醒）。
+  Future<void> stopListening() async {
+    await _sub?.cancel();
+    _sub = null;
+  }
+
+  /// 设置系统音量（手势/滑块都走这里）。
+  ///
+  /// ⚠️ 先更新 `_value` 再调原生：这样紧跟着回来的广播会被去重滤掉。
   Future<void> set(double v) async {
     final c = v.clamp(0.0, 100.0);
     _value = c;
