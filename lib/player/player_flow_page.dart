@@ -50,14 +50,43 @@ import 'kernel_factory.dart';
 import 'kernel_traits_adapter.dart';
 import 'player_facade.dart' show FacadeAudioTrack, FacadeSubtitleTrack;
 import 'presentation/player_ui_page.dart';
+import 'presentation/player_ui_tokens.dart';
 import 'presentation/widgets/aspect_video.dart';
 import 'track_aligner.dart';
 import 'infrastructure/system/system_services.dart';
 import 'infrastructure/session/session_bridge.dart';
 
-/// `--dart-define=CF_NEW_PLAYER=true` 时路由切到新播放 UI。
+/// 是否走**新播放 UI**（`PlayerFlowPage`）。
+///
+/// ## ★ 2026-10-09：默认值已从 `false` 翻转为 `true`
+///
+/// ### 为什么必须翻（这不是偏好问题，是一个已发生的发布事故）
+/// 原先是 `defaultValue: false` ⇒ **不传 flag 就走旧页**。
+/// 而发布链路（`release.yml` / `ci.yml` / `tool/build_apk.*`）**都没传这个 flag**
+/// ⇒ **v0.3.2 发布包里编进去的是旧播放页（2816 行）**，
+/// 双内核 / 媒体会话层 / HDR tone-mapping / WakeLock / 音量系统通道
+/// **全部没进用户手里**。
+///
+/// 取证方式（产物字节级）：两页各有独有字符串，Dart AOT 以 UTF-16LE 编进
+/// `libapp.so`；对已发布 APK 扫描 ⇒ 旧页指纹 6/6 命中、新页 0/7。
+/// 详见 `docs/AUDIT-2026-10-09.md`。
+///
+/// ### 为什么要"翻转默认"而不是"给 CI 补上 flag"
+/// 补 flag 只修了**这一次**。真正的问题是"**编译期开关 + 默认值指向旧路径**"
+/// 这个组合 —— 任何人（含未来的我）只要忘了传，
+/// 就会**静默**发布一个功能缺失的包，而本地测试全绿（因为本地总记得传）。
+/// 翻转后**默认路径即正确路径**，忘记传 flag 也安全。
+///
+/// ### 旧页仍未删除（保留为逃生通道）
+/// 新页此前缺"章节刻度 / 跳过片头"，**已于本轮补齐**（含 16 例守卫测试 +
+/// 反向注入 19/19）。但为稳妥，暂保留 `--dart-define=CF_NEW_PLAYER=false`
+/// 一键回退旧页的能力 —— 若线上发现新页有阻塞缺陷，可以立即回退而不必改代码。
+///
+/// ⚠️ **回退开关只用于应急**：正常开发/发布**不要**传它。
+/// 待新页经过若干个版本的线上验证后，应连同旧页一起删除
+///（那时这个开关也随之消失，`bool.fromEnvironment` 这个类别的问题彻底消除）。
 const useNewPlayerUi =
-    bool.fromEnvironment('CF_NEW_PLAYER', defaultValue: false);
+    bool.fromEnvironment('CF_NEW_PLAYER', defaultValue: true);
 
 /// 面板音量（0–1）→ 内核 setVolume（0–100）。
 ///
@@ -309,12 +338,119 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     _tMark = now;
   }
 
+  /// 从章节列表里判定**片头区间**（开始秒, 结束秒）。null = 没检测到。
+  ///
+  /// ## ① 首选服务端原生标记（`MarkerType`）
+  /// 本服务器（Emby 4.10）某剧集章节实测为
+  /// `Chapter, IntroStart, IntroEnd, Chapter, …` —— 服务端**早已标好**。
+  ///
+  /// ## ② 兜底才是名称匹配
+  /// 字符串匹配有典型失效场景：
+  ///   · 叫"主题曲"/"OP"/"序章" → **识别不到**
+  ///   · 叫"片头曲欣赏"的普通章节 → 会被**误跳**
+  /// 故它**只能**在服务端没标记时兜底，不能当主路径。
+  ///
+  /// ## 为什么有 `IntroStart` 却没有 `IntroEnd` 时用"下一章起点"
+  /// 真实数据里出现过只有 start 的情况 —— 那时若不兜底就整个放弃检测，
+  /// 用户会看到"明明有片头标记却不跳"。用下一章起点是**最接近的合理估计**。
+  /// 都没有下一章时给 120 秒（常见片头时长），且**必须 > start** 才采纳，
+  /// 否则会得到"零长度区间"从而永远不触发。
+  static (double, double)? _detectIntro(List<MediaChapter> ch) {
+    // ① 服务端原生标记（首选）
+    for (var i = 0; i < ch.length; i++) {
+      if (!ch[i].isIntroStart) continue;
+      final start = ch[i].seconds;
+      for (var j = i + 1; j < ch.length; j++) {
+        if (ch[j].isIntroEnd) {
+          final end = ch[j].seconds;
+          if (end > start) return (start, end);
+          break;
+        }
+      }
+      // 有 IntroStart 却没配对的 IntroEnd：用下一章起点兜底
+      final end = i + 1 < ch.length ? ch[i + 1].seconds : start + 120.0;
+      if (end > start) return (start, end);
+      break;
+    }
+
+    // ② 兜底：名称匹配（服务端未标记时）
+    for (var i = 0; i < ch.length; i++) {
+      final n = ch[i].name.toLowerCase();
+      if (n.contains('片头') || n.contains('intro') || n.contains('opening')) {
+        final start = ch[i].seconds;
+        final end = i + 1 < ch.length ? ch[i + 1].seconds : 120.0;
+        if (end > start) return (start, end);
+      }
+    }
+    return null;
+  }
+
+  /// 当前是否应显示"跳过片头"浮钮（片头区间内）。
+  ///
+  /// 结束前 1 秒不再显示 —— 那时点了也几乎等于没效果，
+  /// 留着按钮只会让人以为点了没反应。
+  bool get shouldOfferIntroSkip {
+    final intro = _intro;
+    if (intro == null) return false;
+    final pos = ref.read(playbackStateProvider).position.inSeconds;
+    return pos >= intro.$1 && pos < intro.$2 - 1;
+  }
+
+  /// 自动跳过片头（点在"自动跳过"开启时由状态流驱动）。
+  ///
+  /// ## 为什么用 `_introSkipped` 只跳一次
+  /// 位置是持续推送的 —— 不加这个门，进入区间后会**每 250ms 跳一次**，
+  /// 表现为"画面反复回跳"。换集时在 `_startEpisode` 里复位。
+  void _checkIntroSkip() {
+    final intro = _intro;
+    if (intro == null || _introSkipped || !_autoIntroSkip) return;
+    final pos = ref.read(playbackStateProvider).position.inSeconds;
+    if (pos >= intro.$1 && pos < intro.$2 - 1) {
+      _introSkipped = true;
+      unawaited(_kernel?.seek(Duration(seconds: intro.$2.toInt())));
+      _flash('已跳过片头');
+    }
+  }
+
+  /// 浮钮/自动跳过共用的瞬时提示（与旧页 `_flash` 同语义）。
+  void _flash(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   /// 位置补发定时器（配合 `NativeKernel._pushState` 的限流）。
   ///
   /// 内核为消除"每帧重建整页"把位置推送限流到 250ms；
   /// 本定时器保证**窗口内最后一次位置**会被补发出去 ——
   /// 否则暂停/seek 后进度条会停在旧位置。
   Timer? _posFlushTimer;
+
+  // ---- 章节 / 跳过片头 ----
+  //
+  // ## 为什么要这两项（对齐旧页能力）
+  // 旧页 `player_page.dart` 有，新页原先缺 —— 切换默认播放页时会**功能倒退**。
+  // 故补齐后再翻转 `CF_NEW_PLAYER`（见 docs/AUDIT-2026-10-09.md 的修复顺序）。
+  //
+  /// 本集章节（来自 `launch.chapters`；缺失时才单独查一次）。
+  List<MediaChapter> _chapters = const [];
+
+  /// 片头区间（开始秒, 结束秒）；null = 没检测到。
+  (double, double)? _intro;
+
+  /// 每次起播只自动跳一次（换集时复位）。
+  bool _introSkipped = false;
+
+  /// 用户偏好：是否自动跳过片头（持久化键 `skip_intro_auto`）。
+  ///
+  /// **默认开** —— 与旧页一致（`autoIntro != '0'`）。
+  /// 旧页注释写的是"默认开"，且该偏好语义是"服务端标了片头就帮我跳"。
+  bool _autoIntroSkip = true;
   int _bufStalls = 0;
   bool _netSlowHint = false;
   bool _autoNextEnabled = true;
@@ -566,6 +702,13 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     //    而那要等 _startEpisode 才拿到。真正的适配在那边做（见 _adaptKernel）。
     _preference = KernelPreference.fromStorage(
         await ref.read(sessionStoreProvider).getPref(kKernelPrefKey));
+    // 自动跳过片头（用户偏好）。
+    //
+    // ⚠️ 判据是 `!= '0'` 而**不是** `== '1'` —— 即**默认开**。
+    //    必须与旧页一致（`player_page.dart:421`）：该偏好是"用户没设过就帮我跳"，
+    //    写成 `== '1'` 会让老用户升级后**突然不再跳片头**（静默的行为倒退）。
+    _autoIntroSkip =
+        (await ref.read(sessionStoreProvider).getPref('skip_intro_auto')) != '0';
     _stage('prefRead');
     final kernel = PlayerKernelFactory.create(_preference.kernelType);
     // ★ 这一段含 **mpv 初始化 + EGL 上下文创建**，是起播的固定开销
@@ -660,6 +803,16 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       // `SessionStateSync` 内部做**秒级去重**：进度是每 250ms 推一次的，
       // 不去重会让通知栏被刷爆（CPU 白耗 + 通知闪烁）。
       _sessionSync.sync(s);
+
+      // ---- ★ 自动跳过片头（对齐旧页）----
+      //
+      // 挂这里的原因与 `_sessionSync` / 唤醒锁相同：这是**所有**状态变化的
+      // 汇聚点。挂到"播放按钮"里会漏掉手势、自动连播、媒体键等路径
+      // —— 而那些正是"换个片头"最常发生的时机。
+      //
+      // 内部用 `_introSkipped` 保证**一集只跳一次**（位置是 250ms 推一次的，
+      // 不加门会反复回跳）。`_autoIntroSkip` 是用户偏好，默认关。
+      _checkIntroSkip();
 
       // ---- ★ 唤醒锁：跟随"是否在播"（K3.6）----
       //
@@ -816,6 +969,34 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       ref
           .read(playbackStateProvider.notifier)
           .setDuration(Duration(milliseconds: _current.runtimeTicks ?? 0));
+
+      // ---- 章节 + 片头区间（对齐旧页能力）----
+      //
+      // ## 为什么优先读 launch 而不是单独发请求
+      // 服务端把章节放在 `PlaybackInfo` 的 `MediaSource.Chapters` 里
+      // （已在 `resolvePlayback` 解析进 `launch.chapters`）——
+      // 再调一次 `getChapters` 是**纯浪费的一次往返**。
+      // 只有 launch 里确实没有时才回退单独查（老服务器/异常情况）。
+      //
+      // ⚠️ 换集必须**重置** `_introSkipped`，否则第 2 集不再自动跳片头。
+      _introSkipped = false;
+      if (launch.chapters.isNotEmpty) {
+        _chapters = launch.chapters;
+        _intro = _detectIntro(launch.chapters);
+      } else {
+        _chapters = const [];
+        _intro = null;
+        // 回退路径：不 await（章节只影响刻度与跳片头，不该拖慢起播）
+        unawaited(api.getChapters(_current.id).then((ch) {
+          if (!mounted) return;
+          setState(() {
+            _chapters = ch;
+            _intro = _detectIntro(ch);
+          });
+        }).catchError((Object _) {
+          // 章节拿不到不影响播放 —— 不弹错，静默即可
+        }));
+      }
 
       // ---- 自动适配：拿到片源特征后再决定一次 ----
       //
@@ -1692,7 +1873,14 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       },
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: PlayerUiPage(
+        // Stack 顺序：播放 UI 在下，跳过片头浮钮在上。
+        //
+        // ⚠️ 浮钮必须**在 PlayerUiPage 之后**（Stack 后者在上），
+        //    否则控制层显示时会把浮钮盖住 —— 而"控制层刚弹出来"
+        //    恰恰是用户最想点"跳过片头"的时刻。
+        body: Stack(
+          children: [
+            PlayerUiPage(
           slots: PlayerPageSlots(
             // ★ 顶栏文案（用户反馈修复，2026-10-09）
             //
@@ -1716,8 +1904,73 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
             ),
             subtitle: PlayerFlowPage.subtitleFor(_current),
             danmakuLayer: const _DanmakuLayer(),
+            // 章节刻度：服务端已在 `PlaybackInfo` 里给好章节，
+            // 这里只把起点（秒）透传给进度条（换算在进度条内做）。
+            chapters: [for (final c in _chapters) c.seconds],
           ),
           callbacks: _buildCallbacks(),
+        ),
+            // 跳过片头浮钮（区间内才显示；见 `_introSkipButton`）
+            _introSkipButton(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 「跳过片头」浮钮。
+  ///
+  /// ## 为什么单独拿出来而不是塞进 `slots`
+  /// 它是**宿主页的状态**（`_intro` 只有宿主知道），
+  /// 且要能**压在整个播放 UI 之上**（含控制层）—— 放进 slots 就被
+  /// 控制层的 Stack 顺序管住了，会在控制层显示时被盖住。
+  ///
+  /// ## 与旧页的差异（有意为之）
+  /// 旧页是 `Positioned(bottom: N)` 手工定位、自绘圆角按钮；
+  /// 这里用 `Material` + `InkWell` 以获得**涟漪反馈与 ≥48dp 命中区**
+  /// （AGENTS §6.4.1：本仓库曾有 5 处裸 `GestureDetector` 包图标，
+  /// 最小仅 16×16，既点不中又无反馈）。
+  Widget _introSkipButton() {
+    if (!shouldOfferIntroSkip) return const SizedBox.shrink();
+    final intro = _intro!;
+    final pos = ref.read(playbackStateProvider).position.inSeconds;
+    final remain = (intro.$2 - pos).round();
+    return Positioned(
+      // 放右下：不遮字幕（字幕在底部中间）、不压顶栏返回键
+      right: 16,
+      bottom: 108,
+      child: Material(
+        // 用 `panelBg`（半透明深色）而不是纯黑 —— 亮画面下也能看清，
+        // 且与面板体系同源（令牌唯一来源，AGENTS §5.4）。
+        color: PlayerUi.panelBg,
+        borderRadius: BorderRadius.circular(PlayerUi.feedbackRadius),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(PlayerUi.feedbackRadius),
+          onTap: () {
+            _introSkipped = true;
+            unawaited(_kernel?.seek(Duration(seconds: intro.$2.toInt())));
+            _flash('已跳过片头');
+          },
+          child: Padding(
+            // 命中区 ≥48dp（视觉高度靠 padding 撑起）
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.fast_forward_rounded,
+                    color: Colors.white, size: 18),
+                const SizedBox(width: 6),
+                Text(
+                  '跳过片头 ${remain}s',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: PlayerUi.valueSize,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

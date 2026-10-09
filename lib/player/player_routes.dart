@@ -70,10 +70,16 @@ void openPlayer(BuildContext context, MediaItem item,
 
 /// 播放器路由（供 router.dart 挂载）。
 ///
-/// ## 双播放页渐进迁移
-/// `--dart-define=CF_NEW_PLAYER=true` 时走**新播放 UI**（PlayerFlowPage，
-/// 按 HTML 原型重构的那套，Emby 流程见 player_flow_page.dart）；
-/// 默认仍走旧页 —— 新页未经真实登录 E2E 验证前不接管主路径。
+/// ## 双播放页：**默认走新页**（2026-10-09 翻转）
+/// **默认**走新播放 UI（`PlayerFlowPage`，按 HTML 原型重构，
+/// 双内核 / 媒体会话层 / HDR tone-mapping / WakeLock / 音量系统通道都在它里面）。
+///
+/// 旧页（`PlayerPage`，2816 行）**仅作应急回退**：
+/// `--dart-define=CF_NEW_PLAYER=false` 才走它。
+///
+/// ⚠️ **翻转的原因是一个已发生的发布事故**：原先默认 `false`，
+/// 而发布链路没传 flag ⇒ v0.3.2 发布包里编进去的是**旧页**，
+/// 上述能力全部没进用户手里。详见 `docs/AUDIT-2026-10-09.md`。
 GoRoute playerRoute() => GoRoute(
       path: '/play/:id',
       builder: (context, state) {

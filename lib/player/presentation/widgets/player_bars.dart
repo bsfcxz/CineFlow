@@ -158,12 +158,19 @@ class PlayerBottomBar extends StatelessWidget {
     this.showRemaining = false,
     this.onToggleTimeDisplay,
     this.progressKey,
+    this.chapters = const [],
   });
 
   /// 0.0–1.0。
   final double progress;
   final Duration position;
   final Duration duration;
+
+  /// 章节起点（秒）—— 直接透传给 [PlayerProgressBar]。
+  ///
+  /// 默认空列表：本组件在"无章节"场景（绝大多数电影）下行为不变，
+  /// 不会因为新增参数而画出多余的东西。
+  final List<double> chapters;
 
   /// 缓冲进度 0.0–1.0（可选）。
   final double? buffered;
@@ -198,6 +205,8 @@ class PlayerBottomBar extends StatelessWidget {
           progress: progress,
           buffered: buffered,
           onSeek: onSeek,
+          chapters: chapters,
+          duration: duration,
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -251,11 +260,25 @@ class PlayerProgressBar extends StatefulWidget {
     required this.progress,
     required this.onSeek,
     this.buffered,
+    this.chapters = const [],
+    this.duration,
   });
 
   final double progress;
   final double? buffered;
   final ValueChanged<double> onSeek;
+
+  /// 章节起点（**秒**，服务端 `MediaChapter.seconds` 原值）。
+  ///
+  /// ## 为什么传秒而不是 0–1 的分数
+  /// 分数依赖 `duration`，而 `duration` 在起播早期是 0（容器还没探测完）——
+  /// 若由调用方换算，就会把"duration 未知"和"章节在第 0 秒"混为一谈。
+  /// 传原值 + 这里拿 `duration` 现算，**换算只发生在这一个地方**。
+  final List<double> chapters;
+
+  /// 总时长 —— 用来把 [chapters] 换算成 0–1 的分数。
+  /// 为 0 或 null 时**不画刻度**（否则除数无意义）。
+  final Duration? duration;
 
   @override
   State<PlayerProgressBar> createState() => _PlayerProgressBarState();
@@ -275,6 +298,19 @@ class _PlayerProgressBarState extends State<PlayerProgressBar> {
   @override
   Widget build(BuildContext context) {
     final value = _dragValue ?? widget.progress.clamp(0.0, 1.0);
+
+    // 章节刻度位置（0–1）。换算只在这里发生（见 [PlayerProgressBar.chapters]）。
+    //
+    // ⚠️ `duration` 为 0 时**不画** —— 起播早期容器还没探测完，
+    //    此时除法会得到 Infinity/NaN，画出来是错位的线或直接报错。
+    final totalMs = widget.duration?.inMilliseconds ?? 0;
+    final ticks = totalMs > 0
+        ? [
+            for (final s in widget.chapters)
+              (s * 1000 / totalMs).clamp(0.0, 1.0),
+          ]
+        : const <double>[];
+
     return LayoutBuilder(
       builder: (context, box) {
         final width = box.maxWidth;
@@ -341,6 +377,31 @@ class _PlayerProgressBarState extends State<PlayerProgressBar> {
                           ),
                         ),
                       ),
+                      // 章节刻度
+                      //
+                      // ## 为什么画在"已播段"之上
+                      // 刻度是**导航参考**（"这集分几段、现在到哪段"），
+                      // 若被已播段盖住，划过之后就看不见了 —— 那正好是
+                      // 用户最需要它的时候。故放最后（Stack 后者在上）。
+                      //
+                      // ## 为什么跳过首尾
+                      // 第 0 秒的刻度与左端点重合、末尾的与右端点重合，
+                      // 画出来只是两条"加粗的端点"，纯噪声。
+                      for (final t in ticks)
+                        if (t > 0.002 && t < 0.998)
+                          Positioned(
+                            left: (width * t) - PlayerUi.chapterTickWidth / 2,
+                            top: 0,
+                            bottom: 0,
+                            child: Container(
+                              width: PlayerUi.chapterTickWidth,
+                              decoration: BoxDecoration(
+                                color: PlayerUi.chapterTick,
+                                borderRadius:
+                                    BorderRadius.circular(PlayerUi.chapterTickWidth / 2),
+                              ),
+                            ),
+                          ),
                       // 拖动时的拇指
                       if (_dragging)
                         Positioned(

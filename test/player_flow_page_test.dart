@@ -209,6 +209,15 @@ class FakeMediaProvider implements MediaProvider {
   void reportItemProgress(
       {required String itemId, required int positionTicks, bool? played}) {}
 
+  /// 章节查询 —— 宿主页在 `launch.chapters` 为空时会回退调它
+  /// （对齐旧页的"跳过片头 / 章节刻度"能力）。
+  ///
+  /// 默认返回空：多数测试的 `resolvePlayback` 不带章节，
+  /// 走的正是这条回退路径；返回空能让它**安静地什么都不做**，
+  /// 不影响既有断言。要测片头逻辑的用例可覆写本方法。
+  @override
+  Future<List<MediaChapter>> getChapters(String itemId) async => const [];
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName}');
