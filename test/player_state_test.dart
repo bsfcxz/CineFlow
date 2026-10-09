@@ -233,16 +233,35 @@ void main() {
       );
     });
 
-    test('auto 按窗口方向解析：横→16:9、竖→9:16、正方归横', () {
-      // 横屏
-      expect(AspectMode.resolveAuto(width: 2400, height: 1080),
+    test('★ auto 按「片源×屏幕」二维判定（方向一致才满屏）', () {
+      // ★★ 第一版只按屏幕方向强制比例 ⇒ 竖屏看 16:9 电影被硬塞进
+      //    9:16 的框（变形，用户报障"竖屏画面被整出问题"）。
+      //    正确语义：方向一致才满屏，不一致回 contain —— 这四格必须全断言。
+      const r169 = 16 / 9;
+      const r916 = 9 / 16;
+
+      // 横片 + 横屏 ⇒ 16:9 满屏（主场景）
+      expect(AspectMode.resolveAuto(width: 2400, height: 1080, videoRatio: r169),
           AspectMode.ratio16x9);
-      // 竖屏
-      expect(AspectMode.resolveAuto(width: 1080, height: 2400),
+      // 竖片 + 竖屏 ⇒ 9:16 满屏（竖拍素材）
+      expect(AspectMode.resolveAuto(width: 1080, height: 2400, videoRatio: r916),
           AspectMode.ratio9x16);
-      // 正方形：归横（影视剧主场景横向，16:9 比 9:16 更接近 1:1）
-      expect(AspectMode.resolveAuto(width: 1000, height: 1000),
-          AspectMode.ratio16x9);
+      // ★ 横片 + 竖屏 ⇒ contain（绝不能塞 9:16 —— 回归的经典黑边）
+      expect(AspectMode.resolveAuto(width: 1080, height: 2400, videoRatio: r169),
+          AspectMode.contain,
+          reason: '★★ 竖屏看横片必须回 contain —— 硬塞 9:16 会变形'
+              '（用户报障的场景）');
+      // 竖片 + 横屏 ⇒ contain
+      expect(AspectMode.resolveAuto(width: 2400, height: 1080, videoRatio: r916),
+          AspectMode.contain);
+      // 片源比例未知 ⇒ 保守 contain（不能猜）
+      expect(AspectMode.resolveAuto(width: 2400, height: 1080, videoRatio: null),
+          AspectMode.contain);
+      expect(AspectMode.resolveAuto(width: 1080, height: 2400, videoRatio: 0),
+          AspectMode.contain);
+      // 正方形片源按横处理（竖屏看 ⇒ contain 黑边最少）
+      expect(AspectMode.resolveAuto(width: 1080, height: 2400, videoRatio: 1.0),
+          AspectMode.contain);
     });
 
     test('16:9 / 4:3 / 9:16 有固定比例，其余由引擎决定', () {

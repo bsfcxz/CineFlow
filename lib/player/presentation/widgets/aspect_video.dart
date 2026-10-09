@@ -34,12 +34,14 @@ class AspectVideo extends ConsumerWidget {
     // "方向变化要通知 provider"的额外链路。widget 里每次 build
     // 直接读 `MediaQuery`，天然跟随旋转，无需任何事件。
     //
-    // ## 纯函数解析（`AspectMode.resolveAuto`）
-    // 决策本身可单测（不碰 widget）。
+    // ## ⚠️ 必须把**片源比例**一起给判定（第一版翻车的教训）
+    // 只按屏幕方向强制比例 ⇒ 竖屏看 16:9 电影被硬塞进 9:16（变形）。
+    // 正确语义见 `resolveAuto` 注释：方向一致才满屏，否则回 contain。
     final effective = aspect == AspectMode.auto
         ? AspectMode.resolveAuto(
             width: MediaQuery.sizeOf(context).width,
             height: MediaQuery.sizeOf(context).height,
+            videoRatio: videoRatio,
           )
         : aspect;
 

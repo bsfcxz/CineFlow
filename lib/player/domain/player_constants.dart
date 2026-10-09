@@ -144,14 +144,34 @@ abstract final class PlayerPanels {
   static const Duration tabDuration = Duration(milliseconds: 200);
 
   /// 设置面板最大宽度（规格 §7.6：`min(screenWidth * 0.9, 400)`）。
+  ///
+  /// ★ 2026-10-09 横屏宽度拆分（用户反馈"横屏时侧边栏占了半个屏幕"）：
+  /// 原来只有一组 `ratio 0.9 / max 400` —— 按竖屏设计（393dp 屏 ⇒ 400dp
+  /// 即全宽）。但横屏 873dp 宽时 400dp 仍生效 ⇒ **占屏 46%**，把画面
+  /// 挤掉近一半。
+  ///
+  /// ## 横屏取值的依据（对齐主流播放器）
+  /// MX Player / VLC / nPlayer 的横屏侧栏约 **屏宽 28–35%**
+  /// （或换算成 240–320dp）：够放 Tab + 行内容，又留出大半画面。
+  /// 竖屏维持原规格不动（§7.6 是按竖屏写的）。
+  ///
+  /// ## 为什么按"宽度 ≥ 高度"判横屏而不是 MediaQuery.orientation
+  /// 本页全屏时 `orientation` 在部分设备上返回不准（immersive）；
+  /// 宽高比较是事实。
   static const double settingsMaxWidth = 400;
   static const double settingsWidthRatio = 0.9;
+  static const double settingsMaxWidthLandscape = 320;
+  static const double settingsWidthRatioLandscape = 0.36;
 
   /// 播放列表面板（规格 §7.8：`min(screenWidth * 0.8, 340)`），左侧。
   static const double playlistMaxWidth = 340;
   static const double playlistWidthRatio = 0.8;
+  static const double playlistMaxWidthLandscape = 300;
+  static const double playlistWidthRatioLandscape = 0.34;
 
-  /// 拖出的宽度。
+  /// 拖出的宽度（竖屏口径，规格 §7.6 / §7.8）。
+  /// 横屏的取值函数在 `PlayerUi.settingsWidthFor`（**按方向分发**），
+  /// 这里只放常量 —— 两个类各司其职（PlayerPanels=常量，PlayerUi=函数）。
   static double settingsWidth(double screenWidth) =>
       (screenWidth * settingsWidthRatio).clamp(0.0, settingsMaxWidth);
 
@@ -186,13 +206,41 @@ enum AspectMode {
         _ => null,
       };
 
-  /// ★ auto 档的解析：按**窗口方向**选固定比例。
+  /// ★ auto 档的解析：**片源方向与屏幕方向一致才满屏，否则回 contain**。
   ///
-  /// 抽成 static 是**为了可测**（纯函数，不碰 widget/约束）：
-  /// 横屏 → 16:9，竖屏 → 9:16。正方形窗口（宽==高）归横屏
-  /// （影视剧主场景是横向的，16:9 比 9:16 更接近正方形）。
-  static AspectMode resolveAuto({required double width, required double height}) {
-    return width >= height ? AspectMode.ratio16x9 : AspectMode.ratio9x16;
+  /// ## ⚠️ 为什么不是"横屏→16:9、竖屏→9:16"（第一版照字面执行，真机翻车）
+  /// 用户原话"画面横屏时自适应16：9，画面竖屏播放时9：16"，
+  /// 第一版被字面实现成"按**屏幕方向**强制比例" ⇒
+  /// **竖屏看 16:9 电影时画面被硬塞进 9:16 的框** —— 变形/裁剪
+  ///（用户报障："竖屏画面被你整的有问题了"）。
+  ///
+  /// ## 正确语义（这次按**片源 × 屏幕**二维判定）
+  /// | 片源 | 屏幕 | 行为 | 理由 |
+  /// |---|---|---|---|
+  /// | 横(≥1) | 横 | **16:9 满屏** | 方向一致，铺满不变形（主场景）|
+  /// | 竖(<1) | 竖 | **9:16 满屏** | 方向一致，铺满不变形（竖拍素材）|
+  /// | 横 | 竖 | **contain** | 硬塞 9:16 会变形 —— 回退经典黑边 |
+  /// | 竖 | 横 | **contain** | 同理 |
+  ///
+  /// 即：auto = "方向一致时省去手动选档，不一致时绝不添乱"。
+  /// [videoRatio] 来自内核**显示尺寸**（dwidth/dheight，已含旋转/SAR），
+  /// 未知（null/0）时保守回 contain。
+  static AspectMode resolveAuto({
+    required double width,
+    required double height,
+    required double? videoRatio,
+  }) {
+    // 片源比例未知/非法 ⇒ **一律 contain**（不能猜：猜横竖都可能变形）。
+    if (videoRatio == null || videoRatio <= 0) return AspectMode.contain;
+    final screenLandscape = width >= height;
+    // 片源方向：ratio ≥ 1 为横向画面（含正方形 —— 正方按横处理更安全，
+    // 竖屏看正方形内容用 contain 黑边最少）。
+    final videoLandscape = videoRatio >= 1;
+    if (screenLandscape == videoLandscape) {
+      return screenLandscape ? AspectMode.ratio16x9 : AspectMode.ratio9x16;
+    }
+    // 方向不一致：绝不能强行塞比例（变形）⇒ 回 contain
+    return AspectMode.contain;
   }
 }
 

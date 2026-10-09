@@ -170,6 +170,32 @@ abstract final class PlayerUi {
       (availableWidth * PlayerPanels.playlistWidthRatio)
           .clamp(0.0, PlayerPanels.playlistMaxWidth);
 
+  /// ★ 按方向取面板宽（横屏用更小比例/上限 —— 用户反馈"横屏占了半个屏"）。
+  ///
+  /// 纯函数可测；横竖判据 `w >= h`（与 `AspectMode.resolveAuto` 同口径）。
+  /// 常量与横屏取值依据见 `PlayerPanels.settingsMaxWidthLandscape` 注释。
+  static double settingsWidthFor({
+    required double width,
+    required double height,
+  }) {
+    if (width >= height) {
+      return (width * PlayerPanels.settingsWidthRatioLandscape)
+          .clamp(0.0, PlayerPanels.settingsMaxWidthLandscape);
+    }
+    return settingsWidth(width);
+  }
+
+  static double playlistWidthFor({
+    required double width,
+    required double height,
+  }) {
+    if (width >= height) {
+      return (width * PlayerPanels.playlistWidthRatioLandscape)
+          .clamp(0.0, PlayerPanels.playlistMaxWidthLandscape);
+    }
+    return playlistWidth(width);
+  }
+
   // ---- 透明浮层的可读性保障（用户第四轮要求：全部控件透明）----
 
   /// 浮层图标/文字的**双层阴影**。

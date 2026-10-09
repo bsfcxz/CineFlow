@@ -43,7 +43,16 @@ class PlayerPanelHost extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final width = availableWidth ?? MediaQuery.sizeOf(context).width;
+    final size = MediaQuery.sizeOf(context);
+    final width = availableWidth ?? size.width;
+    // ★ 2026-10-09：面板宽度**按方向取**（用户反馈"横屏时侧边栏占半个屏幕"）
+    //
+    // ## 为什么不用 `OrientationBuilder`
+    // 播放页横屏是**程序锁横**（immersive），部分设备上
+    // `MediaQuery.orientationOf` 仍报 portrait；宽高比较是事实。
+    // 且这里的 `height` 应是**视频区高度**（`availableHeight` 没有 ——
+    // 用屏幕高即可：本面板铺满全屏，屏幕高=面板高）。
+    final isLandscape = size.width >= size.height;
     return Stack(
       children: [
         // 遮罩（在抽屉下层）
@@ -61,7 +70,9 @@ class PlayerPanelHost extends StatelessWidget {
         _Drawer(
           visible: state.open == PanelType.playlist,
           fromLeft: true,
-          width: PlayerUi.playlistWidth(width),
+          width: isLandscape
+              ? PlayerUi.playlistWidthFor(width: width, height: size.height)
+              : PlayerUi.playlistWidth(width),
           child: playlist,
         ),
 
@@ -69,7 +80,9 @@ class PlayerPanelHost extends StatelessWidget {
         _Drawer(
           visible: state.open == PanelType.settings,
           fromLeft: false,
-          width: PlayerUi.settingsWidth(width),
+          width: isLandscape
+              ? PlayerUi.settingsWidthFor(width: width, height: size.height)
+              : PlayerUi.settingsWidth(width),
           child: settings,
         ),
 
@@ -77,7 +90,9 @@ class PlayerPanelHost extends StatelessWidget {
         _Drawer(
           visible: state.open == PanelType.danmaku,
           fromLeft: false,
-          width: PlayerUi.settingsWidth(width),
+          width: isLandscape
+              ? PlayerUi.settingsWidthFor(width: width, height: size.height)
+              : PlayerUi.settingsWidth(width),
           child: danmaku,
         ),
       ],

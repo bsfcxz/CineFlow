@@ -175,19 +175,35 @@ void main() {
       expect(c.read(panelStateProvider).open, PanelType.none);
     });
 
-    testWidgets('宽屏（800dp）上抽屉只占一半 → 遮罩区域更大', (tester) async {
-      final c = await pumpPlayer(tester, size: const Size(800, 800));
+    testWidgets('横屏（1000x600）抽屉改用横屏口径 → 占屏 <40%', (tester) async {
+      // ★ 2026-10-09 用户反馈："横屏时侧边栏占了半个屏幕"。
+      //   原断言是 800x800（正方，竖屏口径 ⇒ 400dp）；
+      //   横屏改用独立比例/上限后（PlayerPanels.settingsMaxWidthLandscape）：
+      //   1000x600 ⇒ min(1000*0.36, 320) = 320dp，占屏 32%。
+      final c = await pumpPlayer(tester, size: const Size(1000, 600));
       c.read(panelStateProvider.notifier).open(PanelType.settings);
       await tester.pump(const Duration(milliseconds: 400));
 
       final drawer = tester.getRect(find.byKey(keys.player.settingsPanel));
-      // 800dp 屏：min(800*0.9, 400) = 400 → 抽屉占 x=400..800
-      expect(drawer.width, 400, reason: '宽屏上被 400dp 上限截住');
-      expect(drawer.left, 400);
+      expect(drawer.width, 320,
+          reason: '★ 横屏抽屉应被 320dp 上限截住（竖屏仍 400dp）');
+      expect(drawer.left, 1000 - 320);
+      expect(drawer.width / 1000, lessThan(0.4),
+          reason: '★ 横屏侧栏不得超过 40% 屏宽（用户要求"别占半个屏"）');
 
       await tester.tapAt(const Offset(100, 400)); // 抽屉之外
       await tester.pump(const Duration(milliseconds: 400));
       expect(c.read(panelStateProvider).open, PanelType.none);
+    });
+
+    testWidgets('竖屏口径不变（规格 §7.6 的 0.9 比例）', (tester) async {
+      final c = await pumpPlayer(tester, size: const Size(393, 850));
+      c.read(panelStateProvider.notifier).open(PanelType.settings);
+      await tester.pump(const Duration(milliseconds: 400));
+
+      final drawer = tester.getRect(find.byKey(keys.player.settingsPanel));
+      expect(drawer.width, moreOrLessEquals(393 * 0.9, epsilon: 0.5),
+          reason: '★ 竖屏保持规格 §7.6 原样');
     });
   });
 

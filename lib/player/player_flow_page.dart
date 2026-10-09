@@ -629,41 +629,81 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     }());
 
     // 分集 → 播放列表面板
-    final eps = widget.episodes;
-    if (eps != null && eps.isNotEmpty) {
-      ref.read(playlistStateProvider.notifier).setEntries([
-        for (final e in eps)
-          PlaylistEntry(
-            id: e.id,
-            title: e.name,
-            subtitle: e.type == 'Episode' ? e.seriesName : null,
-            // ---- 集数 + 观看进度（用户反馈修复，2026-10-07）----
-            //
-            // 用户："播放剧集和综艺时播放列表并没有显示当前集数。
-            //       这个具体的内容可以参考之前的选集功能。"
-            //
-            // 参考旧页选集抽屉（`player_page.dart:2563-2573`）的口径：
-            //   label = ['第 N 集', 剧名].join(' ')
-            //   sub   = played ? '已看' : (progress > 0 ? '看到 N%' : null)
-            //
-            // ⚠️ 电影（无 indexNumber）传 null —— 面板会自动不显示徽章，
-            //    不会出现"第 null 集"或空行。
-            episodeLabel:
-                e.indexNumber == null ? null : '第 ${e.indexNumber} 集',
-            progressLabel: e.played
-                ? '已看'
-                : (e.progress > 0
-                    ? '看到 ${(e.progress * 100).round()}%'
-                    : null),
-          ),
-      ], startIndex: _index);
-    }
-    ref.read(playlistStateProvider.notifier).onSelect = (entry) {
+    //
+    // ══════════════════════════════════════════════════════════════
+    // ★★ 为什么整段推迟到**首帧之后**（真机 + 测试双重取证）
+    // ══════════════════════════════════════════════════════════════
+    // 本段在 `initState` 里，而 Riverpod **禁止在 widget 生命周期内
+    // 同步修改 provider**：
+    //     Tried to modify a provider while the widget tree was building.
+    //     ... could lead to an inconsistent UI state.
+    //
+    // ## 原来的 `if` 分支为什么"侥幸没炸"
+    // 它只在**有分集**时执行 —— 而单测里的电影场景（`episodes == null`）
+    // 根本不进这个分支 ⇒ 缺陷被掩盖。等电影也要清空（下面的 else）时，
+    // **所有电影场景都会触发** ⇒ `player_flow_page_test` 5 例当场变红。
+    //
+    // ## 修法：`addPostFrameCallback` 统一推迟
+    // 不用 `Future.microtask` —— 微任务仍可能在 build 完成前执行；
+    // post-frame 回调**保证在首帧渲染结束后**运行，是 Riverpod 官方
+    // 推荐的"在 Lifecycle 里改 provider"的逃逸口。
+    //
+    // ⚠️ 代价：首帧时列表还是旧数据（一帧 ≈ 16ms，用户不可能察觉），
+    //    第二帧起正确。`if (!mounted) return` 防页面已退出。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
       final eps = widget.episodes;
-      if (eps == null) return;
-      final i = eps.indexWhere((e) => e.id == entry.id);
-      if (i >= 0) unawaited(_playEpisode(i));
-    };
+      if (eps != null && eps.isNotEmpty) {
+        ref.read(playlistStateProvider.notifier).setEntries([
+          for (final e in eps)
+            PlaylistEntry(
+              id: e.id,
+              title: e.name,
+              subtitle: e.type == 'Episode' ? e.seriesName : null,
+              // ---- 集数 + 观看进度（用户反馈修复，2026-10-07）----
+              //
+              // 用户："播放剧集和综艺时播放列表并没有显示当前集数。
+              //       这个具体的内容可以参考之前的选集功能。"
+              //
+              // 参考旧页选集抽屉（`player_page.dart:2563-2573`）的口径：
+              //   label = ['第 N 集', 剧名].join(' ')
+              //   sub   = played ? '已看' : (progress > 0 ? '看到 N%' : null)
+              //
+              // ⚠️ 电影（无 indexNumber）传 null —— 面板会自动不显示徽章，
+              //    不会出现"第 null 集"或空行。
+              episodeLabel:
+                  e.indexNumber == null ? null : '第 ${e.indexNumber} 集',
+              progressLabel: e.played
+                  ? '已看'
+                  : (e.progress > 0
+                      ? '看到 ${(e.progress * 100).round()}%'
+                      : null),
+            ),
+        ], startIndex: _index);
+      } else {
+        // ★★ 电影：**必须显式清空**（用户报障："播放电影时列表图标还在"）
+        //
+        // ## 根因（真机可见的错乱）
+        // `playlistStateProvider` 是**应用级单例** —— 退出播放页不重置。
+        // 原实现只在"有分集"时 `setEntries`，电影进不来这个分支 ⇒
+        // 列表**残留上一部剧的 173 集** ⇒ 底栏按钮显示 `2/173`，
+        // 点开列表面板还会看到**上一部剧的分集**（数据错乱，
+        // 比"图标没隐藏"更严重 —— 误点会切到别的剧）。
+        //
+        // ## 为什么清空而不是"隐藏按钮"
+        // 按钮可见性由 `entries.length > 1` 推导（见 `player_ui_page`
+        // 的 `playlistCount`）。**状态清空后按钮自动只剩图标**，
+        // 无需在 UI 层加"电影就隐藏"的第二套判据 —— 单一事实源。
+        ref.read(playlistStateProvider.notifier).setEntries(const []);
+      }
+      ref.read(playlistStateProvider.notifier).onSelect = (entry) {
+        final eps2 = widget.episodes;
+        if (eps2 == null) return;
+        final i = eps2.indexWhere((e) => e.id == entry.id);
+        if (i >= 0) unawaited(_playEpisode(i));
+      };
+    });
 
     // 解码方式：面板改 videoState → 内核（页面回调契约里没有这一项，
     // 走 provider 监听；Media3 如实不支持则静默忽略）

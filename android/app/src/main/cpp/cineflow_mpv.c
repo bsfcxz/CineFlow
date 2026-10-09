@@ -193,6 +193,79 @@ static void sb_json_number(sb_t *sb, double v) {
 
 static void sb_json_bool(sb_t *sb, int v) { sb_raw(sb, v ? "true" : "false"); }
 
+/* ---------------- mpv_node → JSON ----------------
+ *
+ * ★ 2026-10-09 修"音频/字幕 Tab 空白"的根因（用户报障）。
+ *
+ * ## 现象
+ * 多音轨/多字幕片源，设置面板的音频/字幕 Tab 显示"没有可选音轨"，
+ * 信息 Tab 也没有内核数据 —— **不报错、不崩溃**。
+ *
+ * ## 根因（链路取证）
+ * `track-list` 用 `mpv_observe_property(..., MPV_FORMAT_STRING)` 注册，
+ * 但 mpv **属性事件到达时** `p->format` 反映的是**实际投递格式**：
+ * 对 `track-list` 这类 node 型属性，事件投递为 **MPV_FORMAT_NODE**
+ *（属性此刻不可用时是 MPV_FORMAT_NONE）。
+ * 旧代码 `if (p->format == MPV_FORMAT_STRING)` ⇒ 两种都过不了
+ * ⇒ **事件被静默丢弃** ⇒ Dart 永远收不到轨道 ⇒ 面板空白。
+ * （Dart 解析器注释里警告过这个形态："其中一边静默解析出空轨道"。）
+ *
+ * ## 修法
+ * 1. 注册格式改 **MPV_FORMAT_NODE**（mpv 会填 mpv_node 树）
+ * 2. 事件到达时按 **NODE** 递归序列化成 JSON 文本
+ *    —— 与"STRING 观察时 mpv 把 node 转 JSON"的文本形状一致，
+ *      Dart 侧 `_parseTracks`（先 jsonDecode 再遍历）**无需改动**。
+ * 3. 兼容保留 STRING 分支（防御某些 mpv 版本以 STRING 投递）。
+ *
+ * ## 坑
+ * · MPV_FORMAT_STRING 的 mpv_node 里 u.string 是 **char***；
+ *   FLAG 是 int；INT64 是 int64_t；DOUBLE 是 double —— 各联合成员
+ *   不可混读。
+ * · node_map 的 key 是 `char *keys[]` + `mpv_node *values[]` 两个平行数组。
+ * · 递归深度受片源轨道数限制（几十层以内），无栈溢出风险。 */
+static void sb_json_node(sb_t *sb, const mpv_node *node) {
+    switch (node->format) {
+    case MPV_FORMAT_NONE:
+        sb_raw(sb, "null");
+        return;
+    case MPV_FORMAT_STRING:
+        sb_json_string(sb, node->u.string ? node->u.string : "");
+        return;
+    case MPV_FORMAT_FLAG:
+        sb_json_bool(sb, node->u.flag);
+        return;
+    case MPV_FORMAT_INT64:
+        sb_json_number(sb, (double)node->u.int64);
+        return;
+    case MPV_FORMAT_DOUBLE:
+        sb_json_number(sb, node->u.double_);
+        return;
+    case MPV_FORMAT_NODE_ARRAY:
+        sb_char(sb, '[');
+        for (int i = 0; i < node->u.list->num; i++) {
+            if (i) sb_char(sb, ',');
+            sb_json_node(sb, &node->u.list->values[i]);
+        }
+        sb_char(sb, ']');
+        return;
+    case MPV_FORMAT_NODE_MAP:
+        sb_char(sb, '{');
+        for (int i = 0; i < node->u.list->num; i++) {
+            if (i) sb_char(sb, ',');
+            sb_json_string(sb, node->u.list->keys[i] ? node->u.list->keys[i] : "");
+            sb_char(sb, ':');
+            sb_json_node(sb, &node->u.list->values[i]);
+        }
+        sb_char(sb, '}');
+        return;
+    default:
+        /* 未知格式（BYTE_ARRAY 等）：给 null 而不是输出残缺 JSON ——
+         * 残缺 JSON 会让 Dart 侧整条事件解析失败。 */
+        sb_raw(sb, "null");
+        return;
+    }
+}
+
 static void call_kotlin_event(const char *json) {
     if (!g_mpvlib_class || !g_on_event_mid) return;
     JNIEnv *env = get_env();
@@ -249,6 +322,28 @@ static void emit_property_string(const char *name, const char *v) {
     sb_free(&sb);
 }
 
+/* node 属性（track-list 等）：data 直接是 **JSON 值**（不是字符串）。
+ *
+ * ⚠️ 与 emit_property_string 的形状差异是**故意的**且与 Dart 契约一致：
+ * `KernelEventParser.parseTracks(data)` 先 `data is String ? jsonDecode : data`
+ * ⇒ 两种形状都吃（STRING 观察得到"字符串里的 JSON"，NODE 观察得到原生值）。
+ * parseTracks 的注释也写明"mpv 侧形状"由本文件决定。 */
+static void emit_property_node(const char *name, const mpv_node *node) {
+    sb_t sb;
+    sb_init(&sb, 8192); /* track-list 可到几十条轨，给足初始容量 */
+    sb_raw(&sb, "{\"type\":\"property\",\"name\":");
+    sb_json_string(&sb, name);
+    sb_raw(&sb, ",\"data\":");
+    if (node) {
+        sb_json_node(&sb, node);
+    } else {
+        sb_raw(&sb, "null");
+    }
+    sb_raw(&sb, "}");
+    call_kotlin_event(sb.buf);
+    sb_free(&sb);
+}
+
 #if CF_MPV
 /* ---------------- 事件线程：mpv_wait_event → Kotlin ---------------- */
 
@@ -296,7 +391,15 @@ static void handle_property(mpv_event_property *p) {
         return;
     }
     if (strcmp(p->name, "track-list") == 0) {
-        if (p->format == MPV_FORMAT_STRING) emit_property_string("track-list", *(char **)p->data);
+        /* ★ 按**实际投递格式**分发（见 sb_json_node 上方的根因说明）：
+         * NODE = 本构建 mpv 的实际行为（主路径）；
+         * STRING = 防御分支（个别版本可能转 JSON 文本投递）；
+         * NONE = 属性此刻不可用（文件刚关等）—— 静默忽略，不发事件。 */
+        if (p->format == MPV_FORMAT_NODE) {
+            emit_property_node("track-list", (const mpv_node *)p->data);
+        } else if (p->format == MPV_FORMAT_STRING) {
+            emit_property_string("track-list", *(char **)p->data);
+        }
         return;
     }
 }
@@ -485,7 +588,9 @@ Java_com_cineflow_app_player_MPVLib_nativeInit(JNIEnv *env, jclass clazz) {
     mpv_observe_property(g_mpv, 0, "volume", MPV_FORMAT_DOUBLE);
     mpv_observe_property(g_mpv, 0, "aid", MPV_FORMAT_STRING);
     mpv_observe_property(g_mpv, 0, "sid", MPV_FORMAT_STRING);
-    mpv_observe_property(g_mpv, 0, "track-list", MPV_FORMAT_STRING);
+    /* ★ 注册格式 STRING → NODE（同上：事件到达时按 NODE 投递，
+     *   旧注册连事件都收不到正确格式，轨道面板空白） */
+    mpv_observe_property(g_mpv, 0, "track-list", MPV_FORMAT_NODE);
     /* 视频显示尺寸（宽高比要用；dwidth/dheight 已含旋转与 SAR 修正） */
     mpv_observe_property(g_mpv, 0, "dwidth", MPV_FORMAT_INT64);
     mpv_observe_property(g_mpv, 0, "dheight", MPV_FORMAT_INT64);

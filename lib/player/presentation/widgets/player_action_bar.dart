@@ -98,21 +98,26 @@ class PlayerActionBar extends StatelessWidget {
               tooltip: '下一项',
             ),
           ),
-          Flexible(
-            child: _IconBtn(
-              key: keys['playlist'],
-              // ★ 用户要求：文字「列表」→ **图标 + 进度计数**（如 3/24）
-              //
-              // ## 为什么用 `_CountBtn` 而不是普通 `_IconBtn`
-              // 用户要看到"当前第几集 / 共几集" —— 单看图标不够，
-              // 单看文字（列表）也没有进度信息。故图标与计数并排。
-              icon: Icons.playlist_play,
-              onTap: onOpenPlaylist,
-              tooltip: '选集',
-              // 计数：`当前位置/总数`。无播放列表（单曲/电影）时为 null ⇒ 只显示图标
-              // （"1/1" 是噪声，用户看不出任何信息）。
-              badge: playlistCount,
-            ),
+          // ★ 列表按钮**不包 `Flexible`**（用户报障"没整好"的第二轮修法）
+          //
+          // ## 为什么（两版失败史）
+          // ① 并排 + 全 Flexible ⇒ 320dp 屏溢出 16px（每按钮仅 ~34dp，
+          //    而"图标 22 + 计数 ~24" 需 ~46dp）
+          // ② 叠角标 ⇒ 不溢出，但图标与文字压在一起（像"图标下挂小字"）
+          //
+          // ## 本版：让这一个按钮取**自然宽度**，其余仍等分
+          // Row 先按非 Flexible 子节点的固有宽度分配，剩余空间才给
+          // Flexible 与 Spacer。图标-only 按钮只需 ~22dp，
+          // 让出 ~18dp 对 8 按钮布局毫无影响（320dp 屏实测不溢出）。
+          _IconBtn(
+            key: keys['playlist'],
+            // 用户要求：文字「列表」→ **图标 + 进度计数**（如 2/173）
+            icon: Icons.playlist_play,
+            onTap: onOpenPlaylist,
+            tooltip: '选集',
+            // 计数：`当前位置/总数`。无播放列表（单曲/电影）时为 null
+            // ⇒ 只显示图标（"1/1" 是噪声，用户看不出信息）。
+            badge: playlistCount,
           ),
           Flexible(
             child: _TextBtn(
@@ -211,47 +216,47 @@ class _IconBtn extends StatelessWidget {
       );
     }
 
-    // 有计数：**角标叠在图标右下**（不是并排）。
+    // 有计数：**图标 + 计数并排**（用户要的"列表图标 + 进度计数"）。
     //
-    // ## ⚠️ 为什么不能并排（实测崩溃）
-    // 第一版写成 `Row([Icon(22), SizedBox(3), Text('3/24', 11px)])`
-    // ⇒ 内容宽 ≈ 52dp，而底栏给每个按钮的预算下限是 **38dp**
-    //（320dp 屏 / 8 按钮 ⇒ 38.5；见 `PlayerActionBar.build` 的宽度计算）
-    // ⇒ 实测 `RenderFlex overflowed by 16 pixels`（被
-    //   `player_ui_interaction_test` 抓到，正是那道防线的价值）。
+    // ## 两版失败的教训（都在此文件里，别改回去）
+    // ① **并排 + 全 Flexible** ⇒ 320dp 屏溢出 16px
+    //    （每按钮仅 ~34dp，而"图标 22 + 计数 ~27"需 ~52dp）
+    // ② **叠在图标右下角**（Stack + Positioned）⇒ 不溢出了，但
+    //    图标与文字互相压住，视觉像"图标下挂一行小字"——
+    //    用户第二轮报障："这个没整好"。
     //
-    // ## 叠放后宽度 = 图标宽度
-    // 角标画在图标**右下角外侧**，不增加布局宽度 ⇒ 仍满足 38dp 预算。
-    // 代价：角标会略微超出图标边界（用 `Positioned` 负偏移），
-    // 但按钮本身有 38×44 的约束，实际不会被裁（`IconButton` 不裁剪 child）。
+    // ## 现在的做法：内容自适应宽 + 只在**这一个**按钮上不参与等分
+    // `PlayerActionBar.build` 里把本按钮从 `Flexible` 改成普通子节点
+    // ⇒ Row 先满足它的**自然宽度**，剩下的宽度再由其余按钮与 Spacer 分。
+    // 图标-only 的按钮只需 ~22dp，让出 18dp 毫无影响。
+    //
+    // ⚠️ `mainAxisSize.min` + 显式 gap：让两者紧贴但不相压。
     return IconButton(
       onPressed: onTap,
       tooltip: tooltip,
       splashRadius: 22,
-      constraints: const BoxConstraints(minWidth: 38, minHeight: 44),
+      // 只有最小高度约束（宽度由内容决定 —— 见上方说明）
+      constraints: const BoxConstraints(minHeight: 44),
       padding: EdgeInsets.zero,
-      icon: Stack(
-        clipBehavior: Clip.none,
+      icon: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           iconWidget,
-          Positioned(
-            // 右下角：`right: -6` 让它探出图标一点（图标 22 宽，视觉重心仍在按钮内）
-            right: -7,
-            bottom: -3,
-            child: Text(
-              badge!,
-              // 等宽数字：计数会随切集变化，不加会让整行左右抖动
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 9,
-                fontWeight: FontWeight.w700,
-                height: 1.0,
-                fontFeatures: [FontFeature.tabularFigures()],
-                shadows: [
-                  Shadow(blurRadius: 3, color: Colors.black87),
-                  Shadow(blurRadius: 8, color: Colors.black54),
-                ],
-              ),
+          const SizedBox(width: 2),
+          Text(
+            badge!,
+            // 等宽数字：计数随切集变化，不加会让整行左右抖动。
+            // 9px：既读得清，又让"2/173"（5 字符）只占 ~24dp。
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              height: 1.0,
+              fontFeatures: [FontFeature.tabularFigures()],
+              shadows: [
+                Shadow(blurRadius: 3, color: Colors.black87),
+                Shadow(blurRadius: 8, color: Colors.black54),
+              ],
             ),
           ),
         ],
