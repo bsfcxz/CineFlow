@@ -82,9 +82,6 @@ void main() {
 
     test('★ 显式档位语义不变（它们本来就是"忽略片源比例"）', () {
       // 固定比例档 & fill/cover 不受本次改动影响
-      expect(AspectMode.ratio16x9.ratio, closeTo(16 / 9, 0.001));
-      expect(AspectMode.ratio4x3.ratio, closeTo(4 / 3, 0.001));
-      expect(AspectMode.ratio9x16.ratio, closeTo(9 / 16, 0.001));
       expect(AspectMode.auto.ratio, isNull);
       expect(AspectMode.contain.ratio, isNull);
     });

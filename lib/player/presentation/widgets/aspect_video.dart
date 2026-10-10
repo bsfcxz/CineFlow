@@ -46,38 +46,11 @@ class AspectVideo extends ConsumerWidget {
         : aspect;
 
     return switch (effective) {
-      // 适应（原默认）：视频完整可见，黑边留白
+      // 适应：视频完整可见，黑边留白（**唯一档位**，见 AspectMode 的说明）
       AspectMode.contain => Center(
           child: AspectRatio(aspectRatio: videoRatio, child: texture),
         ),
-      // 拉伸：铺满整个图层（宽高比忽略）
-      AspectMode.fill => SizedBox.expand(child: texture),
-      // 裁剪：短边对齐铺满，超出部分裁掉
-      AspectMode.cover => LayoutBuilder(builder: (context, box) {
-          final w = box.maxWidth;
-          final h = box.maxHeight;
-          final videoW = w / videoRatio >= h ? w : h * videoRatio;
-          return ClipRect(
-            child: Center(
-              child: SizedBox(
-                width: videoW,
-                height: videoW / videoRatio,
-                child: texture,
-              ),
-            ),
-          );
-        }),
-      // 固定比例：忽略片源比例，按指定比例显示
-      AspectMode.ratio16x9 => Center(
-          child: AspectRatio(aspectRatio: 16 / 9, child: texture),
-        ),
-      AspectMode.ratio4x3 => Center(
-          child: AspectRatio(aspectRatio: 4 / 3, child: texture),
-        ),
-      AspectMode.ratio9x16 => Center(
-          child: AspectRatio(aspectRatio: 9 / 16, child: texture),
-        ),
-      // auto 已在上面解析成固定档，逻辑上不会再走到这里；
+      // auto 已在上面解析成 contain，逻辑上不会再走到这里；
       // 保留分支以穷尽枚举（编译器要求），落到 contain 兜底。
       AspectMode.auto => Center(
           child: AspectRatio(aspectRatio: videoRatio, child: texture),

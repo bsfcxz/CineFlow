@@ -190,6 +190,9 @@ class Media3Kernel implements PlayerKernel {
       'height': height,
     });
     _textureId = id;
+    // ★ 记账已建尺寸（否则 `recreateTexture` 的去重失效，见 mpv 内核同处说明）
+    _surfaceW = width;
+    _surfaceH = height;
   }
 
   /// 设置渲染画布尺寸（与 mpv 内核同义，见 `PlayerKernel.setSurfaceSize`）。

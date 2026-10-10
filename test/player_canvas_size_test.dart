@@ -80,6 +80,32 @@ void main() {
       }
     });
 
+    test('★★ ensureTexture 也必须记账尺寸（否则去重失效）', () {
+      // ## 真机实测抓到（同比例连播时白重建）
+      // ```
+      // 起播前设画布：片源 1920x1080 → 画布 1920x1080
+      // [Kernel] 重建画布纹理 → 1920x1080 （id=3）   ← 尺寸没变也重建
+      // ```
+      // 根因：`ensureTexture` 建了纹理却没设 `_surfaceW/_surfaceH`
+      // ⇒ 那两字段仍为 0 ⇒ 首次 `recreateTexture` 必然认为"尺寸变了"。
+      for (final f in [
+        'lib/player/native/native_kernel.dart',
+        'lib/player/media3/media3_kernel.dart',
+      ]) {
+        final s = code(f);
+        final i = s.indexOf('Future<void> ensureTexture(');
+        expect(i, greaterThanOrEqualTo(0), reason: '$f 找不到 ensureTexture');
+        final end = s.indexOf('Future<void> ensureInitialized', i);
+        final end2 = s.indexOf('/// 设置渲染画布尺寸', i);
+        final stop = (end > i) ? end : (end2 > i ? end2 : s.length);
+        final seg = s.substring(i, stop);
+        expect(seg.contains('_surfaceW = width'), isTrue,
+            reason: '★★ $f 的 ensureTexture 必须记 `_surfaceW/_surfaceH` ——\n'
+                '    否则 recreateTexture 的去重失效，同尺寸也重建（白闪）。');
+        expect(seg.contains('_surfaceH = height'), isTrue);
+      }
+    });
+
     test('★★ 重建必须**真的调用** createTexture（防退化成空操作）', () {
       // ## 为什么单独守这条（注入实测抓到）
       // 把去重判断改成 `if (true) return false;` ⇒ **从不重建**，

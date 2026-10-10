@@ -181,30 +181,41 @@ abstract final class PlayerPanels {
 
 /// 画面比例模式（规格 §7.6 视频 Tab）。
 ///
-/// ★ 2026-10-09 新增 `auto`（用户要求"播放时自动适配画面：
-/// 横屏自适应 16:9，竖屏播放时 9:16"）—— 作为**默认档**：
-/// · 横屏窗口 → 强制 16:9（影视剧主场景，满屏不变形）
-/// · 竖屏窗口 → 强制 9:16（竖屏短视频/竖拍素材满屏）
-/// 用户手动选其它档后即脱离 auto（`VideoController.setAspectMode`）。
+/// ## ★ 2026-10-10 精简为两档（用户明确要求）
+/// > "删除底栏设置按钮侧边抽屉栏中的 16:9 4:3 9:16，拉伸和裁剪，
+/// >  只留下自动和适应"
+///
+/// ### 为什么删得掉（不是妥协，而是**这些档位已没必要**）
+/// · **固定比例档（16:9/4:3/9:16）** 的原始用途是"片源比例信息有误时纠错"
+///   —— mpv 的 `--video-aspect-override` 也是这个定位。
+///   但 `auto` 现在**已经忠于片源**（第 11 轮修复：2.388 宽银幕不再被
+///   拉伸 34%）⇒ 自动在绝大多数场景就是对的，手动纠错需求极低。
+/// · **拉伸（fill）** 会变形 —— 属于"故意看变形画面"，正常观看不会用。
+/// · **裁剪（cover）** 会切掉画面边缘（字幕/构图可能被切）——
+///   想看"满屏"的用户用「适应」即可，而裁掉内容的代价用户往往没预期。
+///
+/// ### 保留两档的语义
+/// | 档 | 行为 |
+/// |---|---|
+/// | **自动** | 忠于片源比例（`resolveAuto` ⇒ contain）|
+/// | **适应** | 显式 contain（与 auto **当前**行为一致；保留它是让用户能
+///   "锁死"行为，不受未来 auto 策略变化影响）|
+///
+/// ⚠️ 删成员会让**旧持久化值失效**（如存过 `'ratio16x9'`）——
+///    读取处已用 `orElse` 回退到 `auto`（见 `player_flow_page` 的恢复逻辑），
+///    不会崩、也不会静默错档。
 enum AspectMode {
   auto('自动'),
-  contain('适应'),
-  fill('拉伸'),
-  cover('裁剪'),
-  ratio16x9('16:9'),
-  ratio4x3('4:3'),
-  ratio9x16('9:16');
+  contain('适应');
 
   const AspectMode(this.label);
   final String label;
 
-  /// 目标宽高比；`null` = 由引擎/视频原尺寸决定。
-  double? get ratio => switch (this) {
-        AspectMode.ratio16x9 => 16 / 9,
-        AspectMode.ratio4x3 => 4 / 3,
-        AspectMode.ratio9x16 => 9 / 16,
-        _ => null,
-      };
+  /// 目标宽高比；两档都是 `null`（由片源/引擎决定）。
+  ///
+  /// 保留该 getter 是因为渲染层 `AspectVideo` 与 `pictureSize`
+  /// （弹幕区域计算）都按它分支。
+  double? get ratio => null;
 
   /// ★ auto 档的解析：**忠于片源比例**（2026-10-10 修正，原为"方向一致就强制"）
   ///
@@ -273,15 +284,14 @@ enum AspectMode {
   /// 这是"同一条数学写两处"的典型风险，故抽成纯函数并单测：
   /// 若 [AspectVideo] 改了布局而这里没改，弹幕就会偏出画面。
   ///
-  /// | 档位 | 画面尺寸 |
-  /// |---|---|
-  /// | contain / ratio* | 按 [effectiveRatio] 内接（留黑边）|
-  /// | fill | 铺满视口（拉伸，无黑边）|
-  /// | cover | 铺满视口（裁掉超出部分，可见区域仍是视口）|
+  /// ## 2026-10-10 随档位精简而简化
+  /// 原 `fill`（铺满视口）与 `cover`（铺满视口）两个"画面=整个视口"的
+  /// 分支已随档位一并删除（用户要求只留自动/适应）⇒ 本函数现在
+  /// **只有一种行为：按片源比例内接**。
   ///
-  /// ⚠️ `cover` 与 `fill` 的**可见区域都是整个视口** —— 虽然
-  /// `cover` 内部有超出部分被裁掉，但用户看到的仍是满屏，
-  /// 故弹幕铺满是对的（与 mpv/B站 一致）。
+  /// ⚠️ 保留 `mode` 参数（而非删掉）是为了**调用方语义清晰**
+  ///    （`pictureSize(mode: effMode, ...)` 读起来就是"这个档下的画面"），
+  ///    且将来若再加"满屏/裁剪"档位时不必改调用点。
   ///
   /// [viewportW]/[viewportH] 是播放页可用区域（`LayoutBuilder` 的 max）。
   /// [videoRatio] 片源显示比例（未知时按 16:9，与 [AspectVideo] 的兜底一致）。
@@ -291,11 +301,7 @@ enum AspectMode {
     required double viewportH,
     required double videoRatio,
   }) {
-    // fill / cover：画面铺满视口
-    if (mode == AspectMode.fill || mode == AspectMode.cover) {
-      return (width: viewportW, height: viewportH);
-    }
-    // 其余档：按目标比例内接（contain 语义）
+    // 按片源比例内接（自动/适应两档同款 —— 两者语义都是"不改变片源比例"）
     //
     // ⚠️ `auto` 不该走到这里 —— 调用方须先 `resolveAuto` 解析。
     //    真走到了就按 [videoRatio] 内接（与 AspectVideo 的 auto 兜底同款）。

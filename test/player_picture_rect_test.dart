@@ -53,28 +53,28 @@ void main() {
           reason: '16:9 在更宽的视口里不会铺满宽（左右有黑边）');
     });
 
-    test('★ fill / cover 都铺满视口（可见区域是整个画面）', () {
-      for (final m in [AspectMode.fill, AspectMode.cover]) {
+    test('★ 两档（自动/适应）行为一致：都按片源比例内接', () {
+      // ★ 2026-10-10 档位精简为两档后，`fill`/`cover` 已删除
+      //（用户要求只留自动/适应）⇒ 断言两档结果相同。
+      for (final m in AspectMode.values) {
         final r = AspectMode.pictureSize(
           mode: m,
           viewportW: vw,
           viewportH: vh,
           videoRatio: 16 / 9,
         );
-        expect(r.width, vw, reason: '${m.name} 可见区域是整个视口');
-        expect(r.height, vh, reason: '${m.name} 可见区域是整个视口');
+        expect(r.width / r.height, closeTo(16 / 9, 0.001),
+            reason: '${m.name} 应按片源比例内接（两档语义一致）');
       }
     });
 
-    test('★ 固定比例档按该比例内接（忽略片源比例）', () {
-      final r = AspectMode.pictureSize(
-        mode: AspectMode.ratio4x3,
-        viewportW: vw,
-        viewportH: vh,
-        videoRatio: 16 / 9, // 应被忽略
-      );
-      expect(r.width / r.height, closeTo(4 / 3, 0.001),
-          reason: '固定档必须用档位比例，不能用片源比例');
+    test('★ 两档都不带固定比例（比例由片源决定）', () {
+      // 原「固定比例档按该比例内接（忽略片源比例）」的测试随档位删除而失效：
+      // 现在没有任何档位会"忽略片源比例"，故改断言"全部为 null"。
+      for (final m in AspectMode.values) {
+        expect(m.ratio, isNull,
+            reason: '${m.name} 不该带固定比例 —— 比例由片源决定');
+      }
     });
 
     test('★ 片源比例未知时按 16:9 兜底（与 AspectVideo 一致）', () {

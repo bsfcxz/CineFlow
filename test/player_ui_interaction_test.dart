@@ -436,9 +436,15 @@ void main() {
       expect(find.text('对比度'), findsOneWidget);
       expect(find.text('饱和度'), findsOneWidget);
       expect(find.text('色相'), findsOneWidget);
-      // 比例五档
-      for (final m in ['适应', '拉伸', '裁剪', '16:9', '4:3']) {
+      // ★ 2026-10-10 档位精简为**两档**（用户要求只留自动/适应）：
+      //   原断言 '适应','拉伸','裁剪','16:9','4:3' 已随档位删除而失效。
+      for (final m in ['自动', '适应']) {
         expect(find.text(m), findsOneWidget, reason: '缺比例档: $m');
+      }
+      // 反向断言：被删的档位**不该**再出现（防"删了一半"）
+      for (final gone in ['拉伸', '裁剪', '16:9', '4:3', '9:16']) {
+        expect(find.text(gone), findsNothing,
+            reason: '档位「$gone」应已删除（用户要求只留自动/适应）');
       }
     });
 
@@ -447,10 +453,10 @@ void main() {
       await tester.tap(find.byKey(keys.player.settingsButton));
       await tester.pump(const Duration(milliseconds: 400));
 
-      await tester.tap(find.text('16:9'));
+      await tester.tap(find.text('适应'));
       await tester.pump(const Duration(milliseconds: 400));
-      expect(c.read(videoStateProvider).aspectMode, AspectMode.ratio16x9);
-      expect(h.calls, contains('aspect:ratio16x9'));
+      expect(c.read(videoStateProvider).aspectMode, AspectMode.contain);
+      expect(h.calls, contains('aspect:contain'));
     });
 
     testWidgets('音频 Tab：音轨列表 / 延迟 / 音量', (tester) async {

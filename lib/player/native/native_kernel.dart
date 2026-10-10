@@ -301,6 +301,21 @@ class NativeKernel implements PlayerKernel {
       'height': height,
     });
     _textureId = id;
+    // ★★ 必须**记账已建尺寸**（真机实测抓到的"去重失效"）
+    //
+    // ## 不记会怎样
+    // `recreateTexture` 靠 `_surfaceW/_surfaceH` 判断"尺寸是否变了"。
+    // 这里建了纹理却不记账 ⇒ 那两个字段仍是 0 ⇒ 首次 `recreateTexture`
+    // **必然认为尺寸变了** ⇒ 即使画布已是目标尺寸也会重建。
+    //
+    // 真机日志（同比例连播时）：
+    // ```
+    // 起播前设画布：片源 1920x1080 → 画布 1920x1080
+    // [Kernel] 重建画布纹理 → 1920x1080 （id=3）   ← 尺寸没变也重建了
+    // ```
+    // ⇒ 每次换集都白重建一次（视频层闪一下）。
+    _surfaceW = width;
+    _surfaceH = height;
   }
 
   /// 设置渲染画布尺寸（mpv 的 `wid` Surface 的 buffer 大小）。

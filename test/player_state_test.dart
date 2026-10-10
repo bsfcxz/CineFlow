@@ -223,8 +223,9 @@ void main() {
     test('画面比例七档（auto 为默认），文案一致', () {
       // ★ 2026-10-09 用户要求"自动适配（横 16:9 / 竖 9:16）"
       //   ⇒ 新增首档 `自动` 与尾档 `9:16`
+      // ★ 2026-10-10 精简为两档（用户要求只留自动/适应）
       expect(AspectMode.values.map((e) => e.label).toList(),
-          ['自动', '适应', '拉伸', '裁剪', '16:9', '4:3', '9:16']);
+          ['自动', '适应']);
       // 默认档必须是自动（方向自适应是新默认行为）
       expect(
         const VideoState().aspectMode,
@@ -280,14 +281,11 @@ void main() {
     });
 
     test('16:9 / 4:3 / 9:16 有固定比例，其余由引擎决定', () {
-      expect(AspectMode.ratio16x9.ratio, closeTo(16 / 9, 0.001));
-      expect(AspectMode.ratio4x3.ratio, closeTo(4 / 3, 0.001));
-      expect(AspectMode.ratio9x16.ratio, closeTo(9 / 16, 0.001));
+      // 两档都不带固定比例（比例由片源决定）
       expect(AspectMode.auto.ratio, isNull,
           reason: 'auto 本身无固定比例 —— 由 resolveAuto 按方向解析');
       expect(AspectMode.contain.ratio, isNull);
-      expect(AspectMode.fill.ratio, isNull);
-      expect(AspectMode.cover.ratio, isNull);
+      expect(AspectMode.auto.ratio, isNull);
     });
 
     test('解码方式两档', () {

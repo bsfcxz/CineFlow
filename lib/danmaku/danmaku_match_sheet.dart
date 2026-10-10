@@ -115,71 +115,100 @@ class _DanmakuMatchSheetState extends ConsumerState<DanmakuMatchSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(
-            bottom: MediaQuery.viewInsetsOf(context).bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ---- 标题栏 ----
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 8, 6),
-              child: Row(children: [
-                Expanded(
-                  child: Text('手动匹配弹幕',
-                      style: TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w800)),
-                ),
-                IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close_rounded, size: 20),
-                  color: Cf.text3,
-                  tooltip: '关闭',
-                ),
-              ]),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text('自动匹配不对时，自己选要匹配哪一部（译名不同/多季归档常见）',
-                  style: Cf.micro),
-            ),
+    // ★★ 结构修正（用户报障："这个不能上拉"）
+    //
+    // ## 原来错在哪
+    // ```dart
+    // Column(mainAxisSize: MainAxisSize.min, children: [
+    //   ...固定头部,
+    //   Flexible(child: _resultView()),   // ← ListView(shrinkWrap: true)
+    // ])
+    // ```
+    // `MainAxisSize.min` + `Flexible`（loose）+ `shrinkWrap: true` 三者叠加：
+    // 列表高度被压到"刚好够显示已有条目"的**最小**高度，
+    // 结果**内容超出时没有可滚动的高度余量**，看上去就是"拉不动"。
+    //
+    // ## 现在
+    // · 整块用 `SizedBox(height: 屏高 * 0.72)` 给**明确高度**
+    //   ⇒ 列表区拿到充足空间（而不是"刚好够"）
+    // · `Column`（默认 `max`）+ `Expanded`（而非 `Flexible`）
+    //   ⇒ 列表**必定**获得剩余空间，必定可滚动
+    // · `ListView` **去掉 `shrinkWrap`**（有界高度下 shrinkWrap 只会
+    //   增加测量开销并干扰滚动）
+    //
+    // ## 键盘处理
+    // 键盘弹起时用 `viewInsets.bottom` **缩减**整块高度
+    // （而不是像原来那样给底部加 padding —— 那会把内容顶出可视区）。
+    final mq = MediaQuery.of(context);
+    final keyboard = mq.viewInsets.bottom;
+    // 键盘弹起时至少保留一半高度给列表（否则输入框会挤掉结果）
+    final sheetH = (mq.size.height * 0.72 - keyboard).clamp(
+      240.0,
+      mq.size.height * 0.72,
+    );
 
-            // ---- 搜索框 ----
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
-              child: Row(children: [
-                Expanded(
-                  child: TextField(
-                    controller: _ctrl,
-                    style: TextStyle(fontSize: 14, color: Cf.text),
-                    textInputAction: TextInputAction.search,
-                    onSubmitted: (_) => _search(),
-                    decoration: InputDecoration(
-                      isDense: true,
-                      hintText: '输入番剧名，如 我推的孩子',
-                      hintStyle: TextStyle(fontSize: 13, color: Cf.text3),
-                      filled: true,
-                      fillColor: Cf.surface2,
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 12),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(Cf.radiusSm),
-                        borderSide: BorderSide.none,
-                      ),
+    return SizedBox(
+      height: sheetH,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ---- 标题栏 ----
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+            child: Row(children: [
+              Expanded(
+                child: Text('手动匹配弹幕',
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w800)),
+              ),
+              IconButton(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close_rounded, size: 20),
+                color: Cf.text3,
+                tooltip: '关闭',
+              ),
+            ]),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text('自动匹配不对时，自己选要匹配哪一部（译名不同/多季归档常见）',
+                style: Cf.micro),
+          ),
+
+          // ---- 搜索框 ----
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+            child: Row(children: [
+              Expanded(
+                child: TextField(
+                  controller: _ctrl,
+                  style: TextStyle(fontSize: 14, color: Cf.text),
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: (_) => _search(),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: '输入番剧名，如 我推的孩子',
+                    hintStyle: TextStyle(fontSize: 13, color: Cf.text3),
+                    filled: true,
+                    fillColor: Cf.surface2,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 12),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(Cf.radiusSm),
+                      borderSide: BorderSide.none,
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: _searching ? null : _search,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Cf.accent,
-                    foregroundColor: Cf.ink,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
-                  ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _searching ? null : _search,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Cf.accent,
+                  foregroundColor: Cf.ink,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 12),
+                ),
                   child: Text(_searching ? '搜索中' : '搜索',
                       style: const TextStyle(fontSize: 13)),
                 ),
@@ -187,10 +216,13 @@ class _DanmakuMatchSheetState extends ConsumerState<DanmakuMatchSheet> {
             ),
 
             // ---- 结果区 ----
-            Flexible(child: _resultView()),
+            //
+            // ★ 用 `Expanded`（而非 `Flexible`）：外层 `Column` 是默认的
+            //   `MainAxisSize.max` + 有界高度（`SizedBox`）⇒ Expanded 让列表
+            //   **必定**拿到剩余空间 ⇒ **必定可滚动**（修"不能上拉"）。
+            Expanded(child: _resultView()),
           ],
         ),
-      ),
     );
   }
 
@@ -223,7 +255,9 @@ class _DanmakuMatchSheetState extends ConsumerState<DanmakuMatchSheet> {
     }
 
     return ListView.builder(
-      shrinkWrap: true,
+      // ⚠️ **不要 `shrinkWrap: true`**（那是"不能上拉"的帮凶）：
+      // 父级已给有界高度（`Expanded`），shrinkWrap 只会让它退化成
+      // "刚好够内容高" ⇒ 内容超出时无滚动余量，同时增加测量开销。
       padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
       itemCount: list.length,
       itemBuilder: (context, i) {
@@ -252,7 +286,10 @@ class _DanmakuMatchSheetState extends ConsumerState<DanmakuMatchSheet> {
             style: TextStyle(fontSize: 13, color: Cf.text3)),
       );
     }
-    return Column(mainAxisSize: MainAxisSize.min, children: [
+    // 与候选列表同款：`Column` 默认 max + `Expanded` 给列表明确空间
+    // ⇒ 176 集的番剧能正常滚动（原来 `mainAxisSize.min` + `Flexible`
+    //    + `shrinkWrap` 三件套会让长列表拉不动）
+    return Column(children: [
       // 返回候选列表
       InkWell(
         onTap: () => setState(() => _opened = null),
@@ -270,9 +307,9 @@ class _DanmakuMatchSheetState extends ConsumerState<DanmakuMatchSheet> {
           ]),
         ),
       ),
-      Flexible(
+      Expanded(
         child: ListView.builder(
-          shrinkWrap: true,
+          padding: const EdgeInsets.only(bottom: 12),
           itemCount: c.episodes.length,
           itemBuilder: (context, i) {
             final e = c.episodes[i];
