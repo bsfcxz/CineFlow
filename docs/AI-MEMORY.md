@@ -891,3 +891,129 @@ check-dev.ps1    18 项全过，退出码 0
 真机             [GoCore] 已加载 + [DB] 就绪 + pid 存活 + 无 FATAL
 ```
 
+### 2026-10-10 · 第 9 轮 · 多账号聚合 + Emby API 扩展 7 项 + 起播优化 + 弹幕公共源
+
+本轮是**用户连续 4 个需求**的合并落地，已拆成 3 个提交。
+
+#### A. 多账号登录与搜索聚合（feat, commit `2c36202` 一起）
+
+用户确认方案：**"搜索聚合 + 首页保持单服务器切换"**。
+
+| 决策 | 理由 |
+|---|---|
+| `cf_accounts`（全部）+ **保留** `cf_session`（当前） | `cf_session` 是所有既有代码的读取点；改成"列表+索引"牵动整条链路，风险 >> 收益 |
+| 唯一键 = **`serverUrl\|userId`** | 同一台 Emby 可有多个用户（家庭共享），只用 url 会把第二个挤掉 |
+| 跨服务器点击 ⇒ **切换会话** | `MediaItem.id` 是各服务器自己的 GUID，不切换会拿 A 的 id 去 B 查 |
+| `Future.wait` + **每台各自 catch** | 一台离线不能拖垮整次搜索 |
+
+**三个真机专属缺陷**（单测抓不到，全是实测才暴露）：
+1. **老用户账号不迁移** —— `cf_accounts` 是新增键，老用户只有 `cf_session`
+   ⇒ 账号页空白 + **搜索直接失败**。修：启动时一次性迁移 + 兜底。
+2. **Riverpod：`await` 之后再用 `ref` ⇒ 崩溃**
+   （`autoDispose` provider 等待期间可能已销毁）。
+   真机日志：`You tried to use Ref inside onDispose or other life-cycles`。
+   修：所有 `ref.watch` 放 await **之前**。
+3. **兜底 catch 丢弃异常且不打日志** ⇒ 真机"搜索失败"时 logcat 一片空白，
+   只能靠排除法猜（找 (2) 花了好几轮）。修：打日志 + 带原因给用户。
+
+#### B. Emby API 扩展 7 项（同上提交）
+
+演职员作品 `/Persons/{Id}/Credits`、预告片 `LocalTrailers`、
+`/Movies/Recommendations`、制片公司 `/Studios`、播放列表 `/Playlists`、
+追剧日历 `/Shows/Upcoming`、搜索历史上报 `SearchedItems/`。
+
+> **一条需求被核实后否定（如实记录）**：原计划"服务端搜索历史"，
+> 扫描官方 SDK **全部 410 个 Go 文件**后确认：含 `Searched` 的端点只有
+> `POST /SearchedItems/` 与两处 DELETE，**没有 GET** ⇒ 客户端**读不回**。
+> 只实现写入侧。**编一个不存在的 GET 会得到"历史永远为空"的假功能**。
+
+#### C. 电影合集：两处"修了但没修全"
+
+1. **详情页绕过了合集解析** —— 上一轮只改了 `openPlayerResolved`
+   （"继续观看"入口），而详情页「立即播放」仍直接 `openPlayer`
+   ⇒ **"搜索→详情→立即播放"这条主路径上依然没有下一部**。
+2. **官方端点在这台服务器 404** —— `GET /Collections/{Id}/Items` 实测 404
+   （同批 `/Studios` 正常）⇒ 不是缺前缀，是该服务器没这个路由。
+   修：**多策略回退**（`/Collections/{Id}/Items` → `Items?ParentId={Id}`）。
+   真机：`策略1 失败 404` → `策略2 成功：4 项` ⇒ 底栏 `1/4` ✅
+
+#### D. 起播优化（perf, commit `6ac003a`）
+
+**真机实测**（4K hevc / 22.7 Mbps，3 次采样）：
+```
+Dart 命令链   中位  218ms  (2%)
+DEMUX_DONE   中位 7757ms  (范围 4247–12264)  ← ★ 瓶颈
+FIRST_FRAME  中位 2005ms
+点到出画面    中位 14491ms
+起播期间网速   16 → 72 → 97 → 758 → 599 → 7006 KB/s
+```
+⇒ 前 3 秒仅 16–97 KB/s，而回放需 ~2800 KB/s
+⇒ **瓶颈是 TCP 慢启动 + 服务端首字节延迟，不在客户端**。
+
+三项优化：① `loadfile start=`（**之前是死代码**，宿主从没传过 `start`）
+② `cache-pause-wait` 3s→1s ③ Media3 `LoadControl` 起播门槛 2.5s→1s。
+
+**修了自己的埋点缺陷**：首帧探针在 `_seekTarget` 赋值前就会跑
+（`stateStream` 随时推）⇒ 测出假值 `FIRST_FRAME=32ms`。
+加 `_startupBegun` 门修正 —— 否则后续优化无法被正确度量。
+
+> **一次被实测否定的尝试（已删除，但记录原因）**：
+> 试过"连接预热"（解析直链后发 256KB Range GET 提前握手）——
+> 预热**确实执行了**（541ms 取到 262144 字节），但 DEMUX **无改善**
+> （7757 → 9757ms）。**根因**：预热走 Dart 的 HttpClient（dio），
+> 播放器走 Android HttpURLConnection / Media3 DataSource ——
+> **两个不同的连接池，TCP 连接不共享**，而慢启动是按连接的。
+
+#### E. 弹幕公共源（内置）+ 两个真机 bug（未提交，见工作区状态）
+
+用户要求："搜寻公共 api 直接内置，自建的保留，给用户多种选择"。
+
+**调研结论**（GitHub API 核实，非推测）：
+| 项目 | ★ | 许可 | 性质 |
+|---|---|---|---|
+| `huangxd-/danmu_api` | 3261 | AGPL-3.0 | 自建聚合服务（**兼容弹弹play 规范**）|
+| `l429609201/misaka_danmu_server` | 1285 | AGPL-3.0 | 自建聚合 |
+| `Tony15246/uosc_danmaku` | 578 | MIT | MPV 插件（维护公共代理）|
+| `chen3861229/dd-danmaku` | 401 | MIT | Emby **Web 前端注入**（对我们无效：我们是原生客户端）|
+| `fengymi/emby-plugin-danmu` | 461 | ⚠️ 无 license | 服务端插件，**作者已弃维护** |
+
+**公共代理端点形状（实测 2026-10-10）**：
+```
+GET /api/v2/search/anime?keyword=  → {"animes":[{animeId,…}]}
+GET /api/v2/bangumi/{animeId}      → {"bangumi":{episodes:[{episodeId,episodeNumber}]}}
+GET /api/v2/comment/{episodeId}    → {"count":N,"comments":[{cid,p,m}]}
+⚠️ /api/v2/search/episodes         → 404（官方有、此代理**没有**）
+```
+⇒ 必须**按源分支**：官方/自建走一步，公共代理走两步。统一必有一边拿不到 id。
+
+**两个真机 bug（都是本轮实测抓出来的）**：
+1. **`_loadDanmaku` 读 `.value` 得到 null** —— `danmakuConfigProvider` 是
+   `AsyncNotifier`（要解密读配置），而该方法在 `initState` 直接调用
+   ⇒ `.value` 必为 null ⇒ **静默 return**，**一行日志都没有**。
+   修：改用 `.future` 等它 + 补日志（区分"已关闭"/"配置不完整"）。
+2. **拿集标题去搜弹幕** —— 真机日志显示搜的是「邪火暴走，海神湖惊魂」
+   （单集标题），而弹幕库按**番剧名**索引。
+   根因：`parseDanmakuQuery` 的替换阈值 `title.length > s.length + 4`
+   把剧集全挡在门外（10 > 9+4 为假）。修：**剧集一律用 SeriesName**，
+   电影保留保守判据。
+
+**独立验证（不是真机，但等价）**：手工走 App 相同四步（PC 侧同参数）：
+```
+search/anime「斗罗大陆Ⅱ绝世唐门」 → animeId=18071 ✅
+bangumi/18071                      → 176 集 ✅
+选 episodeNumber==7                → episodeId=180710007 ✅
+comment/180710007                  → count=5258，返回 5258 条 ✅
+```
+> ⚠️ **真机未完成**：验证时 Home 报 `服务器错误 (401)`
+> （Emby 会话失效，**与本轮改动无关** —— 已核实 diff 未触及任何
+> auth/token/401 代码）。需用户重新登录后才能补真机截图。
+
+#### 本轮验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +994: All tests passed!
+check-dev.ps1     21 项全过，退出码 0
+反向注入          详情页合集/版本选择、多账号 5 项、公共代理 4 项 —— 全部抓到
+```
+

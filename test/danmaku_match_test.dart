@@ -164,6 +164,52 @@ void main() {
       );
       expect(q.anime, '孤独摇滚');
     });
+
+    test('★★ 剧集必须用剧名（真机实测抓到的"拿集标题去搜"）', () {
+      // ## 这是真机日志里的**实际值**（不是构造的）
+      // ```
+      // [PlayerFlow] 弹幕：拉到 0 条（匹配到「邪火暴走，海神湖惊魂」，
+      //              episodeId=无）
+      // ```
+      // 弹幕库按**番剧名**索引 ⇒ 拿集标题搜必然搜不到。
+      //
+      // ## 原判据为什么漏（长度余量把剧集全挡在门外）
+      // `title.length > s.length + 4`：
+      //   "邪火暴走，海神湖惊魂"(10) > "斗罗大陆Ⅱ绝世唐门"(9) + 4 = 13 ?
+      //   ⇒ 10 > 13 为**假** ⇒ 不替换 ⇒ 用集标题去搜。
+      final q = parseDanmakuQuery(
+        name: '邪火暴走，海神湖惊魂',
+        seriesName: '斗罗大陆Ⅱ绝世唐门',
+        indexNumber: 7,
+        parentIndexNumber: 1,
+        itemType: 'Episode',
+      );
+      expect(q.anime, '斗罗大陆Ⅱ绝世唐门',
+          reason: '★★ 剧集必须用 Emby 的 SeriesName 去搜 ——\n'
+              '    弹幕库按番剧名索引，集标题（副标题）搜不到任何东西。\n'
+              '    真机实测：拿「邪火暴走，海神湖惊魂」搜 ⇒ 0 条弹幕。');
+    });
+
+    test('★ 剧集即使集名比剧名短也用剧名', () {
+      final q = parseDanmakuQuery(
+        name: '第7集',
+        seriesName: '斗罗大陆Ⅱ绝世唐门',
+        indexNumber: 7,
+        itemType: 'Episode',
+      );
+      expect(q.anime, '斗罗大陆Ⅱ绝世唐门');
+    });
+
+    test('★ 电影仍保留保守判据（不把系列名当片名）', () {
+      // 电影带 SeriesName 时不该无条件替换 —— 那是"系列"不是"片名"
+      final q = parseDanmakuQuery(
+        name: '复仇者联盟',
+        seriesName: '复仇者联盟系列',
+        itemType: 'Movie',
+      );
+      expect(q.anime, '复仇者联盟',
+          reason: '电影名不比系列名长太多 ⇒ 保留自己的片名');
+    });
   });
 
   group('可用性判定', () {

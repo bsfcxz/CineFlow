@@ -84,7 +84,8 @@ void main() {
 
     test('★ 未设置过时返回默认值（不能是 null 或半初始化状态）', () async {
       final got = await store.loadDanmakuConfig();
-      expect(got.kind, DanmakuProviderKind.off);
+      expect(got.kind, const DanmakuConfig().kind,
+          reason: '★ 断言默认值而非写死某个 kind ——默认值只在 DanmakuConfig 里定义一处');
       expect(got.baseUrl, '');
       expect(got.enabled, isTrue);
       expect(got.opacity, 1.0);
@@ -99,8 +100,8 @@ void main() {
       await store.saveDanmakuConfig(const DanmakuConfig());
       final got = await store.loadDanmakuConfig();
 
-      expect(got.kind, DanmakuProviderKind.off,
-          reason: 'kind 必须回到 off，不能残留上次的 selfHosted');
+      expect(got.kind, const DanmakuConfig().kind,
+          reason: 'kind 必须回到默认值，不能残留上次的 selfHosted');
       expect(got.baseUrl, '');
       expect(got.opacity, 1.0);
       expect(got.blockedWords, isEmpty,
@@ -163,20 +164,22 @@ void main() {
     test('存储里是非法 JSON 时回退默认值', () async {
       kv.seedRaw('cf_danmaku_config', '{not json');
       final got = await store.loadDanmakuConfig();
-      expect(got.kind, DanmakuProviderKind.off,
+      expect(got.kind, const DanmakuConfig().kind,
           reason: '配置损坏应回退默认，而不是抛异常让启动失败');
     });
 
     test('JSON 是数组而非对象时回退默认值', () async {
       kv.seedRaw('cf_danmaku_config', '[1,2,3]');
-      expect((await store.loadDanmakuConfig()).kind, DanmakuProviderKind.off);
+      expect((await store.loadDanmakuConfig()).kind,
+          const DanmakuConfig().kind);
     });
 
     test('未知的 kind 字面量回退为 off（防升级/降级崩溃）', () async {
       kv.seedRaw('cf_danmaku_config',
           '{"kind":"someFutureProvider","opacity":0.5}');
       final got = await store.loadDanmakuConfig();
-      expect(got.kind, DanmakuProviderKind.off);
+      expect(got.kind, const DanmakuConfig().kind,
+          reason: '★ 断言默认值而非写死某个 kind ——默认值只在 DanmakuConfig 里定义一处');
       expect(got.opacity, 0.5, reason: '其它合法字段仍应被读出');
     });
 

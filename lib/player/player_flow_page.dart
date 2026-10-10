@@ -1810,14 +1810,45 @@ _stage('open');
   }
 
   Future<void> _loadDanmaku() async {
-    final cfg = ref.read(danmakuConfigProvider).value;
-    if (cfg == null || cfg.kind == DanmakuProviderKind.off) return;
+    // ★★ 必须**等配置加载完**（真机抓到的静默失败）
+    //
+    // ## 原来的写法错在哪
+    // ```dart
+    // final cfg = ref.read(danmakuConfigProvider).value;
+    // if (cfg == null || cfg.kind == off) return;   // ← 静默 return
+    // ```
+    // `danmakuConfigProvider` 是 **AsyncNotifier**（要去
+    // `flutter_secure_storage` 解密读配置）。而本方法在 `initState`
+    // 里被直接调用（`unawaited(_loadDanmaku())`）——
+    // **此刻 `.value` 必为 null**（首次加载还没完成）⇒ 直接 return。
+    //
+    // 后果：**弹幕永远不加载**，且**一行日志都没有**
+    //（真机实测：logcat 里零条弹幕日志、也没对公共代理发过请求）。
+    // 这是本仓库反复记录的最难查形态 —— 不报错、不崩溃、就是没有。
+    //
+    // ## 修法：用 `.future` 等它，而不是读 `.value`
+    final cfg = await ref.read(danmakuConfigProvider.future);
+    if (!mounted) return;
+    if (cfg.kind == DanmakuProviderKind.off) {
+      debugPrint('[PlayerFlow] 弹幕已关闭（kind=off），跳过加载');
+      return;
+    }
+    if (!cfg.isUsable) {
+      // 配了但缺必填项（如官方源没填凭据）⇒ **要说出来**，
+      // 否则用户只会看到"没有弹幕"，以为片源没有
+      debugPrint('[PlayerFlow] 弹幕配置不完整（kind=${cfg.kind.name}），跳过');
+      return;
+    }
     try {
       final result = await ref.read(danmakuForItemProvider(_current).future);
       if (!mounted) return;
       if (result.error != null) {
         // 弹幕错误不阻断播放（旧页同款"尽力而为"），记录到 UI 供面板展示
         debugPrint('[PlayerFlow] 弹幕：${result.error}');
+      } else {
+        debugPrint('[PlayerFlow] 弹幕：拉到 ${result.items.length} 条'
+            '（匹配到「${result.matchedTitle ?? '?'}」，'
+            'episodeId=${result.episodeId ?? '无'}）');
       }
       ref.read(danmakuUiProvider.notifier).set(result);
     } catch (e) {

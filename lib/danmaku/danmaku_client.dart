@@ -44,9 +44,13 @@ class DanmakuClient {
   factory DanmakuClient.fromConfig(DanmakuConfig config, {Dio? dio}) =>
       DanmakuClient(
         kind: config.kind,
-        baseUrl: config.kind == DanmakuProviderKind.official
-            ? kOfficialBase
-            : config.normalizedBase,
+        baseUrl: switch (config.kind) {
+          // 官方与公共代理都用**内置地址**（用户不需要填）
+          DanmakuProviderKind.official => kOfficialBase,
+          DanmakuProviderKind.publicProxy => kPublicProxyBase,
+          // 自建服务才用用户填的地址
+          _ => config.normalizedBase,
+        },
         appId: config.appId,
         appSecret: config.appSecret,
         useAsync: config.useAsync,
@@ -64,6 +68,21 @@ class DanmakuClient {
 
   /// 官方服务器地址（文档第 2 节）。自建服务用配置里的地址。
   static const kOfficialBase = 'https://api.dandanplay.net';
+
+  /// **内置公共代理地址**（用户要求"直接内置"）。
+  ///
+  /// ## 实测确认（2026-10-10）
+  /// · `GET /api/v2/comment/{id}` → 200，标准 `{count,comments:[{p,m}]}`
+  /// · `GET /api/v2/search/anime?keyword=` → 200，`{animes:[{animeId,…}]}`
+  /// · `GET /api/v2/bangumi/{animeId}` → 200，含 `episodes[]`
+  /// · `GET /api/v2/search/episodes` → **404**（与官方的关键差异！）
+  ///
+  /// ## 为什么内置它
+  /// 官方强制签名 ⇒ 普通用户拿不到凭据 ⇒ "弹幕装了用不了"。
+  /// 公共代理免注册直接可用，是**默认**选项。
+  ///
+  /// ⚠️ 第三方免费实例，可能限流/变更/停服 ⇒ 保留另两条路作为退路。
+  static const kPublicProxyBase = 'https://danmaku-api.152468.xyz';
 
   /// 弹幕缓存 TTL。官方建议 2–6 小时（第 10 节「缓存建议」）。
   static const cacheTtl = Duration(hours: 6);
@@ -189,22 +208,105 @@ class DanmakuClient {
       if (v != null) return v;
     }
 
-    final raw = await _get('/api/v2/search/episodes', query: {
-      'anime': anime,
-      if (episode != null) 'episode': '$episode',
-    });
-    final id = _pickEpisodeId(raw, episode);
+    // ★★ 搜索路径**随源类型分支**（实测差异，不是猜测）
+    //
+    // · 官方/自建：`/api/v2/search/episodes?anime=&episode=` —— **一步**拿到 id
+    // · 公共代理：**没有**那个端点（实测 404）⇒ 走两步：
+    //     `/api/v2/search/anime?keyword=` → animeId
+    //     `/api/v2/bangumi/{animeId}`     → episodes[] → episodeId
+    //
+    // ⚠️ 若统一成一种，必有一边拿不到 id ⇒ 表现为"弹幕永远匹配不到"
+    //    （不报错、不崩溃，正是本仓库反复记录的静默失败形态）。
+    final int? id;
+    if (kind == DanmakuProviderKind.publicProxy) {
+      id = await _findEpisodeIdViaProxy(anime: anime, episode: episode);
+    } else {
+      final raw = await _get('/api/v2/search/episodes', query: {
+        'anime': anime,
+        if (episode != null) 'episode': '$episode',
+      });
+      id = _pickEpisodeId(raw, episode);
+    }
     // 负缓存：没搜到也缓存一个空串，避免每次播放都重试（官方限制批量调用）
     await cache?.cachePut(key, id?.toString() ?? '', ttl: cacheTtl);
     return id;
+  }
+
+  /// 公共代理的两步搜索：`search/anime` → `bangumi/{id}` → 选集。
+  ///
+  /// ## 端点形状（实测 2026-10-10）
+  /// ```
+  /// GET /api/v2/search/anime?keyword=我推的孩子
+  ///   → {"animes":[{"animeId":17449,"animeTitle":"我推的孩子","type":"tvseries"}]}
+  /// GET /api/v2/bangumi/17449
+  ///   → {"bangumi":{"episodes":[{"episodeId":174490001,
+  ///      "episodeTitle":"第1话 母亲和孩子","episodeNumber":"1"}]}}
+  /// ```
+  ///
+  /// ## 选集策略（与官方 `_pickEpisodeId` 同口径）
+  /// 优先按 `episodeNumber == episode` **精确匹配**；没集号或匹配不到时
+  /// 回退第一集（至少能出弹幕，用户可用"手动匹配"纠正）。
+  ///
+  /// ## 容错
+  /// · `animes` 为空 → null（"该片暂无弹幕"，**不是错误**）
+  /// · `episodes` 为空/缺字段 → null
+  /// · 任何解析异常都吞掉返回 null —— 搜索失败不该让播放页报错
+  Future<int?> _findEpisodeIdViaProxy({
+    required String anime,
+    int? episode,
+  }) async {
+    try {
+      // ---- 第一步：按标题找番剧 ----
+      final searchRaw =
+          await _get('/api/v2/search/anime', query: {'keyword': anime});
+      final searchMap = _tryMap(searchRaw);
+      if (searchMap == null) return null;
+      final animes = (searchMap['animes'] as List?) ?? const [];
+      if (animes.isEmpty) return null;
+
+      // 取第一个结果：代理已按相关度排序（实测「我推的孩子」首条即正确项）
+      final list0 = animes.whereType<Map<String, dynamic>>().toList();
+      if (list0.isEmpty) return null;
+      final animeId = (list0.first['animeId'] as num?)?.toInt();
+      if (animeId == null) return null;
+
+      // ---- 第二步：取该番剧的集列表 ----
+      final detailRaw = await _get('/api/v2/bangumi/$animeId');
+      final detailMap = _tryMap(detailRaw);
+      if (detailMap == null) return null;
+      final bg = detailMap['bangumi'];
+      if (bg is! Map) return null;
+      final eps = (bg['episodes'] as List?) ?? const [];
+      if (eps.isEmpty) return null;
+
+      final list = eps.whereType<Map<String, dynamic>>().toList();
+      if (list.isEmpty) return null;
+
+      // ---- 选集：精确匹配集号，否则第一集 ----
+      if (episode != null) {
+        for (final e in list) {
+          final n = e['episodeNumber'];
+          final asInt = n is num ? n.toInt() : int.tryParse('$n');
+          if (asInt == episode) {
+            final id = (e['episodeId'] as num?)?.toInt();
+            if (id != null) return id;
+          }
+        }
+      }
+      return (list.first['episodeId'] as num?)?.toInt();
+    } catch (_) {
+      // 搜索失败 = "暂无弹幕"，不是错误（与官方路径同口径）
+      return null;
+    }
   }
 
   // ------------------------------------------------------------------
 
   /// 发 GET 并处理两种错误层（HTTP 层 + 200 里的业务层）。
   Future<String> _get(String path, {Map<String, dynamic>? query}) async {
-    // 认证方式随源类型不同（这是两种部署形态的核心差异）：
+    // 认证方式随源类型不同（这是三种部署形态的核心差异）：
     //  - 官方：必须带 X-AppId/X-Timestamp/X-Signature 三个头
+    //  - 公共代理：**不带任何认证头**（免注册，实测直接可用）
     //  - 自建：token 在 URL 路径里，**不需要任何认证头**
     //    （调研确认 danmu_api/misaka 都不看 header 签名）
     final Map<String, String> headers;
@@ -219,6 +321,8 @@ class DanmakuClient {
         path: path,
       );
     } else {
+      // 公共代理与自建都无需签名头。自建要校验 base 非空
+      //（公共代理的 base 是内置常量，必然非空）。
       if (baseUrl.isEmpty) {
         throw const DanmakuException('未配置弹幕服务地址');
       }

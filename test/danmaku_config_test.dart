@@ -106,8 +106,30 @@ void main() {
   });
 
   group('可用性判定（区分"没配"与"配了但关了"）', () {
-    test('默认（off）不可用', () {
-      expect(const DanmakuConfig().isUsable, isFalse);
+    test('★ 默认是公共代理且**开箱即用**', () {
+      // 2026-10-10 改：默认从 `off` 改为 `publicProxy`。
+      // 理由：官方源强制签名 ⇒ 普通用户拿不到凭据 ⇒ 默认 off 的实际
+      // 效果是"装了弹幕但永远用不了"。公共代理免注册、实测可用。
+      const c = DanmakuConfig();
+      expect(c.kind, DanmakuProviderKind.publicProxy,
+          reason: '★ 默认必须是免配置的公共代理 —— 否则新用户装上就是死的');
+      expect(c.isUsable, isTrue,
+          reason: '★ 公共代理**不需要任何配置**就必须可用');
+    });
+
+    test('off 不可用', () {
+      expect(const DanmakuConfig(kind: DanmakuProviderKind.off).isUsable,
+          isFalse);
+    });
+
+    test('★★ 公共代理免配置（不填任何东西也可用）', () {
+      // 这是 `isZeroConfig` 的语义，也是"开箱即用"的核心断言：
+      // 若这条变了（比如要求填地址），默认值就不再能用 ⇒ 用户看到空弹幕
+      const c = DanmakuConfig(kind: DanmakuProviderKind.publicProxy);
+      expect(c.isUsable, isTrue);
+      expect(c.baseUrl, isEmpty, reason: '公共代理不该要求用户填地址');
+      expect(c.appId, isEmpty, reason: '公共代理不该要求 AppId');
+      expect(c.kind.isZeroConfig, isTrue);
     });
 
     test('官方源需 AppId + AppSecret 都填', () {
@@ -116,6 +138,8 @@ void main() {
       expect(base.copyWith(appId: 'a').isUsable, isFalse,
           reason: '只有 AppId 不够');
       expect(base.copyWith(appId: 'a', appSecret: 's').isUsable, isTrue);
+      expect(base.kind.isZeroConfig, isFalse,
+          reason: '官方源需要填凭据，不是零配置');
     });
 
     test('自建源只需 baseUrl', () {

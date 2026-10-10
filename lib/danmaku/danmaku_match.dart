@@ -265,11 +265,42 @@ DanmakuQuery parseDanmakuQuery({
   }
 
   // ---- 7) 剧集优先用 Emby 的剧名 ----
-  if (seriesName != null && seriesName.trim().isNotEmpty) {
+  //
+  // ★★ 2026-10-10 真机实测修正：原判据用了长度阈值，导致**拿集标题去搜**
+  //
+  // ## 实测故障（真机日志）
+  // ```
+  // [PlayerFlow] 弹幕：拉到 0 条（匹配到「邪火暴走，海神湖惊魂」，episodeId=无）
+  // ```
+  // 传去搜索的是**单集标题**，不是剧名。弹幕库（弹弹play）按**番剧名**
+  // 索引 ⇒ 拿集标题搜必然搜不到。
+  //
+  // ## 原判据为什么漏了
+  // ```dart
+  // if (title.isEmpty || title.length > s.length + 4) title = s;
+  // ```
+  // 本例：`"邪火暴走，海神湖惊魂"`(10) vs `"斗罗大陆Ⅱ绝世唐门"`(9)
+  // ⇒ `10 > 13` 为假 ⇒ **不替换**。集标题往往只比剧名长几个字，
+  // 那个 `+4` 的余量把**绝大多数剧集**都挡在外面。
+  //
+  // ## 为什么原判据要设阈值（不是错的）
+  // 它想防的是"把正确的'剧场版'标题换成不带副标题的剧名"。
+  // 但代价是**剧集场景整体失效** —— 而剧集才是弹幕的主要用户。
+  //
+  // ## 修法：**剧集一律用剧名**（`seriesName` 是权威），
+  //          只有电影才保留原判据
+  // · 剧集（`itemType == 'Episode'` 或有 `seriesName`）：
+  //   Emby 的 `SeriesName` 就是"这部剧叫什么"，正是搜索要的键。
+  //   集标题（"第7集 邪火暴走"）是**副标题**，永远不该拿去搜番剧。
+  // · 电影：没有 `seriesName` 时保留原逻辑（避免把系列名当片名）。
+  final hasSeries = seriesName != null && seriesName.trim().isNotEmpty;
+  if (hasSeries) {
     final s = seriesName.trim();
-    // 只在"清洗结果为空"或"明显含副标题（更长）"时替换，
-    // 避免把正确的剧名换成别的。
-    if (title.isEmpty || title.length > s.length + 4) {
+    // 电影也可能带 SeriesName（如"XX系列"），故仍按类型区分：
+    // 明确的剧集条目 ⇒ 直接用剧名；电影 ⇒ 沿用保守判据
+    if (itemType == 'Episode' || !isMovie) {
+      title = s;
+    } else if (title.isEmpty || title.length > s.length + 4) {
       title = s;
     }
   }

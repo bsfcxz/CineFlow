@@ -23,6 +23,34 @@ library;
 
 /// 弹幕源类型。
 enum DanmakuProviderKind {
+  /// **公共代理（内置、开箱即用、无需注册）** —— 用户要求"直接内置"。
+  ///
+  /// ## 为什么值得内置
+  /// 官方 `api.dandanplay.net` **强制签名**（AppId+AppSecret），
+  /// 而普通用户拿不到也不需要去申请 —— 结果就是"弹幕装了但用不了"。
+  /// 公共代理免注册、直接可用 ⇒ 这是**默认**选项。
+  ///
+  /// ## 实测确认的端点形状（2026-10-10，非猜测）
+  /// ```
+  /// GET /api/v2/search/anime?keyword=<标题>
+  ///     → {"animes":[{"animeId":17449,"animeTitle":"我推的孩子",…}]}
+  /// GET /api/v2/bangumi/{animeId}
+  ///     → {"bangumi":{…,"episodes":[{"episodeId":174490001,
+  ///        "episodeTitle":"第1话 …","episodeNumber":"1"},…]}}
+  /// GET /api/v2/comment/{episodeId}
+  ///     → {"count":2,"comments":[{"cid":…,"p":"250.00,1,16647426,8ae07348","m":"…"}]}
+  /// ```
+  /// ## ⚠️ 与官方的**关键差异**（接错的直接后果）
+  /// 官方有 `/api/v2/search/episodes?anime=&episode=` **一步**拿到
+  /// episodeId；**公共代理没有这个端点**（实测 404）。
+  /// 必须走 **search/anime → bangumi/{id} → episodes[]** 两步。
+  /// ⇒ 客户端要按源类型分支，不能假定都是同一个搜索路径。
+  ///
+  /// ## 风险（如实告知用户）
+  /// 这是**第三方免费实例**（uosc_danmaku 项目维护），
+  /// 可能限流、变更或停服 —— 故同时保留"自建"与"官方"两条路。
+  publicProxy,
+
   /// 官方弹弹play 开放弹幕网络（需 AppId + AppSecret 签名）
   official,
 
@@ -33,10 +61,14 @@ enum DanmakuProviderKind {
   off;
 
   String get label => switch (this) {
-        DanmakuProviderKind.official => '弹弹play 官方',
+        DanmakuProviderKind.publicProxy => '公共代理（免注册，开箱即用）',
+        DanmakuProviderKind.official => '弹弹play 官方（需 AppId/Secret）',
         DanmakuProviderKind.selfHosted => '自建服务（danmu_api / 御坂）',
         DanmakuProviderKind.off => '关闭',
       };
+
+  /// 该源是否**免配置**（选上就能用，无需填地址/凭据）。
+  bool get isZeroConfig => this == DanmakuProviderKind.publicProxy;
 }
 
 /// 弹幕显示模式（对照 B 站的"弹幕类型"）。
@@ -83,7 +115,15 @@ class DanmakuDisplayModes {
 /// 弹幕源配置。
 class DanmakuConfig {
   const DanmakuConfig({
-    this.kind = DanmakuProviderKind.off,
+    // ★★ 默认用**公共代理**（用户要求"直接内置"）
+    //
+    // ## 为什么改默认值（原来是 `off`）
+    // 官方源**强制签名**（AppId+AppSecret）⇒ 普通用户拿不到凭据，
+    // 默认 `off` 的实际效果是"装了弹幕但永远用不了"。
+    // 公共代理免注册、实测可用 ⇒ 默认它 = **开箱即用**。
+    //
+    // ⚠️ 用户仍可切到"关闭"/"官方"/"自建" —— 给选择，不强制。
+    this.kind = DanmakuProviderKind.publicProxy,
     this.baseUrl = '',
     this.appId = '',
     this.appSecret = '',
@@ -154,6 +194,8 @@ class DanmakuConfig {
     if (!enabled) return false;
     return switch (kind) {
       DanmakuProviderKind.off => false,
+      // ★ 公共代理**免配置** ⇒ 永远可用（这正是"开箱即用"的含义）
+      DanmakuProviderKind.publicProxy => true,
       DanmakuProviderKind.official => appId.isNotEmpty && appSecret.isNotEmpty,
       DanmakuProviderKind.selfHosted => baseUrl.isNotEmpty,
     };

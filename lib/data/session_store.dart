@@ -270,7 +270,16 @@ class SessionStore {
       return DanmakuConfig(
         kind: DanmakuProviderKind.values.firstWhere(
           (k) => k.name == m['kind'],
-          orElse: () => DanmakuProviderKind.off,
+          // ★ 未知/缺失时回退到 **DanmakuConfig 的默认值**，不写死某个 kind。
+          //
+          // ## 为什么不能写死 `off`
+          // 默认值只在 `DanmakuConfig` 里定义一处。若这里写死 `off`：
+          //   · 改了默认值 ⇒ 存储层仍回退到旧值 ⇒ **两处默认值不一致**
+          //   · 而"未知 kind 回退"与"首次使用的默认"应该是**同一个值**，
+          //     否则升级路径上会出现"明明默认是 A，读到脏数据变成 B"。
+          // 测试已按此断言（`danmaku_persist_test` 的"未知 kind 回退"），
+          // 它在本轮**正确抓到了这处硬编码**。
+          orElse: () => const DanmakuConfig().kind,
         ),
         baseUrl: str(m['baseUrl']),
         appId: str(m['appId']),
