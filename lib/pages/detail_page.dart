@@ -15,6 +15,8 @@ import '../data/models.dart';
 import '../player/player_routes.dart';
 import '../state/providers.dart';
 import '../widgets/media_cards.dart';
+import '../widgets/trailer_button.dart';
+import 'person_credits_page.dart';
 
 final detailProvider = FutureProvider.autoDispose
     .family<MediaItemDetail, String>((ref, itemId) async {
@@ -628,6 +630,59 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     }
   }
 
+  /// 电影起播：**带上合集成员作为播放列表**（用户报障："看复仇者联盟时
+  /// 列表没有下一部、不显示部数"）。
+  ///
+  /// ## 为什么要单独一个方法（不直接调 `openPlayerResolved`）
+  /// 本页必须带 `mediaSourceId`（多版本 chips 的当前选择）——
+  /// 否则"切了版本但播放的还是默认版本"（历史缺陷）。
+  /// `openPlayerResolved` 不支持该参数，故这里做同样的合集解析后
+  /// 用自己的参数调用 `openPlayer`。
+  ///
+  /// ## 降级
+  /// 片不属于任何合集（`collectionIds` 为空）、或取合集失败 ⇒
+  /// 照旧单条播放 —— **绝不能因为"没有合集"就打不开电影**。
+  Future<void> _playMovieWithCollection(MediaItem item) async {
+    final api = ref.read(embyApiProvider);
+    // 条目没带合集体信息（如从搜索结果进来，Fields 未请求）⇒ 先补一次详情
+    var ids = item.collectionIds;
+    if (api != null && ids.isEmpty) {
+      try {
+        final detail = await api.getItemDetail(item.id);
+        ids = detail.item.collectionIds;
+      } catch (e) {
+        debugPrint('[Detail] 取详情补合集体失败（非致命）: $e');
+      }
+    }
+    if (!mounted) return;
+
+    if (api == null || ids.isEmpty) {
+      openPlayer(context, item, mediaSourceId: _selectedVersionId);
+      return;
+    }
+
+    try {
+      final siblings = await api.getCollectionItems(ids.first);
+      if (!mounted) return;
+      if (siblings.isEmpty) {
+        openPlayer(context, item, mediaSourceId: _selectedVersionId);
+        return;
+      }
+      final idx = siblings.indexWhere((e) => e.id == item.id);
+      openPlayer(
+        context,
+        idx >= 0 ? siblings[idx] : item,
+        episodes: siblings,
+        index: idx >= 0 ? idx : 0,
+        mediaSourceId: _selectedVersionId,
+      );
+    } catch (e) {
+      debugPrint('[Detail] 取合集失败（降级为单条播放）: $e');
+      if (!mounted) return;
+      openPlayer(context, item, mediaSourceId: _selectedVersionId);
+    }
+  }
+
   /// 剧集起播失败时的退路：滚到分集区 + 轻提示（不静默）。
   void _fallbackToEpisodes(String msg) {
     if (mounted) {
@@ -651,8 +706,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     //
     //   两者共同点：**保持「立即播放 / 继续播放」的语义，绝不显示"选集"**
     //   （那是上一版的错误做法，用户明确否掉了）。
-    final String label;
-    if (isSeries) {
+    final String label;    if (isSeries) {
       // 分集还没拉到时（首帧）先显示「立即播放」，拉到后自动变「继续播放 第 N 集」
       label = _resolvingPlay
           ? '正在准备…'
@@ -671,8 +725,24 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       if (isSeries) {
         _playSeries(item);
       } else {
-        // 把「版本」chips 的当前选择带进播放器，否则多版本切换只改展示不改播放
-        openPlayer(context, item, mediaSourceId: _selectedVersionId);
+        // ★★ 2026-10-09 电影**必须走合集解析**（真机实测抓到的漏修）
+        //
+        // ## 之前错在哪
+        // 这里原本是 `openPlayer(context, item, mediaSourceId: ...)` ——
+        // **直接播**，播放器认为"只有这一条" ⇒ 底栏列表没有"下一部"。
+        // 上一轮我只改了 `openPlayerResolved`（"继续观看"那条入口），
+        // 于是**从详情页点「立即播放」仍然复现**用户报障
+        //（"看复仇者联盟时列表没有下一部"）。
+        //
+        // ⚠️ 而"搜索 → 详情 → 立即播放"**才是用户找电影的主路径** ——
+        //    只修另一条入口等于没修。真机实测确认：
+        //    从详情页播《复仇者联盟》底栏**无计数**。
+        //
+        // ## 修法：复用同一个异步解析
+        // `openPlayerResolved` 已含"取合集 → 作为播放列表"的完整逻辑。
+        // 但本页还要带 `mediaSourceId`（多版本 chips 的选择）——
+        // 故这里做同样的合集解析后，用 `openPlayer` 带上该参数。
+        _playMovieWithCollection(item);
       }
     }
 
@@ -779,10 +849,18 @@ class _DetailPageState extends ConsumerState<DetailPage> {
               },
       ),
       SizedBox(width: 9),
-      _roundBtn(
-        icon: Icons.download_outlined,
-        onTap: () => showComingSoon(context, '下载'),
-      ),
+      // ★ 用户要求第一批第 2 项：**预告片**（替代原来的"下载"死按钮）
+      //
+      // ## 为什么替换"下载"而不是并排再加一个
+      // · 底栏这一行已有 3 个按钮（播放/收藏/看过），再加会挤
+      // · "下载"是 `showComingSoon`（**未实现**，AGENTS §5.8 允许但
+      //   用户点了只会看到"即将推出"）
+      // · 预告片是**服务端已有数据**能立刻兑现的功能
+      //
+      // ## 只在确实有预告时显示
+      // 用 `FutureBuilder` 拉一次 `LocalTrailers`；为空则**整个按钮不出现**
+      //（避免"点了没反应"的死按钮 —— 那是本仓库反复修的形态）。
+      TrailerButton(itemId: item.id),
     ]);
   }
 
@@ -1166,7 +1244,30 @@ class _DetailPageState extends ConsumerState<DetailPage> {
           final url = p.primaryImageTag == null
               ? null
               : api.imageUrl(p.id, tag: p.primaryImageTag, maxWidth: 160);
-          return SizedBox(
+          return InkWell(
+            // ★ 用户要求第一批第 1 项：点演员 → 他的作品列表
+            //
+            // ## 原来为什么"点了没反应"
+            // 这里原本只是个 `SizedBox` + `Column`，**没有任何手势** ——
+            // 头像画了圆形描边（看起来可点），实际是死区。
+            //
+            // ## 命中区
+            // 整张 74×110 卡片可点（不只头像）—— §6.4.1 要求 ≥48dp；
+            // 74×110 远超，且"点名字也能进"更符合直觉。
+            //
+            // ⚠️ 用 `InkWell`（带水波纹）而不是裸 `GestureDetector`：
+            //    本仓库曾有 5 处裸 GestureDetector 命中区仅 16×16。
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => PersonCreditsPage(
+                  personId: p.id,
+                  personName: p.name,
+                  role: p.role,
+                ),
+              ),
+            ),
+            borderRadius: BorderRadius.circular(Cf.radiusSm),
+            child: SizedBox(
             width: 74,
             child: Column(children: [
               Container(
@@ -1205,6 +1306,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 9, color: Cf.text3)),
             ]),
+            ),
           );
         },
       ),

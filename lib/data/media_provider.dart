@@ -112,6 +112,133 @@ abstract interface class MediaProvider {
   /// ⚠️ 返回的成员**不含**当前正在播的那一部吗？—— 含。调用方按 id 过滤自己。
   Future<List<MediaItem>> getCollectionItems(String collectionId);
 
+  /// **某演职员参与过的作品**（点演员头像 → 作品列表）。
+  ///
+  /// ## 为什么需要它（用户要求第一批第 1 项）
+  /// 详情页的演职员行是"死"的：有头像、有名字，但**点了没反应**。
+  /// 用户看到喜欢的演员，想看他还演过什么 —— 这是最自然的下一步。
+  ///
+  /// ## 端点依据（Emby 官方 Go SDK，非猜测）
+  /// `Clients/Go/api_persons_service.go`：
+  /// ```
+  /// localVarPath = BasePath + "/Persons/{Id}/Credits"
+  /// ```
+  /// ⇒ `GET /Persons/{Id}/Credits`（该人的全部参演/执导条目）。
+  ///
+  /// [personId] 来自 `MediaPerson.id`（Emby 的 People[].Id）。
+  Future<List<MediaItem>> getPersonCredits(String personId);
+
+  /// **本地预告片**（某个条目自带的 trailer）。
+  ///
+  /// ## 端点依据（官方 Go SDK）
+  /// `Clients/Go/api_user_library_service.go`：
+  /// ```
+  /// "/Users/{UserId}/Items/{Id}/LocalTrailers"
+  /// ```
+  ///
+  /// ## 与"在线预告"的区别
+  /// `LocalTrailers` 是**服务端媒体库里已有的**预告文件（同一个 Emby 库），
+  /// 因此能直接起播；`/Items/{Id}/RemoteTrailers`（若有）给的是外部链接，
+  /// 需要跳浏览器/YouTube。本项目只做本地预告 —— 它能在播放器里播。
+  Future<List<MediaItem>> getLocalTrailers(String itemId);
+
+  /// **上报一次搜索给服务端**（用户要求第一批第 4 项）。
+  ///
+  /// ## ⚠️ 改过的需求：Emby 没有"读取"搜索历史的端点
+  /// 原计划是"服务端搜索历史（RecentlySearched）"，但**全 SDK 核实后否定**：
+  /// 扫描 `Clients/Go` 全部 410 个文件，所有含 `Searched` 的端点只有：
+  /// ```
+  /// POST   /Users/{UserId}/SearchedItems/          ← 上报（本方法用它）
+  /// DELETE /Users/{Id}/RecentlySearched            ← 清空
+  /// POST   /Users/{Id}/RecentlySearched/Delete     ← 清空
+  /// ```
+  /// **没有 GET** ⇒ 服务端不回吐历史，客户端**无法**从服务端读回列表。
+  ///
+  /// ⇒ 因此本项只能实现"**写入侧**"：上报 + 清空同步（多端一致）。
+  ///    **读取侧仍用本地** `SessionStore.loadSearchHistory`
+  ///    （否则搜索页的历史会永远是空的 —— 那是更糟的"假实现"）。
+  ///
+  /// ## 为什么还是值得做
+  /// · 服务端**有**这份数据（Emby 客户端/Web 端能看到）⇒ 上报后
+  ///   用户在官方客户端也能看到同样的历史，是真实的跨端一致；
+  /// · 清空时同步服务端 ⇒ 在其他客户端清掉历史后，本 App 也不会"复活"它
+  ///   （只清本地会让服务端记录继续存在，用户在别处仍看到 —— 隐私错觉）。
+  ///
+  /// ⚠️ fire-and-forget：失败**不该**影响搜索（搜索本身已成功）。
+  ///    不同 Emby 版本可能无此端点 ⇒ 实现里静默容忍。
+  void reportSearched(String query);
+
+  /// **清空服务端搜索历史**（与本地清空成对）。
+  ///
+  /// ## 为什么必须成对
+  /// 用户点"清空历史"的意图是"**让这些记录消失**"。只清本地 =
+  /// 记录仍在服务端（且会在官方客户端显示）—— 用户的隐私预期被违背。
+  ///
+  /// ⚠️ 同样 fire-and-forget：服务端清空失败**不该**阻止本地清空
+  ///（用户看到的历史必须先消失）。反过来也要日志可见，便于排查。
+  void clearRemoteSearchHistory();
+
+  // ═══════════════════════════════════════════════════════════════
+  // 第二批（需新页面）
+  // ═══════════════════════════════════════════════════════════════
+
+  /// **制片公司列表**（用户要求第二批第 5 项）。
+  ///
+  /// ## 端点依据（Emby 官方 Go SDK `api_studios_service.go`）
+  /// ```
+  /// localVarPath = BasePath + "/Studios"
+  /// ```
+  /// 参数（同文件 `GetStudiosOpts`）含 `ParentId` / `UserId` /
+  /// `StartIndex` / `Limit` / `Recursive`（与 Items 同族）。
+  ///
+  /// ## 为什么有用
+  /// 用户按"漫威/皮克斯/东宝"浏览是**片库的自然维度** ——
+  /// 比按类型（"动作/科幻"太宽）更精确。
+  ///
+  /// ⚠️ 返回的是**公司实体**（`Type == 'Studio'`），不是可播条目。
+  ///    生产实现里**不能**用 `isPlayable` 过滤掉它们。
+  Future<List<MediaItem>> getStudios({String? parentId, int limit = 100});
+
+  /// **某制片公司的作品**（用户要求第二批第 5 项）。
+  ///
+  /// ## 端点依据（官方 Go SDK `api_items_service.go`）
+  /// `GET /Users/{UserId}/Items` 的 **`Studios`** 参数
+  ///（`GetItemsOpts.Studios`，官方参数表里确认存在）。
+  ///
+  /// [studioName] 来自 `getStudios()` 返回条目的 `name`。
+  Future<List<MediaItem>> getStudioItems(String studioName);
+
+  /// **服务端播放列表**（用户要求第二批第 6 项）。
+  ///
+  /// ## 端点依据（Emby 官方 Go SDK `api_playlist_service.go`）
+  /// ```
+  /// localVarPath = BasePath + "/Playlists"
+  /// ```
+  /// 支持 `GET`（列表自身）、`/Playlists/{Id}/Items`（成员）。
+  ///
+  /// ## 与"本地播放队列"的区别
+  /// 本项目的播放列表（`PlaylistController`）是**会话内**的（换集/连播）。
+  /// 服务端播放列表是**用户手工建、跨设备同步**的 —— 两回事，别混。
+  Future<List<MediaItem>> getPlaylists();
+
+  /// 某服务端播放列表的成员。
+  Future<List<MediaItem>> getPlaylistItems(String playlistId);
+
+  /// **即将上线 / 待播**（用户要求第二批第 7 项：追剧日历）。
+  ///
+  /// ## 端点依据（Emby 官方 Go SDK `api_tv_shows_service.go`）
+  /// ```
+  /// localVarPath = BasePath + "/Shows/Upcoming"
+  /// ```
+  ///
+  /// ## 与 `getNextUp` 的区别
+  /// `NextUp` = "我该看下一集"（**已入库**、有进度语义）；
+  /// `Upcoming` = "**未来**会播/会上线的集"（日历语义，可能尚未入库）。
+  /// 追剧用户要的是后者。
+  ///
+  /// [days] = 往后看多少天（官方参数 `MaxEndDate` 的简化封装）。
+  Future<List<MediaItem>> getUpcoming({int days = 30, int limit = 40});
+
   /// 章节标记（进度条刻度 / 跳过片头）
   Future<List<MediaChapter>> getChapters(String itemId);
 

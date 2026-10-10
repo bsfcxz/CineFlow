@@ -17,6 +17,8 @@ import '../data/models.dart';
 import '../pan115/pan115_browser_page.dart';
 import '../pan115/pan115_store.dart';
 import '../state/providers.dart';
+import 'server_list_page.dart';
+import 'account_manager_page.dart';
 
 /// 观看统计（TotalRecordCount 查询，Counts 端点部分服务器不可用）
 class _Stats {
@@ -72,6 +74,23 @@ class ProfilePage extends ConsumerWidget {
             _statGrid(stats),
             SizedBox(height: 14),
             _settingsGroup([
+              // ★ 多账号与资源整合（放在最前 —— 它是"资源来源"级别的设置）
+              _SettingItem(
+                icon: Icons.dns_rounded,
+                color: const Color(0xFF8E44AD),
+                title: '账号与资源整合',
+                sub: ref.watch(accountsProvider).maybeWhen(
+                      data: (l) => l.length <= 1
+                          ? '已登录 1 台 · 可添加更多服务器'
+                          : '已登录 ${l.length} 台 · 搜索会同时搜它们',
+                      orElse: () => '管理已登录的 Emby 服务器',
+                    ),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const AccountManagerPage()),
+                ),
+              ),
               _SettingItem(
                 icon: Icons.cloud_outlined,
                 color: const Color(0xFF00A8FF),
@@ -101,6 +120,80 @@ class ProfilePage extends ConsumerWidget {
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const HistoryPage()),
+                ),
+              ),
+              _SettingItem(
+                icon: Icons.apartment_rounded,
+                color: const Color(0xFFE17055),
+                title: '制片公司',
+                sub: '按片厂浏览（漫威 / 皮克斯 / 东宝…）',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ServerListPage(
+                      title: '制片公司',
+                      emptyIcon: Icons.apartment_outlined,
+                      emptyText: '服务器没有制片公司数据',
+                      // 公司是**容器**不是可播条目 ⇒ 点它进"该公司作品"
+                      onItemTap: (ctx, r, item) => Navigator.push(
+                        ctx,
+                        MaterialPageRoute(
+                          builder: (_) => ServerListPage(
+                            title: item.name,
+                            emptyIcon: Icons.movie_outlined,
+                            emptyText: '该公司暂时没有作品',
+                            loader: (api) => api.getStudioItems(item.name),
+                          ),
+                        ),
+                      ),
+                      loader: (api) => api.getStudios(),
+                    ),
+                  ),
+                ),
+              ),
+              _SettingItem(
+                icon: Icons.queue_music_rounded,
+                color: const Color(0xFF00B894),
+                title: '服务端播放列表',
+                sub: '在 Emby 里建的列表 · 多端同步',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ServerListPage(
+                      title: '播放列表',
+                      emptyIcon: Icons.playlist_remove_rounded,
+                      emptyText: '服务器上没有播放列表\n（可在 Emby 网页端创建）',
+                      onItemTap: (ctx, r, item) => Navigator.push(
+                        ctx,
+                        MaterialPageRoute(
+                          builder: (_) => ServerListPage(
+                            title: item.name,
+                            emptyIcon: Icons.playlist_remove_rounded,
+                            emptyText: '这个列表是空的',
+                            loader: (api) => api.getPlaylistItems(item.id),
+                          ),
+                        ),
+                      ),
+                      loader: (api) => api.getPlaylists(),
+                    ),
+                  ),
+                ),
+              ),
+              _SettingItem(
+                icon: Icons.event_available_rounded,
+                color: const Color(0xFF0984E3),
+                title: '追剧日历',
+                sub: '未来 30 天会上线的剧集',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ServerListPage(
+                      title: '追剧日历',
+                      emptyIcon: Icons.event_busy_rounded,
+                      emptyText: '未来 30 天没有待播剧集',
+                      loader: (api) => api.getUpcoming(days: 30),
+                    ),
+                  ),
                 ),
               ),
               _SettingItem(

@@ -2,6 +2,7 @@
 /// 踩坑对策源自多服务器实测，见各方法注释。
 library;
 import 'dart:async';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'package:dio/dio.dart';
 
@@ -417,44 +418,344 @@ class EmbyProvider implements MediaProvider {
 
   @override
   Future<List<MediaItem>> getSimilar(String itemId) async {
-    // 注意：Emby 的 Similar 路径不带 /Users/{uid}（实测 404 对比确认）
-    final d = _ok(await _dio.get('/Items/$itemId/Similar', queryParameters: {
-      'userId': session.user.id,
-      'Limit': 12,
-      'Fields': 'PrimaryImageAspectRatio,ProductionYear,CommunityRating',
+    // ★ 2026-10-09 改用**服务端分类推荐**（用户要求第一批第 3 项）
+    //
+    // ## 为什么换（`/Items/{id}/Similar` 不够好）
+    // `/Similar` 只给一个**平铺列表**，服务端已经算好了分类
+    //（"同类型"/"同导演"/"同演员"…）却**全混在一起**，
+    // 客户端拿不到"为什么推荐它"。
+    //
+    // ## 新端点（依据 Emby 官方 Go SDK）
+    // `Clients/Go/api_movies_service.go`：
+    // ```
+    // localVarPath = BasePath + "/Movies/Recommendations"
+    // ```
+    // 参数（同文件）：`CategoryLimit` / `ItemLimit` / `UserId` /
+    // `ParentId` / `ImageTypeLimit`。
+    //
+    // ## 返回形状差异（关键）
+    // `/Similar` 返回 `{Items:[…]}`；`/Movies/Recommendations`
+    // 返回 **`[{BaselineItemName, RecommendationType, Items:[…]}, …]`**
+    // —— 即"分组数组"，每组一个推荐理由。
+    // ⚠️ 这里做**形状兼容**：两种都吃（若服务端/版本给平铺也照常工作）。
+    //   客户端不该假设某一种形状一定成立（AGENTS §5.3 防御式解析）。
+    final d = _ok(await _dio.get('/Movies/Recommendations', queryParameters: {
+      'UserId': session.user.id,
+      'ItemLimit': 8,
+      'CategoryLimit': 4,
+      'Fields': 'PrimaryImageAspectRatio,ProductionYear,CommunityRating,'
+          'OfficialRating,UserDefaults,Collections',
     }));
+
+    final out = <MediaItem>[];
+    final seen = <String>{};
+    // 形状 A：分组数组（官方形状）
+    if (d is List) {
+      for (final g in d.whereType<Map<String, dynamic>>()) {
+        for (final j in _itemsList(g)) {
+          final it = MediaItem.fromJson(j);
+          if (seen.add(it.id)) out.add(it);
+        }
+      }
+    } else if (d is Map<String, dynamic>) {
+      // 形状 B：平铺（容错）
+      for (final j in _itemsList(d)) {
+        final it = MediaItem.fromJson(j);
+        if (seen.add(it.id)) out.add(it);
+      }
+    }
+    // 只保留可播条目（推荐里可能混入 Person/Genre 之类的实体）
+    return out.where((i) => i.isPlayable).toList();
+  }
+
+  /// 某演职员参与过的作品（用户要求第一批第 1 项：点演员有反应）。
+  ///
+  /// ## 端点依据（Emby 官方 Go SDK，非猜测）
+  /// `Clients/Go/api_persons_service.go`：
+  /// ```
+  /// localVarPath = a.client.cfg.BasePath + "/Persons/{Id}/Credits"
+  /// ```
+  ///
+  /// ## 参数取舍
+  /// · `UserId`：让每个作品带 `UserData`（"已看/看到 N%"）——
+  ///   作品列表要能显示进度，否则用户分不清哪部看过。
+  /// · `Fields` 带 `Collections`：列表里点进某部电影时，那部也要知道
+  ///   自己的合集（否则连播链断掉，与 `collectionIds` 同因）。
+  /// · `Recursive: true`：该人可能只在剧里演某一集，不递归会漏。
+  /// · **不按类型过滤**：演员既有电影也有剧集，全要。
+  ///
+  /// ⚠️ 路径**不带** `/Users/{uid}` 前缀（与 `/Persons` 服务同族）。
+  @override
+  Future<List<MediaItem>> getPersonCredits(String personId) async {
+    final d = _ok(await _dio.get('/Persons/$personId/Credits',
+        queryParameters: {
+          'UserId': session.user.id,
+          'Recursive': true,
+          'Fields': 'PrimaryImageAspectRatio,ProductionYear,CommunityRating,'
+              'OfficialRating,UserData,RunTimeTicks,Collections',
+          // 按社区评分排序：比按名字排更贴近"值得看的作品"
+          'SortBy': 'CommunityRating,ProductionYear',
+          'SortOrder': 'Descending,Descending',
+        }));
+    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)]
+        .where((i) => i.isPlayable)
+        .toList();
+  }
+
+  /// 上报搜索给服务端（用户要求第一批第 4 项，**只做写入侧**）。
+  ///
+  /// ## 端点依据（官方 Go SDK `api_user_library_service.go`）
+  /// ```
+  /// localVarPath = BasePath + "/Users/{UserId}/SearchedItems/"
+  /// ```
+  /// 动词 `Post`。
+  ///
+  /// ## ⚠️ 为什么没有"读取"实现
+  /// 全 SDK 核实：Emby **没有** GET 搜索历史的端点
+  ///（只有 POST 上报 + 两处 DELETE 清空，见 `MediaProvider` 的说明）。
+  /// 故读取侧仍用本地 `SessionStore.loadSearchHistory`。
+  /// 编一个不存在的 GET 端点会导致"历史永远为空"的假实现。
+  ///
+  /// ## 为什么是 fire-and-forget
+  /// 搜索已成功返回结果，上报只是**附带**。让上报失败阻断搜索体验
+  /// 是本末倒置；且不同 Emby 版本可能无此端点（要静默容忍）。
+  @override
+  void reportSearched(String query) {
+    final q = query.trim();
+    if (q.isEmpty) return;
+    unawaited(() async {
+      try {
+        await _dio.post('/Users/${session.user.id}/SearchedItems/',
+            queryParameters: {'SearchTerm': q});
+      } catch (e) {
+        // 静默：非关键路径。留日志便于排查（如端点不存在）
+        debugPrint('[Search] 上报服务端历史失败（非致命）: $e');
+      }
+    }());
+  }
+
+  /// 清空服务端搜索历史（官方 Go SDK `api_user_service.go`）。
+  ///
+  /// ## 为什么用 POST .../Delete 而不是 DELETE 那个
+  /// 两个端点语义相同（都是清空）：
+  /// ```
+  /// DELETE /Users/{Id}/RecentlySearched          （RESTful 风格）
+  /// POST   /Users/{Id}/RecentlySearched/Delete   （Emby 的"POST + 后缀"风格）
+  /// ```
+  /// 本仓库既有的 toggle 用的都是 **`POST .../Delete`** 风格
+  ///（见 `toggleFavorite`/`togglePlayed`，且实测该服务器有 `/emby/` 前缀
+  /// 的同类路径）⇒ 保持一致，减少一个变量。
+  @override
+  void clearRemoteSearchHistory() {
+    unawaited(() async {
+      try {
+        await _dio.post(
+            '/Users/${session.user.id}/RecentlySearched/Delete');
+      } catch (e) {
+        debugPrint('[Search] 清空服务端历史失败（非致命）: $e');
+      }
+    }());
+  }
+
+  /// 制片公司列表（用户要求第二批第 5 项）。
+  ///
+  /// ## 端点依据（官方 Go SDK `api_studios_service.go`）
+  /// ```
+  /// localVarPath = BasePath + "/Studios"
+  /// ```
+  /// 参数含 `ParentId`/`UserId`/`StartIndex`/`Limit`/`Recursive`。
+  ///
+  /// ## ⚠️ 不过滤 `isPlayable`
+  /// 公司是**浏览实体**（`Type == 'Studio'`），不是可播条目。
+  /// `isPlayable` 白名单里没有它 —— 照搬那套过滤会把结果清空。
+  @override
+  Future<List<MediaItem>> getStudios({String? parentId, int limit = 100}) async {
+    final d = _ok(await _dio.get('/Studios', queryParameters: {
+      'UserId': session.user.id,
+      'ParentId': ?parentId,
+      'Recursive': true,
+      'Limit': limit,
+      'SortBy': 'SortName',
+      'SortOrder': 'Ascending',
+      'Fields': 'PrimaryImageAspectRatio',
+    }));
+    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+  }
+
+  /// 某制片公司的作品（用户要求第二批第 5 项）。
+  ///
+  /// ## 端点依据（官方 Go SDK `api_items_service.go`）
+  /// `GetItemsOpts.Studios` —— 官方参数表里确认存在该参数
+  ///（按制片公司名过滤）。
+  @override
+  Future<List<MediaItem>> getStudioItems(String studioName) async {
+    final d = _ok(await _dio.get('/Users/${session.user.id}/Items',
+        queryParameters: {
+          'Studios': studioName,
+          'Recursive': true,
+          'IncludeItemTypes': 'Movie,Series',
+          'SortBy': 'ProductionYear,SortName',
+          'SortOrder': 'Descending,Ascending',
+          'Limit': 200,
+          'Fields': 'PrimaryImageAspectRatio,ProductionYear,CommunityRating,'
+              'OfficialRating,UserData,Collections',
+        }));
+    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)]
+        .where((i) => i.isPlayable)
+        .toList();
+  }
+
+  /// 服务端播放列表（用户要求第二批第 6 项）。
+  ///
+  /// ## 端点依据（官方 Go SDK `api_playlist_service.go`）
+  /// ```
+  /// localVarPath = BasePath + "/Playlists"
+  /// ```
+  /// ⚠️ 该路径**不带** `/Users/{uid}` —— 播放列表是服务端级资源，
+  /// 不是用户级。带用户前缀会 404（与 `/Collections/{Id}/Items` 同类）。
+  @override
+  Future<List<MediaItem>> getPlaylists() async {
+    final d = _ok(await _dio.get('/Playlists', queryParameters: {
+      'UserId': session.user.id,
+      'SortBy': 'SortName',
+      'SortOrder': 'Ascending',
+    }));
+    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+  }
+
+  /// 播放列表成员（官方 SDK 的 `/Playlists/{Id}/Items`）。
+  @override
+  Future<List<MediaItem>> getPlaylistItems(String playlistId) async {
+    final d = _ok(await _dio.get('/Playlists/$playlistId/Items',
+        queryParameters: {
+          'UserId': session.user.id,
+          'Fields': 'PrimaryImageAspectRatio,ProductionYear,RunTimeTicks,'
+              'UserData,Collections',
+        }));
+    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)]
+        .where((i) => i.isPlayable)
+        .toList();
+  }
+
+  /// 即将上线（用户要求第二批第 7 项：追剧日历）。
+  ///
+  /// ## 端点依据（官方 Go SDK `api_tv_shows_service.go`）
+  /// ```
+  /// localVarPath = BasePath + "/Shows/Upcoming"
+  /// ```
+  ///
+  /// ## 时间窗写法
+  /// 官方参数是 `MinEndDate`/`MaxEndDate`（ISO8601）。这里用
+  /// `MaxEndDate = now + days`，**不传** `MinEndDate`（让服务端把
+  /// "已入库但还没播的"也一并给出，对追剧用户更有用）。
+  ///
+  /// ⚠️ 日期**必须带时区**（`toUtc().toIso8601String()`）：裸本地时间
+  ///    在服务端按 UTC 解读会偏一整天。
+  @override
+  Future<List<MediaItem>> getUpcoming({int days = 30, int limit = 40}) async {
+    final until = DateTime.now().toUtc().add(Duration(days: days));
+    final d = _ok(await _dio.get('/Shows/Upcoming', queryParameters: {
+      'UserId': session.user.id,
+      'Limit': limit,
+      'MaxEndDate': until.toIso8601String(),
+      'Fields': 'PrimaryImageAspectRatio,ProductionYear,CommunityRating,'
+          'UserData,SeriesId,SeasonId,IndexNumber,ParentIndexNumber',
+    }));
+    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+  }
+
+  /// 本地预告片（用户要求第一批第 2 项）。
+  ///
+  /// ## 端点依据（官方 Go SDK `api_user_library_service.go`）
+  /// ```
+  /// "/Users/{UserId}/Items/{Id}/LocalTrailers"
+  /// ```
+  ///
+  /// ## 为什么只做 Local 不做 Remote
+  /// Local 预告是**同一个 Emby 库里已有的媒体文件** ⇒ 能直接进播放器起播。
+  /// Remote 是外部链接（YouTube 等）⇒ 要跳浏览器，本项目播放器不为它服务。
+  @override
+  Future<List<MediaItem>> getLocalTrailers(String itemId) async {
+    final d = _ok(await _dio.get(
+        '/Users/${session.user.id}/Items/$itemId/LocalTrailers',
+        queryParameters: {
+          'Fields': 'PrimaryImageAspectRatio,RunTimeTicks,ProductionYear',
+        }));
     return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
   }
 
   /// 合集成员（用户报障："看复仇者联盟时列表没有下一部"）。
   ///
-  /// ## 端点依据（Emby 官方 Go SDK，非猜测）
-  /// `Clients/Go/api_collection_service.go` 里各方法的 `localVarPath`：
+  /// ## ★★ 真机实测推翻了"官方端点一定可用"（本轮踩到）
+  /// 官方 Go SDK（`api_collection_service.go`）写的是：
   /// ```
-  /// localVarPath = a.client.cfg.BasePath + "/Collections/{Id}/Items"
+  /// localVarPath = BasePath + "/Collections/{Id}/Items"
   /// ```
-  /// ⇒ `GET /Collections/{Id}/Items`。
+  /// 但**这台服务器返回 404**。真机日志取证：
+  /// ```
+  /// [Detail] 取合集失败（降级为单条播放）: 服务器错误 (404)
+  /// ```
+  /// 而同一批改动的 `/Studios`（同样不带 `/Users` 前缀）**能正常返回**
+  /// ⇒ 不是"缺前缀"这么简单，而是**该服务器/版本没有这个路由**。
   ///
-  /// ## 参数取舍
-  /// · `UserId`：让每个成员带上 `UserData`（播放进度/是否看过）——
-  ///   列表要显示"看到 37%"就靠它。
-  /// · `Fields=Collections`：**为后续跳转保留合集体信息** ——
-  ///   用户在列表里点到另一部时，那一部同样需要知道自己的合集
-  ///   （否则连播到第二部后列表就断了）。
-  /// · 不传 `SortBy`：合集内顺序由服务端按合集设定给（实测通常按年份），
-  ///   自己按名字重排会把"按剧情顺序建合集"的库打乱。
+  /// ## 因此改为**多策略回退**（按可用性排序，不赌单一路径）
+  /// 1. `GET /Collections/{Id}/Items`（官方形状，能用的服务器走这条）
+  /// 2. `GET /Users/{uid}/Items?ParentId={Id}`（**通用列表端点** +
+  ///    合集 id 当父级）—— 合集体在 Emby 里本身就是个"容器"，
+  ///    Emby Web 端也是这么列成员的，故这条最可能在旧服务器上可用
+  /// 3. `GET /Users/{uid}/Items?ParentId={Id}&Recursive=false`（同 2，
+  ///    但不递归：万一合集里嵌了子文件夹）
   ///
-  /// ⚠️ 路径**不带** `/Users/{uid}` 前缀 —— 与 `/Collections` 服务同族，
-  ///    带了会 404（对照 `getSimilar` 的同类实测结论）。
+  /// ## 为什么要"回退"而不是"直接换掉策略 1"
+  /// 不同 Emby 版本路由不同：新版本认 `/Collections`，
+  /// 旧版本只认 `ParentId`。**两种都试**才能对两代服务器都对。
+  /// 失败时逐个降级并打日志，便于定位是哪条成功的。
+  ///
+  /// ## 参数取舍（各策略共用）
+  /// · `UserId`：让成员带 `UserData`（"看到 37%"）
+  /// · `Fields=Collections`：为**后续跳转**保留合集体信息 ——
+  ///   用户在列表里点另一部时，那一部也要知道自己的合集，
+  ///   否则连播到第二部后列表就断了。
+  /// · 不传 `SortBy`：合集内顺序由服务端给（通常按年份），
+  ///   自己按名字重排会打乱"按剧情顺序建合集"的库。
   @override
   Future<List<MediaItem>> getCollectionItems(String collectionId) async {
-    final d = _ok(await _dio.get('/Collections/$collectionId/Items',
-        queryParameters: {
-          'UserId': session.user.id,
-          'Fields': 'Collections,PrimaryImageAspectRatio,ProductionYear,'
-              'CommunityRating,RunTimeTicks,Overview',
-        }));
-    return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+    const fields = 'Collections,PrimaryImageAspectRatio,ProductionYear,'
+        'CommunityRating,RunTimeTicks,Overview';
+
+    // 策略 1：官方路径
+    try {
+      final d = _ok(await _dio.get('/Collections/$collectionId/Items',
+          queryParameters: {'UserId': session.user.id, 'Fields': fields}));
+      final items = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+      if (items.isNotEmpty) return items;
+    } catch (e) {
+      debugPrint('[Collection] 策略1 /Collections/{id}/Items 失败: $e');
+    }
+
+    // 策略 2：通用列表端点的 ParentId（旧服务器）
+    for (final recursive in [true, false]) {
+      try {
+        final d = _ok(await _dio.get('/Users/${session.user.id}/Items',
+            queryParameters: {
+              'ParentId': collectionId,
+              'Recursive': recursive,
+              'Fields': fields,
+            }));
+        final items = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
+        if (items.isNotEmpty) {
+          debugPrint('[Collection] 策略2 成功（ParentId, recursive=$recursive）'
+              '：${items.length} 项');
+          return items;
+        }
+      } catch (e) {
+        debugPrint('[Collection] 策略2(recursive=$recursive) 失败: $e');
+      }
+    }
+
+    // 全部失败 → 空列表（调用方会降级为单条播放，不阻塞看电影）
+    debugPrint('[Collection] 全部策略失败，返回空（降级为单条播放）');
+    return const [];
   }
 
   /// 收藏 toggle（POST 收藏 / POST .../Delete 取消）
@@ -535,6 +836,21 @@ class EmbyProvider implements MediaProvider {
     // 直连原文件（static=true），Range 由服务端处理
     final url = '${session.serverUrl}/Videos/$itemId/stream'
         '?static=true&mediaSourceId=${ms.id}&api_key=${session.accessToken}';
+    //
+    // ⚠️ 曾在此处试过"连接预热"（发一个小 Range GET 提前握手），
+    //    **已删除** —— 实测证明它无效，原因是**连接池不共享**：
+    //      · 预热走 Dart 的 HttpClient（dio）
+    //      · 播放器走 Android HttpURLConnection / Media3 DataSource
+    //    两者是完全不同的连接池，**TCP 连接不共享**，而慢启动是
+    //    **按连接**的 ⇒ 预热对播放器零帮助。
+    //    实测对照（n=3）：无预热 DEMUX 中位 7757ms；有预热 9757ms
+    //    （无改善，且白耗 256KB 带宽）。
+    //
+    //    若将来要做，唯一有意义的形式是**用播放器同一条栈**预热
+    //    （即通过 MethodChannel 在原生侧用 HttpURLConnection 发请求，
+    //     依赖它的 keep-alive 池复用）—— 但那依赖"URL 完全一致 +
+    //    池未驱逐"，脆弱，收益不确定，暂不做。
+
     // 转码兜底（硬解直连优先，转码是最后手段）：
     // Emby 标准 HLS master 播放列表，libmpv 原生可播；限制到 h264/aac 1080p。
     final transcode = '${session.serverUrl}/Videos/$itemId/master.m3u8'

@@ -109,6 +109,71 @@ class SessionStore {
 
   Future<void> clearSession() => _storage.delete(key: _sessionKey);
 
+  // ═══════════════════════════════════════════════════════════════
+  // 多账号（用户要求："增加多 emby 账号登录和资源整合"）
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // ## 设计取舍：**保留"当前会话"不变，另存一份账号列表**
+  // `cf_session`（当前会话）是**所有既有代码**的读取点
+  //（`sessionProvider` → `embyApiProvider` → 首页/详情/播放器）。
+  // 若把它改成"列表 + 当前索引"，整条链路都要动 —— 风险远大于收益。
+  //
+  // 故新增 `cf_accounts`（**所有**已登录账号），而 `cf_session`
+  // 仍表示"当前生效的那个"。两者关系：
+  //   · 登录 → 写入 accounts（去重）+ 覆盖 session
+  //   · 切换 → 从 accounts 取该账号写回 session
+  //   · 退出 → 只清 session（**保留** accounts，便于再切回来）
+  //   · 彻底移除 → 从 accounts 删除
+  //
+  // ⇒ 搜索聚合读 accounts（多台都搜）；播放走 session（单台）。
+  //   这正是用户确认的方案："搜索聚合 + 首页保持单服务器切换"。
+  static const _accountsKey = 'cf_accounts';
+
+  /// 账号唯一键：`serverUrl|userId`。
+  ///
+  /// ⚠️ **必须含 userId 而不是只用 serverUrl**：同一台服务器可以
+  /// 有多个 Emby 用户（家庭共享），它们的库/权限/进度都不同 ——
+  /// 只用 url 去重会把第二个用户挤掉。
+  static String accountKey(MediaSession s) =>
+      '${s.serverUrl}|${s.user.id}';
+
+  Future<List<MediaSession>> loadAccounts() async {
+    final raw = await _storage.read(key: _accountsKey);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      return (jsonDecode(raw) as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(MediaSession.fromJson)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 写入/更新一个账号（按 [accountKey] 去重，最多 8 个）。
+  Future<void> upsertAccount(MediaSession s) async {
+    final list = [s, ...await loadAccounts()];
+    final seen = <String>{};
+    final out = <MediaSession>[];
+    for (final x in list) {
+      if (seen.add(accountKey(x))) out.add(x);
+      if (out.length >= 8) break;
+    }
+    await _storage.write(
+        key: _accountsKey, value: jsonEncode([for (final x in out) x.toJson()]));
+  }
+
+  /// 移除一个账号（"退出登录"里选"彻底移除"时用）。
+  Future<void> removeAccount(MediaSession s) async {
+    final key = accountKey(s);
+    final out = [
+      for (final x in await loadAccounts())
+        if (accountKey(x) != key) x
+    ];
+    await _storage.write(
+        key: _accountsKey, value: jsonEncode([for (final x in out) x.toJson()]));
+  }
+
   Future<List<SavedServer>> loadServers() async {
     final raw = await _storage.read(key: _serversKey);
     if (raw == null || raw.isEmpty) return const [];

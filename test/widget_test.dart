@@ -7,6 +7,16 @@ import 'package:cineflow/main.dart';
 import 'package:cineflow/state/providers.dart';
 
 class _FakeStore implements SessionStore {
+  /// 多账号 —— 测试替身：空列表。
+  @override
+  Future<List<MediaSession>> loadAccounts() async => const [];
+
+  @override
+  Future<void> upsertAccount(MediaSession s) async {}
+
+  @override
+  Future<void> removeAccount(MediaSession s) async {}
+
   @override
   Future<String> deviceId() async => 'test-device';
   @override

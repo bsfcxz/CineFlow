@@ -70,6 +70,55 @@ class FakeMediaProvider implements MediaProvider {
   /// 生产实现在 `EmbyProvider.getCollectionItems`（`GET /Collections/{Id}/Items`）。
   /// 这里给空列表是**诚实**的：替身没有真实服务端，编造成员会让
   /// 依赖它的断言"绿得没意义"。
+  /// 演职员作品 —— 测试替身：空列表（**不伪造数据**）。
+  /// 生产实现：`EmbyProvider.getPersonCredits`（`GET /Persons/{Id}/Credits`）。
+  /// 上报搜索 —— 测试替身：no-op（**不伪造数据**）。
+  /// 生产实现：`EmbyProvider.reportSearched`
+  ///（`POST /Users/{uid}/SearchedItems/`）。
+  @override
+  void reportSearched(String query) {}
+
+  /// 清空服务端历史 —— 测试替身：no-op。
+  /// 生产实现：`EmbyProvider.clearRemoteSearchHistory`
+  ///（`POST /Users/{uid}/RecentlySearched/Delete`）。
+  @override
+  void clearRemoteSearchHistory() {}
+
+  /// 制片公司 —— 测试替身：空列表（**不伪造数据**）。
+  /// 生产实现：`EmbyProvider.getStudios`（`GET /Studios`）。
+  @override
+  Future<List<MediaItem>> getStudios({String? parentId, int limit = 100}) async =>
+      const [];
+
+  /// 某公司作品 —— 测试替身：空列表。
+  /// 生产实现：`EmbyProvider.getStudioItems`（`Items?Studios=`）。
+  @override
+  Future<List<MediaItem>> getStudioItems(String studioName) async => const [];
+
+  /// 服务端播放列表 —— 测试替身：空列表。
+  /// 生产实现：`EmbyProvider.getPlaylists`（`GET /Playlists`）。
+  @override
+  Future<List<MediaItem>> getPlaylists() async => const [];
+
+  /// 播放列表成员 —— 测试替身：空列表。
+  @override
+  Future<List<MediaItem>> getPlaylistItems(String playlistId) async => const [];
+
+  /// 即将上线 —— 测试替身：空列表。
+  /// 生产实现：`EmbyProvider.getUpcoming`（`GET /Shows/Upcoming`）。
+  @override
+  Future<List<MediaItem>> getUpcoming({int days = 30, int limit = 40}) async =>
+      const [];
+
+  @override
+  Future<List<MediaItem>> getPersonCredits(String personId) async => const [];
+
+  /// 本地预告 —— 测试替身：空列表（**不伪造数据**）。
+  /// 生产实现：`EmbyProvider.getLocalTrailers`
+  ///（`GET /Users/{uid}/Items/{Id}/LocalTrailers`）。
+  @override
+  Future<List<MediaItem>> getLocalTrailers(String itemId) async => const [];
+
   @override
   Future<List<MediaItem>> getCollectionItems(String collectionId) async =>
       const [];

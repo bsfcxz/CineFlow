@@ -125,6 +125,49 @@ void main() {
           reason: '★ 必须把合集成员作为播放列表传给播放器（否则列表仍空）');
     });
 
+    test('★★ 详情页"立即播放"也必须走合集（真机抓到的漏修）', () {
+      // ## 为什么单独守这一条（本轮真机实测抓到）
+      // 上一轮只改了 `openPlayerResolved`（"继续观看"入口），
+      // 而**详情页的"立即播放"仍直接 `openPlayer`** ⇒
+      // "搜索 → 详情 → 立即播放"这条**主路径**上依然没有下一部。
+      //
+      // 真机取证：从搜索进《复仇者联盟》详情页 → 点立即播放 →
+      // 底栏**无计数**（应当有，该系列 4 部都在库里）。
+      final d = code('lib/pages/detail_page.dart');
+      expect(d.contains('_playMovieWithCollection'), isTrue,
+          reason: '★★ 详情页电影播放必须走合集解析 ——\n'
+              '    "搜索→详情→立即播放"是用户找电影的主路径，\n'
+              '    只修"继续观看"那条等于没修（真机实测确认）。');
+      // 反向：电影分支不得再直接 openPlayer 而跳过合集
+      final i = d.indexOf('void onPrimary()');
+      expect(i, greaterThanOrEqualTo(0), reason: '找不到 onPrimary');
+      final seg = d.substring(i, i + 900);
+      expect(seg.contains('_playMovieWithCollection(item)'), isTrue,
+          reason: '★ onPrimary 的电影分支必须调合集解析');
+    });
+
+    test('★★ 详情页保留 mediaSourceId（多版本选择不能丢）', () {
+      // 走合集的同时**必须**带上版本选择，否则"切了版本播的还是默认版本"。
+      //
+      // ⚠️ 不能只断言"方法里出现过 mediaSourceId" ——
+      //    该方法有 **4 个** openPlayer 调用点（主分支 + 3 个降级），
+      //    只改其中一个仍会满足裸 contains（§8.4 第 2 条：同一串出现多处）。
+      //    ⇒ 断言**出现次数**必须等于调用点数量。
+      final d = code('lib/pages/detail_page.dart');
+      final i = d.indexOf('_playMovieWithCollection(MediaItem item)');
+      expect(i, greaterThanOrEqualTo(0), reason: '找不到该方法');
+      final seg = d.substring(i, i + 2200);
+      final openCalls = RegExp(r'openPlayer\(').allMatches(seg).length;
+      final withSource =
+          RegExp(r'mediaSourceId: _selectedVersionId').allMatches(seg).length;
+      expect(openCalls, greaterThanOrEqualTo(2),
+          reason: '该方法应有"主分支 + 降级分支"多个调用点');
+      expect(withSource, openCalls,
+          reason: '★★ 每个 openPlayer 调用点都要带 mediaSourceId ——\n'
+              '    只改一个仍满足裸 contains（同串多处，§8.4）。\n'
+              '    实测: $openCalls 个调用点，$withSource 个带参数。');
+    });
+
     test('★ 无合集时优雅降级（仍能单条播放）', () {
       final o = code('lib/pages/open_player_resolved.dart');
       // 至少两处 openPlayer(context, item) 兜底（无合集 / 取失败）
