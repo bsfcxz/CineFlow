@@ -1217,3 +1217,97 @@ check-dev.ps1     21 项全过，退出码 0
                   C：切档→冷启动→读回，双向验证通过
 ```
 
+### 2026-10-10 · 第 12 轮 · 画面被压扁的**真根因**：渲染画布尺寸
+
+用户报障（附截屏）：
+> "竖屏的这个画面窗口你看下都成啥了"
+
+#### 实测数据（逐像素测量截屏，非目测）
+
+| 状态 | 画面高 | 折算宽高比 | 偏差 |
+|---|---|---|---|
+| 用户报障 | 335 px | 3.224 | **35%** |
+| **修复后** | **450 px** | **2.400** | **0.5%**（理论 452 / 2.388）|
+
+> **测量方法演进（值得记下来）**：先用"平均亮度 > 30"判画面带，
+> 但这部片是**雪夜暗场景**，暗部被误判成黑边 ⇒ 量出 283/332 等乱值。
+> 改用**行标准差**（letterbox 黑边逐行恒定 ⇒ std≈0；画面行即便很暗也有
+> 横向变化）后，同一批截图得到**稳定且互相印证**的结果。
+
+#### 根因（三层叠加，每层都有实测证据）
+
+**① 画布硬编码 16:9**
+`ensureTexture()` 用默认 `1920×1080`。而 mpv 的 `keepaspect`（默认 yes）
+把 2.388:1 的画面 **letterbox 进 16:9 画布** —— 黑边**烘焙进纹理**。
+
+**② Dart 侧再内接一次 ⇒ 非等比缩放**
+`AspectRatio(2.388)` 给出 1080×452 的框，而画布是 16:9(1.778)：
+```
+水平缩放 1080/1920 = 0.5625
+垂直缩放  452/1080 = 0.4185   ← 不等 ⇒ 内容被压扁
+内容高 = 804 × 0.4185 = 336   ← 实测 335 ✓
+```
+⇒ **数学与实测吻合到 1px**，根因坐实。
+
+**③ `setSurfaceSize` 通道实现了但 Dart 侧从未调用**
+（`PlayerChannel.kt` L367 早就写好）—— 又一个"配了没接线"。
+
+#### 修复（三处，缺一不可）
+
+**a. 起播前用**片源尺寸**重建画布**（`_startEpisode` 里）
+`resolvePlayback` 已从 Emby 的 `PlaybackInfo` 解析出
+`MediaStreams[].width/height` —— **服务端元数据，不用解码** ⇒
+起播前就知道真实分辨率。
+
+**b. 必须 `recreateTexture`，光改尺寸/属性无效**（真机实测抓到的）
+```
+_boot():         createTexture: 1920x1080      ← buffer 尺寸在此固定
+_startEpisode(): android-surface-size=1920x804 ← 属性改了，buffer 没变
+⇒ 画面仍 334px
+```
+`SurfaceProducer` 的 **buffer 尺寸在创建时固定**，改声明不会重建。
+
+**c. Kotlin 侧"记账 + initialize 后补发"**
+起播前设画布时 `mpv_initialize` **还没跑**（真机日志
+`（mpv 未就绪，待补）`）⇒ 只记日志不补 = 属性永远设不上。
+mpv 手册 `DOCS/man/options.rst:7206-7209` 明确要求：
+> `--android-surface-size` "**Needs to be set by the embedding application**
+>  if the dimensions change during runtime" —— 我们正是 `--gpu-context=android`。
+
+#### 业界对照（已读源码，非印象）
+`media_kit_video/.../android_video_controller/real.dart`：
+```dart
+width  = event.dw ?? 0;      // ← 画布尺寸 = 视频显示尺寸
+height = event.dh ?? 0;
+final androidSurfaceSizeValue = [width, height].join('x');
+```
+⇒ **画布与视频同尺寸 ⇒ 画布里只有画面、无黑边** ⇒
+比例由 Dart 层唯一决定（`FittedBox` + `SizedBox(比例)`）。
+
+#### ⚠️ 被否定的方案（记录避免重走）
+- **`keepaspect=no`**（让 mpv 拉伸填满画布）：mpv 手册说它
+  "will always stretch the video to window size"，会让职责更乱
+  （两层都在缩放），社区也罕用。
+- **"Surface 与视口同比例"**：我推导后发现**数学上不成立** ——
+  两层比例相同并不能消除叠加，黑边仍会被缩放两次（更糟）。
+  用户最初也认可这个方向，我核实后提出异议并改走"画布=片源尺寸"。
+
+#### 守卫测试（+14 例，5 个反向注入全部抓到）
+新增 `test/player_canvas_size_test.dart`。
+反向注入过程中**又抓到我自己两个弱断言**（§8.4 重犯）：
+1. **读 Kotlin 源码没剥注释** ⇒ 把赋值改成注释仍通过（已修：剥注释）
+2. **只查"方法存在 + 字符串存在"** ⇒ 把 guard 改成 `if (true) return false;`
+   让 createTexture **不可达**，纯文本断言全绿（已修：断言**首个 guard
+   必须是尺寸判断**，这是静态分析能守住的可达性近似）
+
+#### 本轮验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1065: All tests passed!
+check-dev.ps1     21 项全过，退出码 0
+反向注入          5 项全部抓到
+真机              画布 1920x804（= 片源 2.388 比例）/
+                  画面高 450px（理论 452，差 0.5%）
+```
+

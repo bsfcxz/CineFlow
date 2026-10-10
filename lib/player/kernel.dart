@@ -282,6 +282,57 @@ abstract class PlayerKernel {
   /// 必须在 [open] 之前完成，否则内核没有渲染目标。
   Future<void> ensureTexture({int width = 1920, int height = 1080}) async {}
 
+  /// **设置渲染画布（Surface）尺寸**（纹理输出型内核覆盖；默认 no-op）。
+  ///
+  /// ## ★★ 为什么必须有这个方法（真机实测抓到的"画面被压扁两次"）
+  ///
+  /// 原实现把 Surface **硬编码为 1920×1080（16:9）**，而片源可能是
+  /// 2.39:1 宽银幕。mpv 的 `keepaspect`（默认 yes）会先把画面
+  /// **letterbox 进这个 16:9 画布**（每帧自带黑边），Dart 侧的
+  /// `AspectVideo` 又按片源比例内接一次 ⇒ **黑边叠了两次**。
+  ///
+  /// 实测（片源 3840×1608 = 2.388:1，竖屏视口 1080×2400）：
+  /// ```
+  ///   理论应显示高          452 px
+  ///   实际显示高（用户截屏）  335 px
+  /// ```
+  ///
+  /// ## 业界对照（media_kit 的做法，已读源码核实）
+  /// `media_kit_video/.../android_video_controller/real.dart`：
+  /// ```dart
+  /// width  = event.dw ?? 0;      // ← 画布尺寸 = **视频显示尺寸**
+  /// height = event.dh ?? 0;
+  /// final androidSurfaceSizeValue = [width, height].join('x');  // 告诉 mpv
+  /// ```
+  ///
+  /// ## ⚠️ 真实约束：**必须在建纹理时就定尺寸**
+  /// 真机时序取证（改属性的做法**不生效**）：
+  /// ```
+  /// _boot():         createTexture: 1920x1080        ← buffer 已定为 16:9
+  /// _startEpisode(): android-surface-size=1920x804   ← 属性改了，但 buffer 没变
+  /// ⇒ 画面仍 334px（应 452）
+  /// ```
+  /// `SurfaceProducer.setSize()` 只改**声明**，已创建的 buffer 尺寸不会
+  /// 因此重建 ⇒ 光改属性/尺寸**不够**，需要 [recreateTexture]。
+  ///
+  /// [width]/[height] 应传**显示尺寸**（`dw`/`dh`，已含旋转与 SAR）。
+  Future<void> setSurfaceSize(int width, int height) async {}
+
+  /// **按新尺寸重建纹理**（渲染画布尺寸需要真正变更时用）。
+  ///
+  /// ## 为什么 `setSurfaceSize` 单独不够（真机实测）
+  /// Surface 的 **buffer 尺寸在创建时就固定**。`_boot` 里建纹理时还不知道
+  /// 片源尺寸（默认 1920×1080），到 `_startEpisode` 才知道。此时仅改属性
+  /// 无法改变已分配的 buffer ⇒ 画面比例仍错（实测 334px vs 应有 452px）。
+  ///
+  /// ⇒ 必须**销毁旧纹理 + 按正确尺寸重建**。
+  ///
+  /// ⚠️ 重建会让视频层短暂空白（一帧到几帧）。故实现里做**尺寸去重**：
+  /// 尺寸相同则直接返回（同比例连播不重建）。
+  /// 返回 true 表示纹理 id 已变化（调用方需刷新 `_textureId`）。
+  Future<bool> recreateTexture({required int width, required int height}) async =>
+      false;
+
   /// 视频宽高比（从流信息解析）；未知为 null（UI 回退 16:9）。
   double? get aspectRatio => null;
 

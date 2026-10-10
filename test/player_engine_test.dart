@@ -33,6 +33,18 @@ class MinimalKernel implements PlayerKernel {
   Stream<void> get videoSizeStream => const Stream.empty();
   @override
   Future<void> ensureTexture({int width = 1920, int height = 1080}) async {}
+  @override
+  Future<void> setSurfaceSize(int width, int height) async {
+    calls.add('setSurfaceSize($width,$height)');
+  }
+  @override
+  Future<bool> recreateTexture({
+    required int width,
+    required int height,
+  }) async {
+    calls.add('recreateTexture($width,$height)');
+    return false;
+  }
 
   @override
   bool supports(EngineFeature feature) => switch (feature) {

@@ -21,6 +21,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../domain/player_constants.dart' show DecodeMode;
 import '../kernel.dart';
@@ -300,6 +301,91 @@ class NativeKernel implements PlayerKernel {
       'height': height,
     });
     _textureId = id;
+  }
+
+  /// 设置渲染画布尺寸（mpv 的 `wid` Surface 的 buffer 大小）。
+  ///
+  /// ## 为什么必须接线（真机实测：画面被压扁两次）
+  /// Kotlin 侧早有 `setSurfaceSize` 通道（`PlayerChannel.kt`），
+  /// 但 **Dart 侧从未调用** ⇒ 画布恒为 `ensureTexture` 传的 1920×1080（16:9）。
+  /// 而 mpv 会把宽银幕画面 letterbox 进这个 16:9 画布 ⇒ 黑边进纹理，
+  /// Dart 再嵌一次 ⇒ **双重黑边**（2.388:1 片源实测只剩 74.4% 高度）。
+  ///
+  /// ## 传什么值（对齐 media_kit）
+  /// media_kit 的 android 控制器直接拿 `dw`/`dh` 当画布尺寸
+  /// （源码 `android_video_controller/real.dart`）。
+  /// 我们也传**显示尺寸** —— 这样画布与视频同比例，
+  /// **画布里只有画面、没有黑边**，比例由 Dart 层唯一决定。
+  ///
+  /// ## 幂等 + 去抖
+  /// `dwidth`/`dheight` 是**两个事件**，先到那个时另一个可能还是 0；
+  /// 且换片/切分辨率会重复设置。故：
+  /// · 任一边 ≤ 0 时**直接返回**（等另一边到齐）
+  /// · 与上次相同则**不重发**（避免无谓的 MethodChannel 往返）
+  @override
+  Future<void> setSurfaceSize(int width, int height) async {
+    if (width <= 0 || height <= 0) return;
+    if (_surfaceW == width && _surfaceH == height) return;
+    _surfaceW = width;
+    _surfaceH = height;
+    try {
+      await _method.invokeMethod('setSurfaceSize', {
+        'width': width,
+        'height': height,
+      });
+      debugPrint('[Kernel] 画布尺寸 → ${width}x$height'
+          '（ratio=${(width / height).toStringAsFixed(3)}）');
+    } catch (e) {
+      // 设置失败不该影响播放（画布退回默认尺寸，画面仍能看，只是比例不准）
+      debugPrint('[Kernel] 设置画布尺寸失败（非致命）: $e');
+    }
+  }
+
+  /// 上次设置的画布尺寸（去重用）
+  int _surfaceW = 0;
+  int _surfaceH = 0;
+
+  /// 按新尺寸**重建纹理**（真机实测：光改属性/尺寸不够）。
+  ///
+  /// ## 为什么必须重建（时序取证）
+  /// ```
+  /// _boot():         createTexture: 1920x1080      ← buffer 定为 16:9
+  /// _startEpisode(): android-surface-size=1920x804 ← 属性改了，buffer 没变
+  /// ⇒ 画面仍 334px（应 452）
+  /// ```
+  /// `SurfaceProducer` 的 **buffer 尺寸在创建时固定**，之后改声明**不会**
+  /// 重建已分配的 buffer ⇒ 必须销毁 + 重建。
+  ///
+  /// ## 去重（同尺寸不重建 ⇒ 无闪烁）
+  /// 同比例片源连播（如整季都是 16:9）不会重建。
+  ///
+  /// ## 重建顺序由 Kotlin 保证
+  /// `createTexture` 内部先 `disposeTexture()`（detachSurface + release），
+  /// 再按新尺寸建 producer 并 attachSurface ⇒ Dart 只需调一次。
+  @override
+  Future<bool> recreateTexture({
+    required int width,
+    required int height,
+  }) async {
+    if (width <= 0 || height <= 0) return false;
+    if (_surfaceW == width && _surfaceH == height && _textureId != null) {
+      return false;
+    }
+    _surfaceW = width;
+    _surfaceH = height;
+    try {
+      final id = await _method.invokeMethod<int>('createTexture', {
+        'width': width,
+        'height': height,
+      });
+      _textureId = id;
+      debugPrint('[Kernel] 重建画布纹理 → ${width}x$height '
+          '（id=$id, ratio=${(width / height).toStringAsFixed(3)}）');
+      return true;
+    } catch (e) {
+      debugPrint('[Kernel] 重建纹理失败（非致命，沿用旧画布）: $e');
+      return false;
+    }
   }
 
   Future<void> ensureInitialized() async {

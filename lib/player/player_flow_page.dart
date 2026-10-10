@@ -1060,8 +1060,59 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     _subs.add(kernel.completedStream.listen((_) => _onCompleted()));
     // 视频分辨率解析完成 → 重算宽高比（首帧时触发一次）
     _subs.add(kernel.videoSizeStream.listen((_) {
+      // ★★ 同步把**渲染画布**设成视频尺寸（真机实测抓到的"画面被压扁两次"）
+      //
+      // ## 为什么必须在这里做
+      // `videoSizeStream` 正是 `dwidth`/`dheight` 到齐时触发的 ——
+      // 这是唯一能拿到"视频显示尺寸"的时刻，也是设置画布尺寸的正确时机。
+      //
+      // ## 不设会怎样（实测数据）
+      // 画布恒为 `ensureTexture` 的 1920×1080（16:9），而片源可能是
+      // 2.39:1 ⇒ mpv 先把画面 letterbox 进 16:9 画布（黑边**进纹理**），
+      // Dart 侧 `AspectVideo` 又按片源比例内接一次 ⇒ **双重黑边**：
+      // ```
+      //   片源 3840x1608（2.388:1），竖屏视口 1080x2400
+      //   理论应显示高          452 px
+      //   实际（用户截屏实测）   335 px = 452 × 74.4%（画布内占比）
+      // ```
+      //
+      // ## 做法（对齐 media_kit，已读其源码核实）
+      // `media_kit_video/.../android_video_controller/real.dart` 直接拿
+      // `dw`/`dh` 当画布尺寸。我们也传显示尺寸 ⇒ 画布与视频同比例
+      // ⇒ **画布里只有画面、没有黑边** ⇒ 比例由 Dart 层唯一决定。
+      //
+      // ⚠️ 用 `unawaited`：设置画布是**尽力而为**，不该阻塞 UI 重绘。
+      //    失败时画面仍能看，只是比例不准（见 kernel 里的 catch）。
+      final r = kernel.aspectRatio;
+      if (r != null && r > 0) {
+        // 从比例反推一个**尺寸**：宽固定 1920（够清晰且不过大），
+        // 高按比例算 —— 这与 media_kit "用较小尺寸提性能"的建议一致
+        // （其源码注释：specifying a small width & height
+        //   "may yield substantial performance improvements"）。
+        //
+        // 为什么不直接用 3840x1608：4K 画布的 GPU 纹理开销明显更大，
+        // 而画布只是**中转**，最终显示尺寸由视口决定（1080 宽足矣）。
+        const canvasW = 1920;
+        final canvasH = (canvasW / r).round().clamp(1, 8192);
+        unawaited(setSurfaceSizeSafe(kernel, canvasW, canvasH));
+      }
       if (mounted) setState(() {});
     }));
+  }
+
+  /// 安全设置画布尺寸（吞掉异常 + 日志），供 `videoSizeStream` 调用。
+  ///
+  /// ## 为什么单独包一层
+  /// `unawaited` 出去的 Future 若抛异常会变成**未捕获异步错误**
+  /// （本仓库栽过：`_tracksController` 关闭后 add 导致未捕获异常）。
+  /// 这里显式 catch，保证"设画布失败"永远不会影响播放。
+  static Future<void> setSurfaceSizeSafe(
+      PlayerKernel kernel, int w, int h) async {
+    try {
+      await kernel.setSurfaceSize(w, h);
+    } catch (e) {
+      debugPrint('[PlayerFlow] 设置画布尺寸失败（非致命）: $e');
+    }
   }
 
   // ---------- 起播 / 换集 ----------
@@ -1087,6 +1138,73 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       ref
           .read(playbackStateProvider.notifier)
           .setDuration(Duration(milliseconds: _current.runtimeTicks ?? 0));
+
+      // ★★★ 起播前把**渲染画布**设成片源比例（真机实测：修"画面被压扁两次"）
+      //
+      // ## 为什么必须在这里（不能等 `videoSizeStream`）
+      // 真机时序取证（logcat）：
+      // ```
+      // 17:50:27.671  createTexture: 1920x1080      ← 画布建成 16:9（默认）
+      // 17:50:39.003  Video --vid=1 (3840x1608)     ← 12.7s 后内核才知道尺寸
+      // 17:50:39.400  setSurfaceSize: 1920x804      ← 此时才改 = **太晚**
+      // ```
+      // mpv 的 VO 已按 16:9 建立 viewport，改属性不会重建 ⇒ **改了等于没改**
+      //（实测：修复前后画面都是 335px，比例 3.224 ≠ 2.388）。
+      //
+      // ## 为什么这里能拿到尺寸
+      // `resolvePlayback` 已经从 Emby 的 `PlaybackInfo` 解析出
+      // `MediaStreams[]`，视频流带 **`width`/`height`**（服务端元数据，
+      // 不需要解码）⇒ **起播前就知道真实分辨率**。
+      //
+      // ## 传什么
+      // 画布宽固定 1920（够清晰；画布只是中转，最终尺寸由视口决定），
+      // 高按片源比例算 ⇒ **画布与片源同比例** ⇒ 画布里只有画面、无黑边
+      // ⇒ 比例由 Dart 的 `AspectVideo` 唯一决定。
+      //
+      // ⚠️ 与 media_kit 一致（其 android 控制器直接用 `dw`/`dh` 当画布尺寸，
+      //    源码 `android_video_controller/real.dart`；其注释还提到用小尺寸
+      //    "may yield substantial performance improvements"）。
+      final vs = launch.streams
+          .where((s) => s.type == 'Video')
+          .toList();
+      final kCanvas = _kernel;
+      // 无条件打一行：把"到底为什么没设"直接暴露出来
+      //（首版只有成功分支的日志 ⇒ 失败时**一片空白**，无法定位）
+      debugPrint('[PlayerFlow] 画布预判：视频流 ${vs.length} 条'
+          '${vs.isNotEmpty ? "，尺寸 ${vs.first.width}x${vs.first.height}" : ""}'
+          '，kernel=${kCanvas != null}');
+      if (vs.isNotEmpty && kCanvas != null) {
+        final vw = vs.first.width ?? 0;
+        final vh = vs.first.height ?? 0;
+        if (vw > 0 && vh > 0) {
+          const canvasW = 1920;
+          final canvasH = (canvasW * vh / vw).round().clamp(1, 8192);
+          debugPrint('[PlayerFlow] 起播前设画布：片源 ${vw}x$vh '
+              '→ 画布 ${canvasW}x$canvasH');
+          // ★★ 必须**重建**纹理，不能只改尺寸/属性（真机实测）
+          //
+          // 首版只调 setSurfaceSize（改 SurfaceProducer 声明 + mpv 属性），
+          // 日志显示都成功了，但**画面仍是 334px（应 452）**：
+          // ```
+          // _boot():         createTexture: 1920x1080      ← buffer 定为 16:9
+          // _startEpisode(): android-surface-size=1920x804 ← 属性改了
+          // ```
+          // ⇒ `SurfaceProducer` 的 **buffer 尺寸在创建时固定**，改声明不重建
+          //    已分配的 buffer。必须销毁 + 按新尺寸重建。
+          //
+          // ⚠️ 重建会让视频层闪一下（一帧到几帧）—— 故 `recreateTexture`
+          //    内部**按尺寸去重**：同比例连播不重建。
+          final changed = await kCanvas.recreateTexture(
+              width: canvasW, height: canvasH);
+          if (changed && mounted) {
+            // 纹理 id 变了 ⇒ 刷新（build 用 `_textureId` 决定渲染哪张纹理）
+            setState(() => _textureId = kCanvas.textureId);
+          }
+        } else {
+          debugPrint('[PlayerFlow] 画布预判跳过：宽高无效 '
+              '(${vs.first.width}x${vs.first.height})');
+        }
+      }
 
       // ---- 章节 + 片头区间（对齐旧页能力）----
       //

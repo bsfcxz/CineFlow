@@ -31,6 +31,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../domain/player_constants.dart' show DecodeMode;
 import '../kernel.dart';
@@ -189,6 +190,65 @@ class Media3Kernel implements PlayerKernel {
       'height': height,
     });
     _textureId = id;
+  }
+
+  /// 设置渲染画布尺寸（与 mpv 内核同义，见 `PlayerKernel.setSurfaceSize`）。
+  ///
+  /// ## Media3 与 mpv 的差别（为什么同样需要）
+  /// ExoPlayer 通过 `AspectRatioFrameLayout` 或 `Surface` 尺寸决定摆放，
+  /// 而它默认也是 **keep-aspect fit**（`RESIZE_MODE_FIT`，已用本地 1.4.1
+  /// 字节码核实枚举）。画布若固定 16:9，宽银幕片源同样会被 letterbox 一次，
+  /// 再被 Dart 侧内接一次 ⇒ **同样的双重黑边**。
+  ///
+  /// ⇒ 两边内核**必须行为一致**，否则换内核时画面比例会跳变。
+  @override
+  Future<void> setSurfaceSize(int width, int height) async {
+    if (width <= 0 || height <= 0) return;
+    if (_surfaceW == width && _surfaceH == height) return;
+    _surfaceW = width;
+    _surfaceH = height;
+    try {
+      await _method.invokeMethod('setSurfaceSize', {
+        'width': width,
+        'height': height,
+      });
+      debugPrint('[Kernel] 画布尺寸 → ${width}x$height（media3）');
+    } catch (e) {
+      debugPrint('[Kernel] 设置画布尺寸失败（非致命）: $e');
+    }
+  }
+
+  int _surfaceW = 0;
+  int _surfaceH = 0;
+
+  /// 按新尺寸重建纹理（与 mpv 内核同义，见 `PlayerKernel.recreateTexture`）。
+  ///
+  /// Media3 的 Surface 同样**在创建时固定 buffer 尺寸**，
+  /// 而 `_boot` 建纹理时还不知道片源尺寸 ⇒ 宽银幕片源会被
+  /// `RESIZE_MODE_FIT` letterbox 一次、Dart 再嵌一次 ⇒ 双重黑边。
+  @override
+  Future<bool> recreateTexture({
+    required int width,
+    required int height,
+  }) async {
+    if (width <= 0 || height <= 0) return false;
+    if (_surfaceW == width && _surfaceH == height && _textureId != null) {
+      return false;
+    }
+    _surfaceW = width;
+    _surfaceH = height;
+    try {
+      final id = await _method.invokeMethod<int>('createTexture', {
+        'width': width,
+        'height': height,
+      });
+      _textureId = id;
+      debugPrint('[Kernel] 重建画布纹理 → ${width}x$height（media3，id=$id）');
+      return true;
+    } catch (e) {
+      debugPrint('[Kernel] 重建纹理失败（非致命）: $e');
+      return false;
+    }
   }
 
   @override

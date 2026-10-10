@@ -279,6 +279,42 @@ class PlayerChannel(
     /** 当前 Flutter 纹理（同一时刻只允许一个播放器页） */
     private var surfaceProducer: TextureRegistry.SurfaceProducer? = null
 
+    /**
+     * 待应用的画布尺寸（width to height）。
+     *
+     * ## 为什么需要"记账"（真机实测抓到的漏）
+     * `setSurfaceSize` 的**正确调用时机**是"起播前、拿到片源尺寸时"
+     * （那时才能算出与片源同比例的画布）。但那一刻 `mpv_initialize`
+     * **还没跑**，而 `android-surface-size` 是 mpv 属性 ⇒ 设不上。
+     *
+     * 真机日志取证：
+     * ```
+     * 18:08:01.237  createTexture: 1920x1080
+     * 18:08:01.264  setSurfaceSize: 1920x804（mpv 未就绪，待补）  ← 属性没设上
+     * ```
+     * ⇒ 记下来，initialize 成功后补发。**不记账 = 属性永远设不上**。
+     */
+    private var pendingSurfaceSize: Pair<Int, Int>? = null
+
+    /**
+     * 尽量把画布尺寸应用到 mpv（未就绪则只记日志，由 initialize 补发）。
+     *
+     * ⚠️ 值必须是 `WxH` 字符串格式（mpv 手册写 `<WxH>`）。
+     */
+    private fun applySurfaceSizeIfPossible(w: Int, h: Int, from: String) {
+        if (!mpvReady) {
+            Log.i(TAG, "$from: surface=${w}x$h（mpv 未就绪，已记账待 initialize 后补发）")
+            return
+        }
+        try {
+            MPVLib.setPropertyString("android-surface-size", "${w}x${h}")
+            Log.i(TAG, "$from: surface=${w}x$h, android-surface-size=${w}x$h")
+        } catch (e: Throwable) {
+            // 设属性失败不该影响播放（画面仍能看，只是比例不准）
+            Log.w(TAG, "$from: 设置 android-surface-size 失败（非致命）: ${e.message}")
+        }
+    }
+
     private val surfaceCallback = object : TextureRegistry.SurfaceProducer.Callback {
         override fun onSurfaceAvailable() {
             val producer = surfaceProducer ?: return
@@ -338,7 +374,11 @@ class PlayerChannel(
 
     private fun ensureTexture(): Boolean {
         if (surfaceProducer != null) return true
-        createTexture(1920, 1080)
+        // ★ 若已记下"待应用的画布尺寸"，**建纹理时就按它来** ——
+        //   否则会先建一个 16:9 画布（mpv 可能已按它建立 VO viewport），
+        //   事后再改属性也未必能纠正（真机实测：起播前设过、仍 334px）。
+        val (w, h) = pendingSurfaceSize ?: (1920 to 1080)
+        createTexture(w, h)
         return surfaceProducer != null
     }
 
@@ -367,13 +407,54 @@ class PlayerChannel(
                 "setSurfaceSize" -> {
                     val w = (call.argument<Int>("width") ?: 1920).coerceAtLeast(1)
                     val h = (call.argument<Int>("height") ?: 1080).coerceAtLeast(1)
+                    // ① Flutter 侧：改纹理 Surface 的 buffer 尺寸
                     surfaceProducer?.setSize(w, h)
+                    // ② ★★ mpv 侧：**必须显式告诉它**新尺寸（缺这步 = 只修了一半）
+                    //
+                    // ## 为什么光改 Surface 不够（真机实测 + 官方手册）
+                    // 第一版只做了 ①，日志显示 `画布尺寸 → 1920x804` 成功，
+                    // 但**画面仍是 334px（应 452）** —— 因为 mpv 不知道画布变了。
+                    //
+                    // mpv 官方手册 `DOCS/man/options.rst:7206-7209` 原文：
+                    // > ``--android-surface-size=<WxH>``
+                    // > Set dimensions of the rendering surface used by the
+                    // > Android gpu context. **Needs to be set by the embedding
+                    // > application** if the dimensions change during runtime
+                    // > (i.e. if the device is rotated), via the surfaceChanged
+                    // > callback.
+                    //
+                    // 我们正是 `--gpu-context=android` ⇒ 这条要求**直接适用**。
+                    //
+                    // ## ★★ 必须"记账 + 补齐"（真机日志抓到的漏）
+                    // 起播前设画布是**正确时机**（那时才知道片源尺寸），
+                    // 但那一刻 `mpv_initialize` **还没跑**：
+                    // ```
+                    // 18:08:01.237  createTexture: 1920x1080
+                    // 18:08:01.264  setSurfaceSize: 1920x804（mpv 未就绪，待补）← 属性没设上
+                    // ```
+                    // 第一版这里只打了一行日志、**没有真的补** ⇒ 属性永远没设。
+                    // ⇒ 现在把待设尺寸**记下来**，initialize 成功后立即补发。
+                    pendingSurfaceSize = w to h
+                    applySurfaceSizeIfPossible(w, h, "setSurfaceSize")
                     result.success(true)
                 }
 
                 "initialize" -> {
                     ensureTexture()
-                    result.success(ensureMpvReady())
+                    val ok = ensureMpvReady()
+                    // ★ mpv 刚就绪：补发**待设的画布尺寸**
+                    //
+                    // ## 为什么必须补（真机实测：漏了这步属性永远设不上）
+                    // 起播前 `setSurfaceSize` 调用时 mpv 还没 initialize
+                    // （实测日志：`（mpv 未就绪，待 initialize 后补）`），
+                    // 而 `android-surface-size` 是 mpv 属性 —— 只能在就绪后设。
+                    // ⇒ 不补的话画布恒为 createTexture 的默认 1920x1080（16:9），
+                    //    宽银幕片源会被 mpv letterbox 一次、Dart 再嵌一次
+                    //    ⇒ **双重黑边**（实测画面只剩 334px，应 452px）。
+                    pendingSurfaceSize?.let { (w, h) ->
+                        applySurfaceSizeIfPossible(w, h, "initialize 后补发")
+                    }
+                    result.success(ok)
                 }
 
                 "open" -> {
