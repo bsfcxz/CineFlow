@@ -437,6 +437,67 @@ List<Danmaku> filterBlocked(List<Danmaku> items, List<String> blocked) {
       .toList(growable: false);
 }
 
+/// 过滤等级（对照 RyoLee 的「过滤等级」：等级越高过滤越狠，0 = 不过滤）。
+///
+/// ## 为什么除了"屏蔽词"还要这个
+/// · **屏蔽词** = 用户**显式**指定不想看的（精准但要逐条加）
+/// · **过滤等级** = **一键**调密集度（用户懒得加词时的快解）
+/// 两者互补，`danmaku_overlay` 里**先按等级过滤、再按词屏蔽**。
+///
+/// ## 各档规则（可单测的纯函数）
+/// | 档 | 规则 | 典型拦截对象 |
+/// |---|---|---|
+/// | 0 | 不过滤 | — |
+/// | 1 | 去**完全重复**（同文本只留**最早**一条）| 复读机刷屏 |
+/// | 2 | 1 + 去**过短**（去空白后 ≤1 字符）| "哈"、"6"、"？" |
+/// | 3 | 2 + 去**超长**（>30 字符）| 长文遮挡整屏 |
+/// | 4 | 3 + 去**单字符重复率 >60%** | "6666666"、"啊啊啊啊啊" |
+///
+/// ## 为什么"去重"保留最早一条（而不是最晚）
+/// 弹幕的**首发**通常在剧情点上，重复的是跟风。
+/// 保留最早 ⇒ 与"什么时候该出现"的语义一致（时间轴不后移）。
+///
+/// ## ⚠️ 去重用的是**文本**，不是"文本+时间"
+/// 同一句"好帅"在不同剧情点出现是合理的（不是刷屏）——
+/// 故只合并**完全相同的文本**，且这是该等级**明确**的取舍
+/// （真要保留所有重复，用等级 0）。
+List<Danmaku> filterByLevel(List<Danmaku> items, int level) {
+  if (level <= 0 || items.isEmpty) return items;
+  final lv = level.clamp(0, 4);
+
+  // 档 1+：完全重复只留最早
+  final seen = <String>{};
+  final out = <Danmaku>[];
+  for (final d in items) {
+    final t = d.text.trim();
+    if (t.isEmpty) continue;
+
+    // 档 2+：过短（1 字符及以下，如 "6"、"?"）
+    if (lv >= 2 && t.length <= 1) continue;
+    // 档 3+：超长（>30 字符会横跨整屏，遮挡严重）
+    if (lv >= 3 && t.length > 30) continue;
+    // 档 4：单字符重复率 >60%（"666666"、"哈哈哈哈哈哈"）
+    if (lv >= 4 && _repeatRatio(t) > 0.6) continue;
+
+    if (!seen.add(t)) continue; // 档 1+
+    out.add(d);
+  }
+  return out.isEmpty ? items : List.unmodifiable(out);
+}
+
+/// 出现次数最多的字符占比（纯函数，便于单测）。
+///
+/// 例：`"666666"` → 1.0；`"哈哈哈哈好"` → 0.8；`"你好世界"` → 0.25
+double _repeatRatio(String s) {
+  if (s.isEmpty) return 0;
+  final counts = <int, int>{};
+  for (final r in s.runes) {
+    counts[r] = (counts[r] ?? 0) + 1;
+  }
+  final maxCount = counts.values.reduce((a, b) => a > b ? a : b);
+  return maxCount / s.runes.length;
+}
+
 /// 供 painter 使用：算出文本宽度的近似值。
 ///
 /// 用近似而非 `TextPainter`：滚动位置对宽度不敏感（误差几像素看不出来），

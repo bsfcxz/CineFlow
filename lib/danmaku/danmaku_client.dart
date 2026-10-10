@@ -54,6 +54,8 @@ class DanmakuClient {
         appId: config.appId,
         appSecret: config.appSecret,
         useAsync: config.useAsync,
+        // 简繁转换交给服务端（chConvert），不做本地映射表
+        chConvertCode: config.chConvert.code,
         dio: dio,
       );
 
@@ -63,6 +65,7 @@ class DanmakuClient {
     this.appId = '',
     this.appSecret = '',
     this.useAsync = true,
+    this.chConvertCode = 1,
     Dio? dio,
   }) : _dio = dio ?? Dio();
 
@@ -97,6 +100,12 @@ class DanmakuClient {
   /// 所以打开它不会让不支持的服务出错。
   final bool useAsync;
 
+  /// 简繁转换（服务端 chConvert）。语义见 DanmakuChConvert。
+  ///
+  /// 必须进缓存 key —— 否则切了简繁读到的仍是旧缓存，
+  /// 用户会以为"开关没生效"。
+  final int chConvertCode;
+
   final Dio _dio;
 
   /// 可选缓存（有 drift 数据库时启用；测试时可省略）
@@ -112,11 +121,13 @@ class DanmakuClient {
   Future<DanmakuBatch> comments(
     int episodeId, {
     bool withRelated = true,
-    int chConvert = 1,
+    int? chConvert,
   }) async {
+    // 默认用构造时传入的档（= 用户设置）；显式传参可覆盖（测试用）
+    final cv = chConvert ?? chConvertCode;
     final path = '/api/v2/comment/$episodeId';
     final cacheKey =
-        'danmaku:comment:$episodeId:$withRelated:$chConvert:${baseUrl.hashCode}';
+        'danmaku:comment:$episodeId:$withRelated:$cv:${baseUrl.hashCode}';
 
     // 1) 先查缓存（官方要求缓存；也避免触发自建服务的限流）
     final cached = await cache?.cacheGet(cacheKey);
@@ -147,7 +158,7 @@ class DanmakuClient {
     // · 官方 / 自建：保留 `useAsync`（misaka 2.7.0+ 才认，其他源忽略）
     final query = {
       'withRelated': '$withRelated',
-      'chConvert': '$chConvert',
+      'chConvert': '$cv',
       if (useAsync && kind != DanmakuProviderKind.publicProxy) 'async': '1',
     };
 
@@ -209,6 +220,99 @@ class DanmakuClient {
         config: config,
       );
       if (last.isTerminal) return last;
+    }
+  }
+
+  /// 搜索**候选番剧/剧集列表**（手动匹配面板用）。
+  ///
+  /// ## 与 [findEpisodeId] 的区别（这是本方法存在的理由）
+  /// [findEpisodeId] 只返回**一个** id（自动匹配用）——
+  /// 它必然会在"译名不同 / 多季归档"时**猜错**，而用户**无从纠正**。
+  ///
+  /// 外部两个成熟项目（dd-danmaku / RyoLee/emby-danmaku）的 README
+  /// 都专门列了这两类失败原因，并把「手动匹配」当核心功能：
+  /// > 1. 译名导致的异常：如『よふかしのうた』Emby 识别为《彻夜之歌》，
+  /// >    而弹弹play 中为《夜曲》导致无法匹配
+  /// > 2. 存在多季/剧场版/OVA 等导致的异常
+  ///
+  /// ⇒ 本方法把**候选摊开给用户选**，这是唯一的出路。
+  ///
+  /// ## 返回结构（统一两种源的形状）
+  /// 每个候选 = 一条"番剧 → 其剧集列表"，UI 先让用户选番剧、
+  /// 再选具体集（或直接按集号自动选）。
+  Future<List<DanmakuCandidate>> searchCandidates(String keyword) async {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return const [];
+    try {
+      if (kind == DanmakuProviderKind.publicProxy) {
+        // 公共代理：search/anime → bangumi/{id}（两步，见 findEpisodeId 说明）
+        final sRaw = await _get('/api/v2/search/anime', query: {'keyword': kw});
+        final sMap = _tryMap(sRaw);
+        if (sMap == null) return const [];
+        final animes = (sMap['animes'] as List?) ?? const [];
+        final out = <DanmakuCandidate>[];
+        // 只取前 8 个候选：再多用户也不会翻（且减少请求数）
+        for (final a in animes.whereType<Map>().take(8)) {
+          final aid = (a['animeId'] as num?)?.toInt();
+          if (aid == null) continue;
+          final title = (a['animeTitle'] as String?) ?? '';
+          List<DanmakuEpisodeBrief> eps = const [];
+          try {
+            final dRaw = await _get('/api/v2/bangumi/$aid');
+            final dMap = _tryMap(dRaw);
+            final bg = dMap?['bangumi'];
+            if (bg is Map) {
+              eps = [
+                for (final e in ((bg['episodes'] as List?) ?? const [])
+                    .whereType<Map>())
+                  if ((e['episodeId'] as num?) != null)
+                    DanmakuEpisodeBrief(
+                      episodeId: (e['episodeId'] as num).toInt(),
+                      number: int.tryParse('${e['episodeNumber']}'),
+                      title: (e['episodeTitle'] as String?) ?? '',
+                    ),
+              ];
+            }
+          } catch (_) {
+            // 单个候选取详情失败不影响其它候选
+          }
+          out.add(DanmakuCandidate(
+            animeId: aid,
+            title: title,
+            type: (a['typeDescription'] as String?) ?? '',
+            episodes: eps,
+          ));
+        }
+        return out;
+      }
+
+      // 官方 / 自建：`search/episodes?anime=` 一步返回 animes[].episodes[]
+      final raw = await _get('/api/v2/search/episodes', query: {'anime': kw});
+      final map = _tryMap(raw);
+      if (map == null) return const [];
+      final animes = (map['animes'] as List?) ?? const [];
+      final out = <DanmakuCandidate>[];
+      for (final a in animes.whereType<Map>().take(8)) {
+        final eps = <DanmakuEpisodeBrief>[
+          for (final e in ((a['episodes'] as List?) ?? const []).whereType<Map>())
+            if ((e['episodeId'] as num?) != null)
+              DanmakuEpisodeBrief(
+                episodeId: (e['episodeId'] as num).toInt(),
+                number: (e['episodeNumber'] as num?)?.toInt(),
+                title: (e['episodeTitle'] as String?) ?? '',
+              ),
+        ];
+        out.add(DanmakuCandidate(
+          animeId: (a['animeId'] as num?)?.toInt() ?? 0,
+          title: (a['animeTitle'] as String?) ?? '',
+          type: (a['typeDescription'] as String?) ?? '',
+          episodes: eps,
+        ));
+      }
+      return out;
+    } catch (e) {
+      // 搜索失败 = "没找到"，不是错误（与 findEpisodeId 同口径）
+      return const [];
     }
   }
 

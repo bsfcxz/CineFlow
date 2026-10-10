@@ -42,6 +42,7 @@ class DanmakuOverlay extends StatefulWidget {
     this.speed = 1.0,
     this.bold = false,
     this.avoidSubtitle = true,
+    this.filterLevel = 0,
   });
 
   /// 已按时间排序的弹幕（由 `DanmakuBatch.sorted()` 保证）
@@ -82,6 +83,13 @@ class DanmakuOverlay extends StatefulWidget {
 
   /// 是否避开字幕区（B 站的"防挡字幕"）
   final bool avoidSubtitle;
+
+  /// 过滤等级 0–4（见 `filterByLevel`）。
+  ///
+  /// ⚠️ 顺序：**先按等级过滤、再按屏蔽词**。
+  /// 反过来也能得到同样结果，但先按等级能**减少**后一步的比对条数
+  ///（等级过滤通常砍掉更多）。
+  final int filterLevel;
 
   @override
   State<DanmakuOverlay> createState() => _DanmakuOverlayState();
@@ -220,7 +228,11 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
       child: LayoutBuilder(
         builder: (context, c) {
           final config = _config(c);
-          final shown = filterBlocked(widget.items, widget.blockedWords);
+          // ★ 先按等级过滤（砍掉刷屏），再按屏蔽词（用户显式指定的）
+          final shown = filterBlocked(
+            filterByLevel(widget.items, widget.filterLevel),
+            widget.blockedWords,
+          );
 
           // 指纹：仅当"弹幕集合或屏幕尺寸变化"时才重算轨道
           final key = '${identityHashCode(widget.items)}|'

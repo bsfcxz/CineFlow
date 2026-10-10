@@ -303,6 +303,17 @@ class SessionStore {
         bold: m['bold'] is bool ? m['bold'] as bool : false,
         avoidSubtitle:
             m['avoidSubtitle'] is bool ? m['avoidSubtitle'] as bool : true,
+        // 简繁转换：存 name（可读、可降级）。
+        // 未知字面量回退**默认值**（与 kind 同一原则：
+        // 默认值只在 DanmakuConfig 定义一处，存储层不写死）。
+        chConvert: DanmakuChConvert.values.firstWhere(
+          (x) => x.name == m['chConvert'],
+          orElse: () => const DanmakuConfig().chConvert,
+        ),
+        // 过滤等级 0-4，越界钳制（防手改配置导致崩溃）
+        filterLevel: (m['filterLevel'] is num)
+            ? (m['filterLevel'] as num).toInt().clamp(0, 4)
+            : const DanmakuConfig().filterLevel,
       );
     } catch (_) {
       // 走到这里只剩"整个 JSON 都解析不了"（如截断、非 JSON），
@@ -331,6 +342,9 @@ class SessionStore {
           'speed': c.speed,
           'bold': c.bold,
           'avoidSubtitle': c.avoidSubtitle,
+          // 简繁转换存 name：可读（便于排查）、可降级（未知值回退默认）
+          'chConvert': c.chConvert.name,
+          'filterLevel': c.filterLevel,
         }),
       );
 }

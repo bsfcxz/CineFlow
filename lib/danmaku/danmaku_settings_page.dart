@@ -248,6 +248,55 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
                   subtitle: Text('给字幕留出空间，弹幕不压字幕（建议开）', style: Cf.micro),
                 ),
 
+                // ---- 简繁转换（对照 dd-danmaku / RyoLee）----
+                //
+                // ★ 复用**服务端**转换（弹弹play 的 chConvert 参数），
+                //   不做本地映射表 —— 实测服务端转换完全正确，而本地表
+                //   对"干/乾/幹"这类一对多必然出错。
+                SizedBox(height: 16),
+                Text('简繁转换', style: Cf.body),
+                Padding(
+                  padding: const EdgeInsets.only(top: 2, bottom: 8),
+                  child: Text('由服务器转换（不用本地映射表，一对多字更准）',
+                      style: Cf.micro),
+                ),
+                Wrap(spacing: Cf.gap2, runSpacing: Cf.gap2, children: [
+                  for (final v in DanmakuChConvert.values)
+                    _modeChip(v.label, c.chConvert == v, (_) {
+                      ref
+                          .read(danmakuConfigProvider.notifier)
+                          .patch(chConvert: v);
+                      // ⚠️ 提示用户：转换由服务端做，需要重新拉取弹幕
+                      //    （否则显示的还是上一次缓存的结果）
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text('已切到「${v.label}」，重进播放页生效'),
+                        duration: const Duration(seconds: 2),
+                      ));
+                    }),
+                ]),
+
+                // ---- 过滤等级（对照 RyoLee 的「过滤等级」）----
+                SizedBox(height: 16),
+                Text('过滤等级', style: Cf.body),
+                Padding(
+                  padding: const EdgeInsets.only(top: 2, bottom: 4),
+                  child: Text(
+                      '一键降密集度：${_levelDesc(c.filterLevel)}',
+                      style: Cf.micro),
+                ),
+                Slider(
+                  value: c.filterLevel.toDouble().clamp(0, 4),
+                  min: 0,
+                  max: 4,
+                  divisions: 4,
+                  label: '${c.filterLevel} 级',
+                  activeColor: Cf.accent,
+                  onChanged: (v) => setState(() => _draft['filterLevel'] = v),
+                  onChangeEnd: (v) => ref
+                      .read(danmakuConfigProvider.notifier)
+                      .patch(filterLevel: v.round()),
+                ),
+
                 SizedBox(height: 20),
                 _group('屏蔽词'),
                 _field(_blocked, '屏蔽词', hint: '空格分隔，如：广告 剧透 刷屏'),
@@ -286,8 +335,17 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
     );
   }
 
-  Widget _group(String title) => Padding(
-        padding: const EdgeInsets.only(bottom: 8, top: 4),
+  /// 过滤等级的**人话**说明（用户不需要知道实现细节，只需要知道效果）。
+  static String _levelDesc(int level) => switch (level.clamp(0, 4)) {
+        0 => '不过滤（全部显示）',
+        1 => '去重复刷屏',
+        2 => '1 + 去单字（"6"、"哈"）',
+        3 => '2 + 去超长文（>30 字）',
+        _ => '3 + 去复读（"66666"）',
+      };
+
+  Widget _group(String title) =>
+      Padding(        padding: const EdgeInsets.only(bottom: 8, top: 4),
         child: Text(title,
             style: TextStyle(
                 fontSize: 12,

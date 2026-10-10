@@ -193,3 +193,61 @@ class DanmakuException implements Exception {
   @override
   String toString() => message;
 }
+
+/// 手动匹配的**候选番剧**（含其剧集列表）。
+///
+/// ## 为什么需要它（外部项目验证过的必要性）
+/// 自动匹配必然在两类情况下猜错，而用户**无从纠正**：
+/// 1. **译名不同**：Emby 里是《彻夜之歌》，弹弹play 里叫《夜曲》
+/// 2. **多季/剧场版/OVA 归档**：`OVERLORD/S4E1.mkv` 这类结构
+///
+/// dd-danmaku 与 RyoLee/emby-danmaku 的 README **都**把这两条列为
+/// 最常见失败原因，并把「手动匹配」当核心功能。
+class DanmakuCandidate {
+  const DanmakuCandidate({
+    required this.animeId,
+    required this.title,
+    this.type = '',
+    this.episodes = const [],
+  });
+
+  final int animeId;
+
+  /// 弹幕库里的番剧名（**可能与 Emby 里的不同** —— 这正是要用户选的原因）
+  final String title;
+
+  /// 类型描述（如"TV动画"/"剧场版"）—— 帮用户区分同名作品
+  final String type;
+
+  final List<DanmakuEpisodeBrief> episodes;
+
+  /// 显示用：`标题 · 类型`（类型为空时只显示标题）
+  String get display =>
+      type.isEmpty ? title : '$title（$type）';
+}
+
+/// 候选里的单集简要信息。
+class DanmakuEpisodeBrief {
+  const DanmakuEpisodeBrief({
+    required this.episodeId,
+    this.number,
+    this.title = '',
+  });
+
+  /// 拉弹幕用的 id（`/api/v2/comment/{episodeId}`）
+  final int episodeId;
+
+  /// 集号（用于按集号自动定位）
+  final int? number;
+
+  final String title;
+
+  /// 显示用：`第 N 话 · 标题`（缺哪段就少哪段）
+  String get display {
+    final parts = <String>[
+      if (number != null) '第 $number 话',
+      if (title.isNotEmpty && title != '第$number话') title,
+    ];
+    return parts.isEmpty ? 'episodeId=$episodeId' : parts.join(' · ');
+  }
+}

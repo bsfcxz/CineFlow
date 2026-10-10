@@ -32,9 +32,13 @@ import 'package:flutter/services.dart'
     show DeviceOrientation, SystemChrome, SystemUiMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:screen_brightness/screen_brightness.dart';
+import '../core/theme.dart';
 
 import '../danmaku/danmaku_config.dart';
 import '../danmaku/danmaku_overlay.dart';
+import '../danmaku/danmaku_models.dart';
+import '../danmaku/danmaku_match_sheet.dart';
+import '../danmaku/danmaku_match.dart';
 import '../danmaku/danmaku_providers.dart';
 import '../data/media_provider.dart';
 import 'player_page.dart' show PlayerPage;
@@ -1872,6 +1876,81 @@ _stage('open');
     }
   }
 
+  // ---------- 手动匹配弹幕 ----------
+
+  /// 打开手动匹配面板，选中后**立即替换当前弹幕**。
+  ///
+  /// ## 为什么必须有（外部成熟项目一致结论 + 本项目实测印证）
+  /// 自动匹配必然猜错的两类情况（dd-danmaku / RyoLee 的 README 都列了）：
+  /// 1. **译名不同**：Emby《彻夜之歌》vs 弹弹play《夜曲》
+  /// 2. **多季/OVA 归档**：`OVERLORD/S4E1.mkv` 这类结构
+  ///
+  /// 本项目**实测印证**：
+  /// · 搜「斗罗大陆」→ **8 个候选**（第二季 / 昊天扬威 / 铅华洗净…）
+  /// · 搜「我推的孩子」→ **3 个候选**（第一/二/三季）
+  /// ⇒ 自动取第一个必然在多数情况下**选错季**，而用户原先毫无办法。
+  ///
+  /// ## 为什么走"用户选 → 直接生效"（不回设置页）
+  /// 用户是在**看片时**发现"匹配错了"才来点的 ——
+  /// 任何"请去设置页重新配置"都会中断观看。
+  ///
+  /// ## 预填关键词从哪来
+  /// 用**当前条目解析出的番剧名**（`parseDanmakuQuery`）——
+  /// 与自动匹配**同一个关键词**，用户只需微调，不用从零输入。
+  Future<void> _openMatchSheet() async {
+    final q = parseDanmakuQuery(
+      name: _current.name,
+      seriesName: _current.seriesName,
+      indexNumber: _current.indexNumber,
+      parentIndexNumber: _current.parentIndexNumber,
+      itemType: _current.type,
+    );
+    if (!mounted) return;
+
+    final picked = await showModalBottomSheet<DanmakuManualMatch>(
+      context: context,
+      backgroundColor: Cf.surface,
+      isScrollControlled: true,
+      // 高度留白：集列表可能很长（实测有 176 集的番剧）
+      constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.75),
+      builder: (_) => DanmakuMatchSheet(initialKeyword: q.anime),
+    );
+    if (picked == null || !mounted) return;
+
+    await _loadDanmakuWithEpisode(picked);
+  }
+
+  /// 用手动指定的 episodeId 拉弹幕并**替换**当前显示。
+  ///
+  /// ## 为什么不复用 `danmakuForItemProvider`
+  /// 那个 provider 是 `family(item)` —— 它内部**自己算关键词再搜**，
+  /// 拿不到用户指定的 episodeId。故这里直接走 client（唯一出口）。
+  Future<void> _loadDanmakuWithEpisode(DanmakuManualMatch m) async {
+    final client = ref.read(danmakuClientProvider);
+    if (client == null) {
+      _snack('弹幕源不可用（请先在设置里选择弹幕源）');
+      return;
+    }
+    try {
+      final batch = await client.comments(m.episodeId);
+      if (!mounted) return;
+      ref.read(danmakuUiProvider.notifier).set(DanmakuLoadResult(
+            items: batch.items,
+            matchedTitle: m.animeTitle,
+            episodeId: m.episodeId,
+            fromCache: false,
+          ));
+      _snack('已手动匹配：${m.display}（${batch.items.length} 条）');
+      debugPrint('[PlayerFlow] 手动匹配成功：${m.display} '
+          'episodeId=${m.episodeId} 共 ${batch.items.length} 条');
+    } on DanmakuException catch (e) {
+      if (mounted) _snack('该集弹幕加载失败：${e.message}');
+    } catch (e) {
+      if (mounted) _snack('该集弹幕加载失败：$e');
+    }
+  }
+
   // ---------- 退出 ----------
 
   /// 会话状态同步器（K3：把状态推给通知栏，见 session_bridge.dart）。
@@ -2268,8 +2347,25 @@ _stage('open');
           debugPrint('[PlayerFlow] 导入字幕：待接 file_picker（CF-P4 任务卡）'),
       onImportDanmaku: () =>
           debugPrint('[PlayerFlow] 导入弹幕：待接 file_picker（CF-P4 任务卡）'),
-      onMatchDanmaku: () =>
-          debugPrint('[PlayerFlow] 在线匹配弹幕：待接手动匹配面板（CF-P5-023）'),
+      // ★★ 在线匹配弹幕 —— **手动选**（用户要求"增加搜弹幕方便自动匹配，
+      //    防止有些弹幕匹配错误"）
+      //
+      // ## 原来这里是死按钮
+      // ```dart
+      // onMatchDanmaku: () =>
+      //     debugPrint('[PlayerFlow] 在线匹配弹幕：待接手动匹配面板（CF-P5-023）'),
+      // ```
+      // 点了只有一行日志 ⇒ 用户**没有任何纠错出路**。
+      //
+      // ## 为什么必须有（外部成熟项目一致结论 + 本项目实测印证）
+      // 自动匹配必然猜错的两类情况（dd-danmaku / RyoLee 的 README 都列了）：
+      // 1. **译名不同**：Emby《彻夜之歌》vs 弹弹play《夜曲》
+      // 2. **多季/OVA 归档**：`OVERLORD/S4E1.mkv` 这类结构
+      //
+      // 本项目实测：搜「斗罗大陆」返回 **8 个候选**（第二季/昊天扬威/
+      // 铅华洗净…）、搜「我推的孩子」返回 **3 个**（第一/二/三季）
+      // ⇒ 自动取第一个必然在多数情况下**选错季**。
+      onMatchDanmaku: () => unawaited(_openMatchSheet()),
       onVideoFilterChanged: ({brightness, contrast, saturation, hue}) {
         final k = _kernel;
         // UI 状态 + 内核双写（Media3 不支持 → 内核侧静默忽略）
@@ -2350,6 +2446,8 @@ class _DanmakuLayer extends ConsumerWidget {
       speed: panel.speedLevel / 5,
       bold: cfg?.bold ?? false,
       avoidSubtitle: cfg?.avoidSubtitle ?? true,
+      // ★ 过滤等级（用户设置的一键降密）
+      filterLevel: cfg?.filterLevel ?? 0,
     );
   }
 

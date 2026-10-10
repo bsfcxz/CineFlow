@@ -51,6 +51,8 @@ class DanmakuConfigNotifier extends AsyncNotifier<DanmakuConfig> {
     double? speed,
     bool? bold,
     bool? avoidSubtitle,
+    DanmakuChConvert? chConvert,
+    int? filterLevel,
   }) async {
     final cur = state.value ?? const DanmakuConfig();
     await save(cur.copyWith(
@@ -68,6 +70,8 @@ class DanmakuConfigNotifier extends AsyncNotifier<DanmakuConfig> {
       speed: speed,
       bold: bold,
       avoidSubtitle: avoidSubtitle,
+      chConvert: chConvert,
+      filterLevel: filterLevel,
     ));
   }
 }

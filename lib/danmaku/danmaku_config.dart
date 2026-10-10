@@ -71,7 +71,40 @@ enum DanmakuProviderKind {
   bool get isZeroConfig => this == DanmakuProviderKind.publicProxy;
 }
 
-/// 弹幕显示模式（对照 B 站的"弹幕类型"）。
+/// 简繁转换（对照 dd-danmaku / RyoLee 的「简繁转换」三档）。
+///
+/// ## ★ 复用**服务端**转换，不做本地映射表（实测依据）
+/// 弹弹play 协议的 `chConvert` 查询参数本身就支持转换，实测确认：
+/// ```
+/// chConvert=0 → 原文（混用）
+/// chConvert=1 → 繁体特征字 0 / 简体特征字 23   ⇒ 转**简体**
+/// chConvert=2 → 繁体特征字 23 / 简体特征字 0   ⇒ 转**繁体**
+/// ```
+/// ⇒ 本地做映射表是**重复劳动**，且中文简繁不是一一对应
+///（"干/乾/幹"、"发/發/髮"），本地表必然有错。
+/// 服务端用专业库，效果更好。
+///
+/// ⚠️ 但**缓存 key 必须含它** —— 否则切了简繁读到的还是旧缓存
+///    （用户会以为"开关没生效"）。
+enum DanmakuChConvert {
+  /// 保持原文（服务器返回什么就是什么）
+  original('原文', 0),
+
+  /// 转简体（大陆用户默认）
+  simplified('简体', 1),
+
+  /// 转繁体
+  traditional('繁体', 2);
+
+  const DanmakuChConvert(this.label, this.code);
+
+  final String label;
+
+  /// 传给 `chConvert` 的值（实测语义，见上方文档）
+  final int code;
+}
+
+/// 显示模式（对照 B 站的"弹幕类型"）。
 ///
 /// B 站播放器的弹幕设置里有「滚动 / 顶部 / 底部」三个开关，
 /// 用户可以关掉某几类（比如只看滚动、不要顶部遮挡）。
@@ -137,6 +170,8 @@ class DanmakuConfig {
     this.speed = 1.0,
     this.bold = false,
     this.avoidSubtitle = true,
+    this.chConvert = DanmakuChConvert.simplified,
+    this.filterLevel = 0,
   });
 
   final DanmakuProviderKind kind;
@@ -190,6 +225,25 @@ class DanmakuConfig {
   /// 关闭后弹幕可铺满全屏，可能压住字幕。
   final bool avoidSubtitle;
 
+  /// 简繁转换档（服务端 `chConvert` 参数，见 [DanmakuChConvert]）。
+  final DanmakuChConvert chConvert;
+
+  /// 过滤等级 0–4（对照 RyoLee 的"过滤等级"：等级越高过滤越狠）。
+  ///
+  /// ## 各档语义（0 = 不过滤）
+  /// | 档 | 效果 |
+  /// |---|---|
+  /// | 0 | 不过滤（全部显示）|
+  /// | 1 | 过滤**重复**弹幕（同一文本只留最早一条）|
+  /// | 2 | 1 + 过滤**过短**（单字符/纯符号——通常是"哈哈哈"刷屏）|
+  /// | 3 | 2 + 过滤**超长**（长文遮挡画面）|
+  /// | 4 | 3 + 过滤**低密度**（全文重复字符 >60%，如"666666"）|
+  ///
+  /// ⚠️ 与"屏蔽词"是**互补**而非重复：
+  /// · 屏蔽词 = 用户**显式**指定不想看的
+  /// · 过滤等级 = **一键**调密集度（用户懒得逐条加词）
+  final int filterLevel;
+
   bool get isUsable {
     if (!enabled) return false;
     return switch (kind) {
@@ -225,6 +279,8 @@ class DanmakuConfig {
     double? speed,
     bool? bold,
     bool? avoidSubtitle,
+    DanmakuChConvert? chConvert,
+    int? filterLevel,
   }) =>
       DanmakuConfig(
         kind: kind ?? this.kind,
@@ -241,6 +297,8 @@ class DanmakuConfig {
         speed: speed ?? this.speed,
         bold: bold ?? this.bold,
         avoidSubtitle: avoidSubtitle ?? this.avoidSubtitle,
+        chConvert: chConvert ?? this.chConvert,
+        filterLevel: filterLevel ?? this.filterLevel,
       );
 }
 
