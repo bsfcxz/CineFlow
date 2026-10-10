@@ -14,6 +14,7 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -89,6 +90,8 @@ class Media3Channel(
     private var eventSink: EventChannel.EventSink? = null
 
     /** 请求头（115 网盘的 UA 绑定与 Cookie 必须透传，见 ADR 0007）。 */
+    /// 待应用起始位置（ms）。open 时在 prepare **之前** 消费。
+    private var pendingStartMs = 0L
     private var currentHeaders: Map<String, String> = emptyMap()
 
     /** 上一次上报的状态，避免重复推同一份快照。 */
@@ -186,6 +189,19 @@ class Media3Channel(
                     @Suppress("UNCHECKED_CAST")
                     currentHeaders = (call.argument<Map<String, String>>("headers")
                         ?: emptyMap()).filterValues { it != null }
+                    // ★★ 起始位置随 open 一起给（起播优化，2026-10-10）
+                    //
+                    // ## 为什么要在这里（而不是 open 完再 seekTo）
+                    // `ExoPlayer.setStartPosition()` 必须在 `prepare()`
+                    // **之前**调用，否则会被忽略。放在这里 ⇒ 播放器
+                    // **直接从目标位置开始缓冲**，省掉"先缓冲片头再跳"
+                    // 的一整段（4K 片源上这是数秒）。
+                    //
+                    // ## 与 Dart 侧的分工
+                    // Dart 的 `open(start:)` 把值传下来；≤3s 视为"从头播"
+                    //（与 mpv 侧同一阈值），不调 setStartPosition 避免无谓调用。
+                    val startSec = call.argument<Number>("start")?.toDouble() ?: 0.0
+                    pendingStartMs = if (startSec > 3) (startSec * 1000).toLong() else 0L
                     open(url)
                     result.success(true)
                 }
@@ -291,8 +307,48 @@ class Media3Channel(
             androidx.media3.datasource.DefaultDataSource.Factory(context, httpFactory)
         )
 
+        // ★★ 起播优化：`LoadControl` 调优（2026-10-10）
+        //
+        // ## 默认值的问题
+        // Media3 默认 `DefaultLoadControl`：
+        //   bufferForPlaybackMs = **2500**  ← 起播前要缓冲够 2.5 秒才开播
+        //   bufferForPlaybackAfterRebufferMs = 5000
+        //   minBufferMs = 50000 / maxBufferMs = 50000
+        // ⇒ 那 2.5 秒对**已经就绪**的源是纯等待。
+        //
+        // ## 本轮的取值（起播门槛 2500 → 1000）
+        // ```
+        // setBufferDurationsMs(
+        //   minBufferMs = 15000,             // 稳态最少缓冲
+        //   maxBufferMs = 50000,             // 稳态最多缓冲（与默认一致）
+        //   bufferForPlaybackMs = 1000,      // ★ 起播门槛 2.5s → 1s
+        //   bufferForPlaybackAfterRebufferMs = 2000,  // 卡顿恢复门槛
+        // )
+        // ```
+        // 真机实测依据：4K hevc 片源走 Media3 内核时
+        // `DEMUX_DONE=10465ms / FIRST_FRAME=2756ms`（点到出画面 13.5 秒）
+        // ⇒ 至少 2.5 秒是这里的固定门槛。
+        //
+        // ## ⚠️ 刻意**不设** `setTargetBufferBytes`
+        // 文档已记明：设它会让 Media3 按"字节数"反推缓冲时长，
+        // **高码率片源反而缓冲更短** ⇒ 起播更慢或更易卡。
+        // `setBufferDurationsMs` 才是按**时长**控制起播门槛的正确入口。
+        //
+        // ## 代价（如实）
+        // 网络抖动时会更早开播 ⇒ 可能更早出现"缓冲中"。
+        // 但与 mpv 侧同样的道理：那是**真实状态**，比"等满 2.5 秒再卡"好。
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                15_000,   // minBufferMs（稳态下限）
+                50_000,   // maxBufferMs（稳态上限，与默认一致）
+                1_000,    // ★ bufferForPlaybackMs：起播门槛 2.5s → 1s
+                2_000,    // bufferForPlaybackAfterRebufferMs：卡顿恢复
+            )
+            .build()
+
         val p = ExoPlayer.Builder(context, renderers)
             .setMediaSourceFactory(sourceFactory)
+            .setLoadControl(loadControl)
             .setHandleAudioBecomingNoisy(true) // 拔耳机自动暂停
             .build()
         p.addListener(listener)
@@ -327,6 +383,29 @@ class Media3Channel(
             p.setMediaItem(MediaItem.fromUri(Uri.parse(url)))
         }
 
+        // ★★ 起始位置在 **prepare 之前** 设定（起播优化，2026-10-10）
+        //
+        // ## 为什么必须在这个位置
+        // Media3 的 `seekTo()` 在 `prepare()` **之前**调用时会被记录成
+        // "起始位置"（`SimpleExoPlayer.startPositionMs` —— 已在 1.4.1
+        // 字节码里核实该字段存在）⇒ 播放器**直接从该位置开始缓冲**。
+        //
+        // 若放在 `prepare()` 之后（原写法：open 完再由 Dart 侧 seek），
+        // 播放器会先按 0 位置建立缓冲、再跳转 ⇒ 多一次往返 + 丢掉已缓冲
+        // 的片头数据。对 4K 高码率片源是**数秒**的差别。
+        //
+        // ## ⚠️ 为什么不用 `setStartPosition`
+        // 那是 `ExoPlayer.Builder` 的方法，但**本项目的 media3 1.4.1
+        // 没有它** —— 已用字节码核实：`ExoPlayer$Builder` 里与 Start
+        // 相关的只有 `setMaxSeekToPreviousPositionMs`。
+        // ⇒ 用官方一路支持的 `seekTo` + `prepare` 组合（语义等价）。
+        //
+        // ⚠️ 顺序敏感：这两行**不能**互换 —— `seekTo` 放到 `prepare` 之后
+        //    就退化成"先缓冲片头再跳"（等于回到优化前的行为）。
+        if (pendingStartMs > 0) {
+            p.seekTo(pendingStartMs)
+            Log.i(TAG, "open: seekTo(${pendingStartMs}ms) 于 prepare 之前（起播即定位）")
+        }
         p.prepare()
         p.playWhenReady = true
         startTicker()

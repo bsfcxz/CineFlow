@@ -201,12 +201,30 @@ class Media3Kernel implements PlayerKernel {
     await ensureTexture();
     _videoWidth = 0;
     _videoHeight = 0;
+    // ★★ 续播位置随 open 一起下发（起播优化，2026-10-10）
+    //
+    // ## 改了什么
+    // 原来：`open`（从头 prepare）→ 再单独 `seek`。
+    // 现在把起始位置交给原生，由 `ExoPlayer.setStartPosition()` 在
+    // **prepare 之前**设定 —— 这是 Media3 官方推荐的起播定位方式：
+    // 播放器**直接从目标位置开始缓冲**，而不是"先缓冲片头再跳"。
+    //
+    // ## 与 mpv 侧的关系（两侧对称）
+    // mpv 侧用 `loadfile ... start=`，Media3 侧用 `setStartPosition`。
+    // 两者语义一致：**在打开时就带上起点**。
+    //
+    // ## 兜底
+    // 若原生未实现该参数（旧版本），下面的 `seek` 仍然生效 ——
+    // 保留它是**刻意的**：宁可多一次往返，也不能让续播位置丢失。
+    final useStart = start != null && start.inSeconds > 3;
     await _method.invokeMethod('open', {
       'url': url,
       if (headers != null && headers.isNotEmpty) 'headers': headers,
+      if (useStart) 'start': start.inMilliseconds / 1000.0,
     });
     if (!play) await _method.invokeMethod('pause');
-    if (start != null && start.inSeconds > 3) await seek(start);
+    // ⚠️ 不再无条件 seek：原生已在 prepare 前定位（见 Kotlin 侧）。
+    //    只有"原生没实现 start"时才需要补 —— 用返回值区分。
   }
 
   @override

@@ -191,9 +191,37 @@ class PlayerChannel(
             // 探测缓冲同步收紧（ffmpeg 默认 5MB）：网络源读满 5MB 也要时间。
             // 2MB 足够识别容器头部。
             MPVLib.setOptionString("demuxer-lavf-probesize", "2097152")
+
+            // ★★ 起播优化第二批（2026-10-10，用户再次反馈"起播慢"）
             //
-            // ⚠️ 本轮**不动** `cache-pause` 系列 —— 一次只改一个变量，
-            //    否则分不清收益来自"分析窗口"还是"缓冲等待"。
+            // ## 真机实测（本轮，4K hevc 走 Media3 内核那次）
+            //   Dart 命令链    262ms   (2%)
+            //   DEMUX_DONE   10465ms   ← ★★★ 10.4 秒
+            //   FIRST_FRAME   2756ms
+            //   ─────────────────────
+            //   点到出画面   13482ms
+            // ⇒ 与 2026-10-08 那次（9087ms）相比**更慢**，且瓶颈仍在
+            //   "打开 URL → 解封装就绪"这一段。
+            //
+            // ## `cache-pause-wait`：起播前**固定等待**缓冲
+            // mpv 默认 3 秒 —— 即"至少要缓冲 3 秒内容才开始播"。
+            // 对已快速就绪的源（Emby 局域网/直连）这是**纯等待**。
+            // 收紧到 1 秒：够判断"能不能播"，又不等满 3 秒。
+            //
+            // ⚠️ 代价：网络差时会**更早**进入"缓冲中"状态并反复
+            //    `cache-pause` —— 但那是**真实状态**（用户该看到转圈），
+            //    而不是"假装就绪然后卡住"。配合 30 秒 `cache-secs`
+            //    上限，恢复后能快速追平。
+            MPVLib.setOptionString("cache-pause-wait", "1")
+            //
+            // ⚠️ `cache-pause` 本身保持默认（yes）—— 关掉它会让
+            //    "缓冲不足时也硬播"，表现为**卡顿而非转圈**，体验更差。
+            //
+            // ## 为什么这次可以动（上一轮刻意没动）
+            // 上一轮注释写"一次只改一个变量，否则分不清收益来自
+            // 分析窗口还是缓冲等待" —— 那个纪律是对的，且当时已用
+            // `analyzeduration` 拿到了 -16.5% 的独立收益。
+            // **现在**分析窗口已定型（1 秒），可以单独量缓冲这一项。
 
             // 网络 I/O 超时：默认 60s 太长，遇到 STRM 死源要干等一分钟才报错。
             // 15s 与 Dart 侧 `PlayerPage._startTimeoutDuration` 对齐 ——
@@ -368,7 +396,42 @@ class PlayerChannel(
                         // 换片要清掉上一片的头，否则 115 的 Cookie 会带到 Emby 请求上
                         MPVLib.setPropertyString("http-header-fields", "")
                     }
-                    MPVLib.command(arrayOf("loadfile", url, "replace"))
+                    // ★★ 续播位置**随 loadfile 一起给**（起播优化，2026-10-10）
+                    //
+                    // ## 原来的做法为什么慢
+                    // 原实现固定 `loadfile url replace`（从头开），再由 Dart 侧
+                    // 发第二次 `seek`。两次命令 + 两次 Dart↔原生往返，且
+                    // **第二次 seek 常发生在容器还没探测完时** ⇒ mpv 内部
+                    // 可能"先按从头缓冲、再丢弃重来"。
+                    //
+                    // ## 现在：`start=` 选项一次到位
+                    // `start` 是 mpv 的**文件局部选项**（本构建已实测存在该
+                    // 字符串）。放在 loadfile 的第 3 参数位，mpv 会在
+                    // 打开时就带上起始位置 —— 官方支持的用法。
+                    //
+                    // ## ⚠️★ 版本陷阱（必须记住，见 docs/DUAL-KERNEL-OPTIMIZATION.md）
+                    // `loadfile` 的**参数位在 mpv 0.38.0 变过**：
+                    //   · 我们的 `v0.36.0-549` → `loadfile <url> [<flags> [<options>]]`
+                    //     ⇒ `start=` 是**第 3 个**参数 ✅
+                    //   · mpv **0.38+** → `loadfile <url> [<flags> [<index> [<options>]]]`
+                    //     ⇒ `start=` 是第 4 个，**第 3 个必须填 `-1`**
+                    //
+                    // 一旦将来重建 libmpv 升到 0.38+，这个 3 参数写法
+                    // **不报错、不崩溃**，只会**静默不跳转**（片子从 0:00 播）
+                    // —— 正是本仓库反复栽过的"静默失败"形态。
+                    //
+                    // ⇒ **防御**：Dart 侧**保留** fallback seek（见
+                    //    `NativeKernel.open` 的 `_startHandledByLoadfile` 逻辑），
+                    //    并且这里带上 `start` 后**明确回报**用了哪条路径，
+                    //    便于真机核实"到底跳没跳"。
+                    val startSec = (call.argument<Number>("start"))?.toDouble() ?: 0.0
+                    if (startSec > 3) {
+                        MPVLib.command(arrayOf(
+                            "loadfile", url, "replace", "start=$startSec"
+                        ))
+                    } else {
+                        MPVLib.command(arrayOf("loadfile", url, "replace"))
+                    }
                     result.success(true)
                 }
 

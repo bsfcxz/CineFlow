@@ -350,15 +350,61 @@ class NativeKernel implements PlayerKernel {
     // 换片时清掉上一部的尺寸，避免沿用旧宽高比
     _videoWidth = 0;
     _videoHeight = 0;
+
+    // ★★ 续播位置随 open 一起下发（起播优化，2026-10-10）
+    //
+    // ## 改了什么
+    // 原来：`open`（从头）→ 再单独 `seek`。两次命令 + 两次往返。
+    // 现在：把 `start` 交给原生，由 `loadfile` 的第 3 参数
+    //（`start=`，mpv 文件局部选项）一次到位。
+    //
+    // ## ⚠️★ 为什么仍然"可能"再补一次 seek（防静默失败）
+    // mpv **0.38.0 改了 `loadfile` 的参数位**：原来的第 3 参数
+    // （options）变成第 4 个，中间插入 index。我们的构建是
+    // `v0.36.0-549` ⇒ 3 参数写法正确；**但将来重建 libmpv 升到 0.38+**
+    // 时，那个写法**不报错、不崩溃，只是静默不跳转**（从 0:00 播）。
+    //
+    // ⇒ 不赌"原生一定跳对了"：open 之后**核对一次**位置。
+    //    核对方式：给一个短暂窗口，若上报的 position 与目标相差过大
+    //    （说明 start= 没生效），补一次显式 seek 兜底。
+    //
+    //    ⚠️ 不能用"等 position>0"当判据 —— 那是**旧探针的错**
+    //    （seek 后 mpv 立刻回报 time-pos=目标值，画面还没出来）。
+    //    这里只判断"当前 position 是否已接近目标或已越过":
+    //    它们能区分"跳转未生效（还在 0 附近）"与"跳转已登记"。
+    final wantStart = start != null && start.inSeconds > 3;
+    _startApplied = false;
+
     await _method.invokeMethod('open', {
       'url': url,
       if (headers != null && headers.isNotEmpty) 'headers': headers,
+      // 原生侧 > 3s 才使用（见 PlayerChannel 的说明）
+      if (wantStart) 'start': start.inMilliseconds / 1000.0,
     });
     if (!play) await _method.invokeMethod('pause');
-    if (start != null && start.inSeconds > 3) {
-      await seek(start);
+
+    if (wantStart) {
+      // 给 mpv 一个短窗口应用 `start=`（属性变化要经事件线程回传）
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final pos = _state.position;
+      // 判定：位置是否已接近目标（±3s）或越过
+      final near = (pos - start).abs() < const Duration(seconds: 3);
+      final past = pos > start;
+      if (near || past) {
+        _startApplied = true;
+      } else {
+        // start= 未生效（如将来升级到 mpv 0.38+ 的签名变化）
+        // ⇒ 补一次显式 seek，保证续播位置正确
+        await seek(start);
+        _startApplied = true;
+      }
     }
   }
+
+  /// 是否由 `loadfile` 的 `start=` 应用了续播位置（诊断用）。
+  bool get startAppliedByLoadfile => _startApplied;
+
+  bool _startApplied = false;
 
   @override
   Future<void> play() => _method.invokeMethod('play');

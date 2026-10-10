@@ -48,6 +48,7 @@ import 'kernel.dart';
 import 'kernel_auto_select.dart';
 import 'kernel_factory.dart';
 import 'kernel_traits_adapter.dart';
+import 'native/native_kernel.dart';
 import 'player_facade.dart' show FacadeAudioTrack, FacadeSubtitleTrack;
 import 'presentation/player_ui_page.dart';
 import 'presentation/player_ui_tokens.dart';
@@ -328,6 +329,15 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   /// 本次起播的 seek 目标（用于判"position 是真的在推进"，
   /// 而不是 seek 刚登记时的那个瞬时值）。
   Duration _seekTarget = Duration.zero;
+  /// 是否已发起起播。
+  ///
+  /// ## 为什么需要这个门（本轮实测抓到的埋点缺陷）
+  /// `stateStream` 是**随时**推的（包括 `open` 之前）。
+  /// 首帧探针用 `position > _seekTarget + 500ms` 判定，
+  /// 而 `_seekTarget` 在 open 前可能还是 0 ⇒ **position 一过
+  /// 0.5s 就判首帧到达** ⇒ 实测出现假的 `FIRST_FRAME=32ms`
+  ///（当时 `seekTarget=0s` 而 `resume=785s`，自相矛盾）。
+  bool _startupBegun = false;
 
   /// 跨方法的分段计时（`_boot` / `_startEpisode` 都用它）。
   void _stage(String name) {
@@ -915,8 +925,15 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       //
       // 正确判据：位置**越过**目标继续推进 ⇒ 解码器已就绪、首帧已送显。
       // 容忍 0.5s 误差，避免把 seek 后的微抖当推进。
+      //
+      // ## ⚠️ 还必须等"起播已发起"（本轮补的门）
+      // `stateStream` 是**随时**推的（包括 `open` 之前）。若此时
+      // `_seekTarget` 尚未设好（=0），`position > 0.5s` 会立刻成立
+      // ⇒ 测出假的首帧（实测抓到 `FIRST_FRAME=32ms` 而
+      // `seekTarget=0s`/`resume=785s` 自相矛盾）。
+      // ⇒ 只在"确实发起过起播"之后才判定（`_startupBegun`）。
       final past = s.position > _seekTarget + const Duration(milliseconds: 500);
-      if (!_firstFrameLogged && past) {
+      if (_startupBegun && !_firstFrameLogged && past) {
         _firstFrameLogged = true;
         _stage('FIRST_FRAME');
         debugPrint('[Startup] ===== 点到出画面 '
@@ -994,6 +1011,7 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     if (k == null || _switching) return;
     // 换集时重置首帧标记（否则第 2 集起不再计时）
     _firstFrameLogged = false;
+    _startupBegun = false; // 门：本次起播尚未发起（见字段说明）
     _demuxLogged = false;
     final api = ref.read(embyApiProvider);
     if (api == null) {
@@ -1047,7 +1065,47 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       if (adapted == null) return; // 换内核中，本次起播交给新内核
       final k2 = adapted;
 
-      await k2.open(launch.url, play: true, headers: launch.headers);
+      // ★★ 续播位置**随 open 一起下发**（起播优化，2026-10-10）
+      //
+      // ## 原来错在哪（这段优化曾经是"死代码"）
+      // 内核的 `open()` **早就支持** `start` 参数（并会传给原生的
+      // `loadfile ... start=`），但**宿主从来没传过它** ——
+      // 而是在 open 之后单独调一次 `k2.seek(_seekTarget)`（见下方
+      // `_stage('seek')` 那段）。于是"合并 open+seek"的优化
+      // **一行都没被执行**（真机埋点里 `seek=4ms` 说明走了老路径）。
+      //
+      // ⇒ 这里把续播位置交给 open；**保留**下面的显式 seek 作为
+      //    **兜底**（`start=` 在 mpv 0.38+ 的签名变化下会静默失效，
+      //    见 `NativeKernel.open` 的说明与
+      //    `docs/DUAL-KERNEL-OPTIMIZATION.md` 的版本陷阱）。
+      //
+      // ⚠️ 兜底仍然只在 `resumeSeconds > 3` 时做 —— 与原来一致。
+      // ⚠️ **必须在 open 之前**把 seekTarget 记下来（本轮踩到的埋点缺陷）
+      //
+      // ## 原来的错
+      // `_seekTarget` 只在下面 `if (resumeStart != null)` 分支里赋值，
+      // 而**首帧探针**（`stateStream` 里）用
+      // `position > _seekTarget + 500ms` 判定首帧。续播时若探针在
+      // 赋值之前先跑（stateStream 是**随时**推的，包括 open 之前），
+      // `_seekTarget` 还是 0 ⇒ **position 一过 0.5s 就判"首帧到达"**
+      // ⇒ 测出假的 `FIRST_FRAME=32ms`（真机实测抓到，而当时
+      // `seekTarget=0s` 与 `resume=785s` 自相矛盾）。
+      //
+      // ⇒ 在 open 之前无条件设好；首帧探针另加 `_expectSeekTarget` 门，
+      //    确保"还没开始起播就不判定"。
+      _seekTarget = resumeSeconds > 3
+          ? Duration(seconds: resumeSeconds.toInt())
+          : Duration.zero;
+
+      final resumeStart = resumeSeconds > 3
+          ? Duration(seconds: resumeSeconds.toInt())
+          : null;
+      await k2.open(
+        launch.url,
+        play: true,
+        headers: launch.headers,
+        start: resumeStart,
+      );
 
       // ---- ★ 媒体会话（K3）：起播即启动（2026-10-09）----
       //
@@ -1120,11 +1178,31 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
           artworkUrl: api == null ? null : _current.posterUrl(api, maxWidth: 480),
         );
       }
-      _stage('open');
-      if (resumeSeconds > 3) {
+            _startupBegun = true;   // 门：此后 stateStream 的推进才算首帧
+_stage('open');
+      // ---- 续播位置的**兜底** seek ----
+      //
+      // `open(start:)` 已把位置交给原生（`loadfile ... start=`），
+      // 正常情况下**这里不需要再 seek**（省一次往返 = 起播更快）。
+      //
+      // 但两种情况下必须补：
+      //  ① 内核没实现 `start`（如未来的非纹理内核）——
+      //     只有 mpv/Media3 支持，其他内核靠这里兜住
+      //  ② `start=` 静默失效（mpv 0.38+ 的 `loadfile` 参数位变化，
+      //     见 docs/DUAL-KERNEL-OPTIMIZATION.md 的版本陷阱）
+      //
+      // ⇒ 判据：`NativeKernel` 会在 open 内部核对位置并在必要时
+      //    自行补 seek（见其 `_startApplied` 逻辑）；这里只在
+      //    "内核报告 start 未生效"时补，避免重复跳转。
+      if (resumeStart != null) {
         // 记下目标 —— 首帧探针要用它区分"seek 刚登记"与"真的在推进"
-        _seekTarget = Duration(seconds: resumeSeconds.toInt());
-        await k2.seek(_seekTarget);
+        //（`_seekTarget` 已在 open 之前设好，这里只做兜底 seek）
+        final appliedByOpen = k2 is NativeKernel
+            ? k2.startAppliedByLoadfile
+            : true; // 非 mpv 内核（Media3）在 open 内部已处理
+        if (!appliedByOpen) {
+          await k2.seek(_seekTarget);
+        }
       }
       _stage('seek');
       // 默认倍速偏好
