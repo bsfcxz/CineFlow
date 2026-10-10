@@ -500,7 +500,23 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   /// 布防超时时的位置（超时判据：位置必须推进过它）。
   Duration _positionAtArm = Duration.zero;
 
-  bool _immersive = true;
+  /// 是否处于「全屏」态（**方向**的全屏，不是系统栏的全屏）。
+  ///
+  /// ## ★★ 初始值必须是 `false`（真机抓到的"点全屏没反应/反向"）
+  ///
+  /// 原来写 `= true`，但 `_boot` 里已经调用过
+  /// `setEnabledSystemUIMode(immersiveSticky)` —— 即**系统栏早就隐藏了**。
+  /// 于是第一次点全屏时 `_immersive` 取反变成 `false` ⇒ 走进 else 分支
+  /// ⇒ **回竖屏 + 显示系统栏**：
+  ///   · 用户以为"点全屏没反应"（其实方向根本没切）
+  ///   · 更糟的是它与"进入全屏"语义**相反**
+  ///
+  /// ## 语义澄清（两个"全屏"不是一回事）
+  /// · **系统栏**（immersive）：进播放页就进 —— 竖屏也想要"只有画面"
+  /// · **方向**（本字段）：只在点全屏时切成横屏
+  /// ⇒ 本字段只跟踪**方向**，与系统栏状态解耦。
+  ///   初值 false = "当前是竖屏"，与 `_boot` 锁 portraitUp 一致。
+  bool _immersive = false;
 
   @override
   void initState() {
@@ -2308,12 +2324,16 @@ class _DanmakuLayer extends ConsumerWidget {
     final cfg = ref.watch(danmakuConfigProvider).value;
     final position =
         ref.watch(playbackStateProvider.select((s) => s.position));
+    // ★ 播放状态：暂停时弹幕必须**停止外推**（否则画面停住弹幕还在飞）
+    final playing =
+        ref.watch(playbackStateProvider.select((s) => s.isPlaying));
 
     if (data.items.isEmpty) return const SizedBox.shrink();
 
     return DanmakuOverlay(
       items: data.items,
       position: position,
+      playing: playing,
       enabled: panel.enabled,
       opacity: panel.opacity / 100,
       fontScale: (cfg?.fontScale ?? 1.0) * _fontScaleOf(panel.fontSize),

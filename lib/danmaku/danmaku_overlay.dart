@@ -19,6 +19,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../core/theme.dart';
 import 'danmaku_config.dart';
@@ -31,6 +32,7 @@ class DanmakuOverlay extends StatefulWidget {
     super.key,
     required this.items,
     required this.position,
+    this.playing = true,
     this.enabled = true,
     this.opacity = 1.0,
     this.fontScale = 1.0,
@@ -45,8 +47,15 @@ class DanmakuOverlay extends StatefulWidget {
   /// 已按时间排序的弹幕（由 `DanmakuBatch.sorted()` 保证）
   final List<Danmaku> items;
 
-  /// 当前播放位置
+  /// 当前播放位置（来自内核，**被限流到 250ms** —— 见渲染层的平滑时钟）
   final Duration position;
+
+  /// 是否正在播放。
+  ///
+  /// ## 为什么弹幕层需要知道它
+  /// 渲染层为了让弹幕平滑，会在两次 `position` 推送之间**本地外推**。
+  /// 暂停时若继续外推，画面停住而弹幕还在飞 —— 明显错误。
+  final bool playing;
 
   /// 弹幕开关
   final bool enabled;
@@ -78,7 +87,8 @@ class DanmakuOverlay extends StatefulWidget {
   State<DanmakuOverlay> createState() => _DanmakuOverlayState();
 }
 
-class _DanmakuOverlayState extends State<DanmakuOverlay> {
+class _DanmakuOverlayState extends State<DanmakuOverlay>
+    with SingleTickerProviderStateMixin {
   /// 轨道规划缓存。
   ///
   /// ⚠️ 必须在 State 里缓存，**不能放在 paint 里**：
@@ -89,6 +99,101 @@ class _DanmakuOverlayState extends State<DanmakuOverlay> {
 
   /// 规划对应的输入指纹（用于判断是否需要重算）
   String _planKey = '';
+
+  // ══════════════════════════════════════════════════════════════
+  // ★★ 平滑时钟（修复"弹幕卡顿不自然"，2026-10-10）
+  // ══════════════════════════════════════════════════════════════
+  //
+  // ## 问题（真机观察 + 代码取证）
+  // 弹幕位置完全由 `widget.position` 决定，而它来自内核的
+  // `stateStream` —— 那条流被**故意限流到 250ms**
+  //（`player_flow_page` 的 `_posFlushTimer`，目的是"消除每帧重建整页"）。
+  //
+  // ⇒ 弹幕**每秒只移动 4 步**：视觉上是明显的跳变/卡顿。
+  //   而视频本身是 60fps 解码，两者叠加就显得"不自然"。
+  //
+  // ## 修法：本地插值（不碰内核，不影响其它订阅者）
+  // 用 `position` 作为**权威基准**，两次推送之间用本地 elapsed 平滑外推：
+  // ```
+  // 平滑位置 = 基准位置 + (本地已过时间) × 播放倍速
+  // ```
+  // · 每次 `position` 更新 ⇒ 重置基准（**不会累积漂移**，
+  //   因为基准来自内核而不是本地推算）
+  // · 用 `Ticker`（vsync）驱动重绘 ⇒ 跟随屏幕刷新率（60/90/120Hz）
+  // · 暂停时停止外推（否则画面停住后弹幕还在飞）
+  //
+  // ## 为什么不直接"把内核限流取消"
+  // 那个限流是**为了让整页不每帧重建**（进度条/通知栏/唤醒锁等
+  // 十几个订阅者都挂在同一条流上）。取消它会连累整页性能。
+  // ⇒ 只让**弹幕**这一处平滑，是代价最小、收益最直接的做法。
+  Ticker? _ticker;
+
+  /// 基准位置（来自内核，权威）
+  Duration _basePos = Duration.zero;
+
+  /// 收到 `_basePos` 时的本地时刻
+  Duration _baseAt = Duration.zero;
+
+  /// 本帧渲染用的插值位置
+  Duration _smoothPos = Duration.zero;
+
+  /// 最近一次 `Ticker` 回调的时刻（算"基准落地时间"用）
+  Duration _lastTick = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _basePos = widget.position;
+    _ticker = createTicker(_onTick)..start();
+  }
+
+  void _onTick(Duration elapsed) {
+    // 记录本帧时刻 —— `didUpdateWidget` 用它算"基准位置的落地时刻"
+    _lastTick = elapsed;
+    // 暂停/未播放时不做外推：让弹幕停在当前位置（与视频一致）
+    if (!widget.playing) {
+      if (_smoothPos != _basePos) {
+        setState(() => _smoothPos = _basePos);
+      }
+      return;
+    }
+    // 外推：基准 + 本地流逝 × 倍速
+    final delta = elapsed - _baseAt;
+    // 上限保护：若长时间没有新的 position（如内核卡住），
+    // 不能让弹幕无限往前飞 —— 最多外推 400ms。
+    final capped = delta > const Duration(milliseconds: 400)
+        ? const Duration(milliseconds: 400)
+        : delta;
+    final next = _basePos + capped * widget.speed;
+    // 只在变化超过 1ms 时 setState（避免 120Hz 下的无效重建）
+    if ((next - _smoothPos).abs() > const Duration(milliseconds: 1)) {
+      setState(() => _smoothPos = next);
+    }
+  }
+
+  @override
+  void didUpdateWidget(DanmakuOverlay old) {
+    super.didUpdateWidget(old);
+    // 内核给了新位置 ⇒ 重置基准（关键：**不累积漂移**）
+    if (old.position != widget.position) {
+      _basePos = widget.position;
+      // 用**上一次 tick 的时刻**作基准落地时间。
+      // ⚠️ 不用 `Ticker.lastElapsedDuration`：该 getter 在本版本不存在
+      //    （analyze 报 undefined），自己记更可靠且无版本依赖。
+      _baseAt = _lastTick;
+      // ⚠️ 若新位置**倒退**（seek 回跳），直接跳到新位置，
+      //    不要平滑 —— 否则会看到弹幕"倒着飞"。
+      if (widget.position < _smoothPos) {
+        _smoothPos = widget.position;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.dispose();
+    super.dispose();
+  }
 
   DanmakuLayoutConfig _config(BoxConstraints c) => DanmakuLayoutConfig(
         fontSize: 16 * widget.fontScale,
@@ -137,7 +242,8 @@ class _DanmakuOverlayState extends State<DanmakuOverlay> {
             painter: _DanmakuPainter(
               plan: _plan!,
               config: config,
-              position: widget.position,
+              // ★ 用**插值后**的位置（不是 widget.position）
+              position: _smoothPos,
             ),
           );
         },

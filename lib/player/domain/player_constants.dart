@@ -242,6 +242,55 @@ enum AspectMode {
     // 方向不一致：绝不能强行塞比例（变形）⇒ 回 contain
     return AspectMode.contain;
   }
+
+  /// 视频画面在视口内的**实际矩形宽度/高度**（用于把弹幕限制在画面内）。
+  ///
+  /// ## 为什么需要这个（真机实测抓到的缺陷）
+  /// 弹幕层原本用 `Positioned.fill` 铺满**整个屏幕**，
+  /// 而竖屏看 16:9 内容时视频只是**中间一条**（上下黑边）。
+  /// 结果弹幕飘到黑边、甚至压住顶部标题与返回按钮 ——
+  /// 真机截图确认：弹幕出现在标题「斗罗大陆Ⅱ绝世唐门」之上。
+  ///
+  /// ## 语义：必须与 `AspectVideo` 的布局**逐档一致**
+  /// 这是"同一条数学写两处"的典型风险，故抽成纯函数并单测：
+  /// 若 [AspectVideo] 改了布局而这里没改，弹幕就会偏出画面。
+  ///
+  /// | 档位 | 画面尺寸 |
+  /// |---|---|
+  /// | contain / ratio* | 按 [effectiveRatio] 内接（留黑边）|
+  /// | fill | 铺满视口（拉伸，无黑边）|
+  /// | cover | 铺满视口（裁掉超出部分，可见区域仍是视口）|
+  ///
+  /// ⚠️ `cover` 与 `fill` 的**可见区域都是整个视口** —— 虽然
+  /// `cover` 内部有超出部分被裁掉，但用户看到的仍是满屏，
+  /// 故弹幕铺满是对的（与 mpv/B站 一致）。
+  ///
+  /// [viewportW]/[viewportH] 是播放页可用区域（`LayoutBuilder` 的 max）。
+  /// [videoRatio] 片源显示比例（未知时按 16:9，与 [AspectVideo] 的兜底一致）。
+  static ({double width, double height}) pictureSize({
+    required AspectMode mode,
+    required double viewportW,
+    required double viewportH,
+    required double videoRatio,
+  }) {
+    // fill / cover：画面铺满视口
+    if (mode == AspectMode.fill || mode == AspectMode.cover) {
+      return (width: viewportW, height: viewportH);
+    }
+    // 其余档：按目标比例内接（contain 语义）
+    //
+    // ⚠️ `auto` 不该走到这里 —— 调用方须先 `resolveAuto` 解析。
+    //    真走到了就按 [videoRatio] 内接（与 AspectVideo 的 auto 兜底同款）。
+    final ratio = mode.ratio ?? videoRatio;
+    if (ratio <= 0 || viewportW <= 0 || viewportH <= 0) {
+      return (width: viewportW, height: viewportH);
+    }
+    // 内接：取"更受限"的那一维
+    final byWidth = viewportW / ratio <= viewportH;
+    return byWidth
+        ? (width: viewportW, height: viewportW / ratio)
+        : (width: viewportH * ratio, height: viewportH);
+  }
 }
 
 /// 解码方式（规格 §7.6 视频 Tab）。

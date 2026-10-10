@@ -108,6 +108,23 @@ void main() {
           reason: '★ 内置的公共代理地址');
     });
 
+    test('★★ 公共代理**绝不能**发 `async` 参数（真机 400 的根因）', () {
+      // ## 真机 + 实测双重取证
+      // 真机：`[PlayerFlow] 弹幕：弹幕服务返回 HTTP 400`
+      // 实测（逐参数二分）：
+      //   ?async=1  → 400 "Invalid query parameters"
+      //   ?async=0  → 400（同样）
+      //   ?withRelated=true&chConvert=1 → 200 ✅
+      //   ?withRelated=true&chConvert=1&async=1 → 400 ❌（=App 的实际请求）
+      // ⇒ 该代理**严格校验参数白名单**，不是本仓库注释里写的"静默忽略"。
+      final i = client.indexOf('final query = {');
+      expect(i, greaterThanOrEqualTo(0), reason: '找不到 comment 的查询参数构造');
+      final seg = client.substring(i, i + 400);
+      expect(seg.contains('kind != DanmakuProviderKind.publicProxy'), isTrue,
+          reason: '★★ `async` 必须**排除公共代理** ——\n'
+              '    否则该源返回 400，弹幕永远出不来（不影响播放，很难发现）。');
+    });
+
     test('★ 未知 kind 回退用**默认值**而非写死 off', () {
       // 两处默认值必须一致：改了 DanmakuConfig 的默认，
       // 存储层的"未知回退"要跟着走，否则升级路径上两者不一致

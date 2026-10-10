@@ -125,12 +125,34 @@ class DanmakuClient {
       if (parsed != null) return parsed;
     }
 
-    // 2) 首次请求（异步模式下可能返回 pending）
-    final raw = await _get(path, query: {
+    // ★★ `async` 参数必须**按源类型**决定发不发（真机 + 实测定位）
+    //
+    // ## 原来的写法错在哪
+    // 无条件按配置发 `if (useAsync) 'async': '1'`，并注释说
+    // "其它服务会**静默忽略**这个参数" —— 那是基于 **danmu_api** 的调研。
+    // **公共代理不适用**：它严格校验参数白名单，
+    // 任何 `async` 值都会 400。实测（2026-10-10）：
+    // ```
+    // ?async=1  → HTTP 400 {"success":false,
+    //                       "errorMessage":"Invalid query parameters"}
+    // ?async=0  → HTTP 400（同样）
+    // ?withRelated=true&chConvert=1        → 200 ✅
+    // ?withRelated=true&chConvert=1&async=1 → 400 ❌（App 的实际请求）
+    // ```
+    // ⇒ 真机现象：`[PlayerFlow] 弹幕：弹幕服务返回 HTTP 400`
+    //   （弹幕永远出不来，但不影响播放）
+    //
+    // ## 修法：白名单
+    // · 公共代理：**永不发** `async`
+    // · 官方 / 自建：保留 `useAsync`（misaka 2.7.0+ 才认，其他源忽略）
+    final query = {
       'withRelated': '$withRelated',
       'chConvert': '$chConvert',
-      if (useAsync) 'async': '1',
-    });
+      if (useAsync && kind != DanmakuProviderKind.publicProxy) 'async': '1',
+    };
+
+    // 2) 首次请求（异步模式下可能返回 pending）
+    final raw = await _get(path, query: query);
 
     final map = _tryMap(raw);
     if (map == null) throw const DanmakuException('弹幕数据格式异常');

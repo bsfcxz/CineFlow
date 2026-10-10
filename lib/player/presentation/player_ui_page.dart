@@ -282,6 +282,31 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
       body: LayoutBuilder(
         builder: (context, box) {
           _videoSize = Size(box.maxWidth, box.maxHeight);
+
+          // ★ 画面矩形（弹幕层只铺到这里，见下方弹幕层的说明）
+          //
+          // `auto` 必须先解析成固定档：`AspectVideo` 内部也是这么做的，
+          // 两处必须用**同一个** `resolveAuto` 才不会错位。
+          final vRatio =
+              info.width != null && info.height != null && info.height! > 0
+                  ? info.width! / info.height!
+                  : 16 / 9;
+          final rawMode = ref.watch(
+              videoStateProvider.select((s) => s.aspectMode));
+          final effMode = rawMode == AspectMode.auto
+              ? AspectMode.resolveAuto(
+                  width: box.maxWidth,
+                  height: box.maxHeight,
+                  videoRatio: vRatio,
+                )
+              : rawMode;
+          final picture = AspectMode.pictureSize(
+            mode: effMode,
+            viewportW: box.maxWidth,
+            viewportH: box.maxHeight,
+            videoRatio: vRatio,
+          );
+
           return Stack(
             children: [
               // ---- 1. 视频层（最底）----
@@ -307,10 +332,33 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
               ),
 
               // ---- 2. 弹幕层（视频之上、控制层之下；不吃手势）----
+              //
+              // ★★ 必须**限制在视频画面内**（真机实测抓到的缺陷）
+              //
+              // ## 原来的写法错在哪
+              // 原来直接 `Positioned.fill` —— 弹幕铺满**整个屏幕**。
+              // 而竖屏看 16:9 内容时视频只是**中间一条**（上下黑边），
+              // 于是弹幕飘到黑边上、甚至**压住顶部标题与返回按钮**。
+              // 真机截图确认：弹幕出现在「斗罗大陆Ⅱ绝世唐门」标题之上。
+              //
+              // ## 修法：按画幅档位算出**画面矩形**，只在该区域内铺弹幕
+              // 与 mpv / B站 的行为一致 —— 弹幕属于**画面**，不属于窗口。
+              //
+              // ⚠️ `pictureSize` 必须与 `AspectVideo` 的布局逐档一致，
+              //    故抽成 `AspectMode.pictureSize` 纯函数并单测
+              //    （"同一条数学写两处"是本项目反复栽过的坑）。
               if (widget.slots.danmakuLayer case final d?)
                 Positioned.fill(
                   key: keys.player.danmakuOverlay,
-                  child: IgnorePointer(child: d),
+                  child: IgnorePointer(
+                    child: Center(
+                      child: SizedBox(
+                        width: picture.width,
+                        height: picture.height,
+                        child: d,
+                      ),
+                    ),
+                  ),
                 ),
 
               // ---- 3. 手势层（必须在 UI 元素之下，见 player_gesture_layer 说明）----
