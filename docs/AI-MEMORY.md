@@ -1116,3 +1116,104 @@ check-dev.ps1     21 项全过，退出码 0
                  简繁三档+过滤等级可见可存 / 手动匹配端到端换弹幕成功
 ```
 
+### 2026-10-10 · 第 11 轮 · 画面比例：auto 忠于片源（A）+ 档位持久化（C）
+
+用户报障与要求：
+> "播放画面我感觉可以优化一下比例，上下增加点黑边，你看下 GitHub 上
+>  或者网络上或者其他主流的播放器是怎么处理这个的呢"
+> 选定方案：**A（auto 忠于片源）+ C（用户选的档位被记住）**
+
+#### A 项：`auto` 改成忠于片源 —— 这是**修真实变形**
+
+**真机取证的片源**：《伟大的长征》`3840x1608` = **2.388:1 宽银幕**
+
+| | 计算 |
+|---|---|
+| 横屏视口 | 2400×1080 |
+| 按真实比例应显示 | 2400 × **1005** |
+| `auto` 强制 16:9 实际显示 | 2400 × **1350** |
+| **差异** | **345px ⇒ 纵向拉伸 34.3%**（人脸变胖）|
+
+**根因**（`player_constants.dart` 的 `resolveAuto`）：
+```dart
+if (screenLandscape == videoLandscape) {
+  return screenLandscape ? AspectMode.ratio16x9 : AspectMode.ratio9x16;
+}
+```
+而 `ratio16x9` 渲染是 `AspectRatio(16/9, child: texture)` ——
+**`Texture` 没有固有尺寸，会被拉伸填满那个框**。
+⇒ 只有"恰好 16:9 / 恰好 9:16"是对的，而**电影绝大多数不是 16:9**。
+
+**主流播放器的一致做法（已核实出处，非印象）**：
+| 播放器 | 默认行为 | 出处 |
+|---|---|---|
+| **mpv**（一号内核）| `keepaspect` 默认 `yes` ⇒ 保留比例 + 黑边 | `DOCS/man/options.rst` L1621-1710 |
+| **ExoPlayer/Media3**（二号内核）| `RESIZE_MODE_FIT` = 保持比例补黑边 | 本地 1.4.1 字节码实测枚举（`RESIZE_MODE_FIT/FILL/ZOOM/FIXED_*`）|
+| **VLC** | 比例菜单首项是"默认"（= 片源真实比例）| `src/libvlc-module.c` `ASPECT_RATIO_TEXT` |
+
+⇒ mpv 手册原文把强制比例定位为**纠错开关**：
+> `--video-aspect-override=<ratio|no>` —— "in case aspect information is
+> **incorrect or missing** in the file being played."
+
+**修法**：`resolveAuto` 直接 `return AspectMode.contain;`
+（画面该多宽只取决于**片源**；屏幕方向只决定黑边留在上下还是左右）
+
+**真机验证**（同一部 2.388:1 片源）：
+| 档位 | 画面高度 | 变形 |
+|---|---|---|
+| **自动**（新默认）| **452px** = 1080/2.388 | ✅ **0%** |
+| 16:9（用户显式选）| 607px | ⚠️ 33%（用户自己选的，语义正确）|
+
+#### C 项：档位持久化 —— 这是**修"配了没记住"**
+
+**真缺口**（选项早就存在，但没存）：
+· `VideoState build() => const VideoState()` ⇒ 每次进播放页都是 auto
+· 全仓库**没有任何** `aspect` 相关的 pref 读写（实测扫过）
+
+⇒ 用户选了"16:9 满屏"看完一集，**下一集又回 auto**，得每集重设。
+
+**修法**：`aspect_mode` pref（存 `AspectMode.name`，可读可降级）
+· 读：`_boot` 里（与 `default_rate` / `skip_intro_auto` 同处）
+· 写：`onAspectModeChanged` 回调（fire-and-forget，不阻塞 UI）
+· 未知值 ⇒ 回退 `AspectMode.auto`（默认值只在 `AspectMode` 一处）
+
+**真机双向验证**（日志判据）：
+```
+切 16:9 → 冷启动 → [PlayerFlow] 画面比例：已恢复 ratio16x9（存储值=ratio16x9）✅
+切回 auto → 重进 → [PlayerFlow] 画面比例：已恢复 auto（存储值=auto）      ✅
+```
+
+> **为什么加了一行常驻日志**：`flutter_secure_storage` 是加密的，
+> release 包 `run-as` 又不可用（实测 `package not debuggable`）
+> ⇒ **外部完全读不到**偏好值。而"档位没恢复"与"恢复了但渲染有问题"
+> 是两种完全不同的故障 —— 没有这行日志就只能靠猜。
+> 本轮为验证 C，我先跟 UI 时序搏斗了很久（低效），加日志后一次搞定。
+
+#### 守卫测试（+14 例，4 个反向注入全部抓到）
+新增 `test/player_aspect_policy_test.dart`（12 例）
++ `player_picture_rect_test` / `player_state_test` 的 auto 断言已按新语义更新。
+反向注入：auto 退回横屏强制 16:9 / 不写偏好 / 不读偏好 /
+存 index 而非 name —— **全部抓到**。
+
+#### ⚠️ 本轮自动化踩的坑（记录避免重犯）
+真机 UI 自动化反复失败，根因有三，**每个都耗时很久**：
+1. **`adb shell` 每次调用有 0.5–1s 连接开销** ⇒ 多次调用累积 3–5s，
+   而控制层 **3s 自动隐藏** ⇒ 点击落在已隐藏的界面上。
+   **正确做法**：把"唤出 → 点击 → 截图"写进**一条** `adb shell`（设备内 sleep）。
+2. **残留面板盖住底栏** ⇒ 后续所有点击都落在面板上。
+   且面板的 X 按钮位置与底栏按钮**很接近**（(1005,160) vs (892,2261)）。
+   **正确做法**：每步先 dump/截图确认"当前是什么界面"，不假设。
+3. **点 (300,400) 是 toggle**：控制层已开时再点会**关掉**它。
+   **正确做法**：先判断控制层在不在，在就直接点目标按钮。
+
+#### 本轮验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1051: All tests passed!
+check-dev.ps1     21 项全过，退出码 0
+反向注入          4 项全部抓到
+真机              A：2.388:1 片源画面高度 452px（正确，改前会拉到 607）
+                  C：切档→冷启动→读回，双向验证通过
+```
+

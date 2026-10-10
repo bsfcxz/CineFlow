@@ -48,6 +48,7 @@ import 'application/controllers/playlist_controller.dart';
 import 'application/providers/player_providers.dart';
 import 'domain/models/danmaku_panel_state.dart';
 import 'domain/models/media_state.dart';
+import 'domain/player_constants.dart';
 import 'kernel.dart';
 import 'kernel_auto_select.dart';
 import 'kernel_factory.dart';
@@ -779,6 +780,45 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
     //    写成 `== '1'` 会让老用户升级后**突然不再跳片头**（静默的行为倒退）。
     _autoIntroSkip =
         (await ref.read(sessionStoreProvider).getPref('skip_intro_auto')) != '0';
+
+    // ★ 画面比例偏好（用户要求 A+C 方案里的 C 项）
+    //
+    // ## 为什么必须持久化（原来没有 —— "配了没记住"）
+    // 比例档位选项**早就存在**（设置面板里的
+    // 适应 / 拉伸 / 裁剪 / 16:9 / 4:3 / 9:16），但：
+    //   · `VideoState build() => const VideoState()` ⇒ 每次新建都是 auto
+    //   · 全仓库**没有任何** `aspect` 相关的 pref 读写
+    // ⇒ 用户选了"16:9 满屏"看完一集，**下一集又变回 auto**，得重设一次。
+    //
+    // ## 与 A 项的分工
+    // · A：`auto` 改成忠于片源（治变形）—— 让"不选"也是对的
+    // · C：用户**显式选**的档位被记住 —— 想满屏的人不用每集重设
+    //
+    // ⚠️ 未知值/读失败 ⇒ 回退 `AspectMode.auto`
+    //    （默认值只在 `AspectMode` 定义一处，存储层不写死）。
+    final savedAspect =
+        await ref.read(sessionStoreProvider).getPref('aspect_mode');
+    if (savedAspect != null && savedAspect.isNotEmpty) {
+      final restored = AspectMode.values.firstWhere(
+        (x) => x.name == savedAspect,
+        orElse: () => AspectMode.auto,
+      );
+      if (mounted) {
+        ref.read(videoStateProvider.notifier).setAspectMode(restored);
+      }
+      // ★ 日志：让"档位到底恢复了没有"**可见**
+      //
+      // ## 为什么值得常驻一行日志
+      // `flutter_secure_storage` 是加密的，release 包 `run-as` 又不可用
+      // ⇒ **外部完全读不到**偏好值。而"档位没恢复"与"档位恢复了但渲染
+      // 有问题"是两种完全不同的故障，没这行日志就只能靠猜。
+      //（本轮实测：为验证 C 跟 UI 时序搏斗了很久，非常低效。）
+      debugPrint('[PlayerFlow] 画面比例：已恢复 ${restored.name}'
+          '（存储值=$savedAspect）');
+    } else {
+      debugPrint('[PlayerFlow] 画面比例：无存储偏好，用默认 '
+          '${AspectMode.auto.name}');
+    }
     _stage('prefRead');
     final kernel = PlayerKernelFactory.create(_preference.kernelType);
     // ★ 这一段含 **mpv 初始化 + EGL 上下文创建**，是起播的固定开销
@@ -2278,6 +2318,17 @@ _stage('open');
       },
       onAspectModeChanged: (m) {
         ref.read(videoStateProvider.notifier).setAspectMode(m);
+        // ★ 持久化画面比例（A+C 方案的 C 项）
+        //
+        // ## 为什么必须存（原来没存 —— "配了没记住"）
+        // 比例档位是**用户偏好**，不是"本次会话的临时状态"。
+        // 不存 ⇒ 用户选了"16:9 满屏"，下一集又回到 auto，得每集重设。
+        //
+        // fire-and-forget：写偏好走 Keystore 加解密，
+        // 不该阻塞 UI 切换（用户已经看到画面变了）。
+        unawaited(ref
+            .read(sessionStoreProvider)
+            .setPref('aspect_mode', m.name));
       },
       onFullscreenToggled: () {
         // ★ 全屏 = **切横屏 + 沉浸式**（用户明确要求）

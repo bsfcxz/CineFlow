@@ -233,32 +233,47 @@ void main() {
       );
     });
 
-    test('★ auto 按「片源×屏幕」二维判定（方向一致才满屏）', () {
-      // ★★ 第一版只按屏幕方向强制比例 ⇒ 竖屏看 16:9 电影被硬塞进
-      //    9:16 的框（变形，用户报障"竖屏画面被整出问题"）。
-      //    正确语义：方向一致才满屏，不一致回 contain —— 这四格必须全断言。
+    test('★★ auto 忠于片源（绝不变形）—— 2026-10-10 修正', () {
+      // ## 两次修正的历史（都记下来，避免再来回改）
+      // **第一版**：只按屏幕方向强制比例 ⇒ 竖屏看 16:9 电影被硬塞进
+      //   9:16（变形，用户报障"竖屏画面被整出问题"）。
+      //
+      // **第二版**（本测试原来断言的）：方向一致才满屏、不一致回 contain。
+      //   解决了竖屏问题，但**横屏仍会强制 16:9** ⇒
+      //   **真机实测**：《伟大的长征》3840x1608 = 2.388:1 宽银幕，
+      //   横屏视口 2400x1080 下应显示高 1005，被拉到 1350
+      //   ⇒ **纵向拉伸 34.3%**（用户报障"画面比例可以优化，上下加黑边"）。
+      //
+      // **第三版**（现在）：auto = **始终 contain**（保留片源比例）。
+      //   依据（已核实出处）：
+      //   · mpv `keepaspect` 默认 yes（我们的一号内核，官方手册 options.rst）
+      //   · Media3 `RESIZE_MODE_FIT`（二号内核，本地 1.4.1 字节码实测）
+      //   · VLC 比例菜单首项"默认" = 片源真实比例（src/libvlc-module.c）
+      //
+      // ⇒ "保留片源比例"才是一致的正确默认；强制比例是**纠错开关**
+      //   （mpv 的 `--video-aspect-override` 正是这个定位）。
       const r169 = 16 / 9;
       const r916 = 9 / 16;
+      const r239 = 2.388; // 宽银幕电影（真机实测片源）
 
-      // 横片 + 横屏 ⇒ 16:9 满屏（主场景）
-      expect(AspectMode.resolveAuto(width: 2400, height: 1080, videoRatio: r169),
-          AspectMode.ratio16x9);
-      // 竖片 + 竖屏 ⇒ 9:16 满屏（竖拍素材）
-      expect(AspectMode.resolveAuto(width: 1080, height: 2400, videoRatio: r916),
-          AspectMode.ratio9x16);
-      // ★ 横片 + 竖屏 ⇒ contain（绝不能塞 9:16 —— 回归的经典黑边）
-      expect(AspectMode.resolveAuto(width: 1080, height: 2400, videoRatio: r169),
-          AspectMode.contain,
-          reason: '★★ 竖屏看横片必须回 contain —— 硬塞 9:16 会变形'
-              '（用户报障的场景）');
-      // 竖片 + 横屏 ⇒ contain
-      expect(AspectMode.resolveAuto(width: 2400, height: 1080, videoRatio: r916),
-          AspectMode.contain);
-      // 片源比例未知 ⇒ 保守 contain（不能猜）
-      expect(AspectMode.resolveAuto(width: 2400, height: 1080, videoRatio: null),
-          AspectMode.contain);
-      expect(AspectMode.resolveAuto(width: 1080, height: 2400, videoRatio: 0),
-          AspectMode.contain);
+      // 全部四种组合 + 未知比例 ⇒ 都必须是 contain
+      for (final c in [
+        (2400.0, 1080.0, r169 as double?),
+        (1080.0, 2400.0, r916),
+        (1080.0, 2400.0, r169),
+        (2400.0, 1080.0, r916),
+        (2400.0, 1080.0, r239), // ★ 关键：改前这个会被拉伸 34%
+        (2400.0, 1080.0, null),
+        (1080.0, 2400.0, 0.0),
+        (1080.0, 2400.0, -1.0),
+      ]) {
+        expect(
+            AspectMode.resolveAuto(
+                width: c.$1, height: c.$2, videoRatio: c.$3),
+            AspectMode.contain,
+            reason: 'auto 必须始终保留片源比例（${c.$1}x${c.$2} '
+                'ratio=${c.$3}）—— 任何强制比例都会在非 16:9 片源上变形');
+      }
       // 正方形片源按横处理（竖屏看 ⇒ contain 黑边最少）
       expect(AspectMode.resolveAuto(width: 1080, height: 2400, videoRatio: 1.0),
           AspectMode.contain);

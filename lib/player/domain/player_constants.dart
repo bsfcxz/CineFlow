@@ -206,40 +206,58 @@ enum AspectMode {
         _ => null,
       };
 
-  /// ★ auto 档的解析：**片源方向与屏幕方向一致才满屏，否则回 contain**。
+  /// ★ auto 档的解析：**忠于片源比例**（2026-10-10 修正，原为"方向一致就强制"）
   ///
-  /// ## ⚠️ 为什么不是"横屏→16:9、竖屏→9:16"（第一版照字面执行，真机翻车）
-  /// 用户原话"画面横屏时自适应16：9，画面竖屏播放时9：16"，
-  /// 第一版被字面实现成"按**屏幕方向**强制比例" ⇒
-  /// **竖屏看 16:9 电影时画面被硬塞进 9:16 的框** —— 变形/裁剪
-  ///（用户报障："竖屏画面被你整的有问题了"）。
+  /// ## ⚠️ 原来的设计是错的（真机实测抓到的变形）
+  /// 原实现在"屏幕与片源同向"时**强制固定比例**：
+  /// ```dart
+  /// if (screenLandscape == videoLandscape) {
+  ///   return screenLandscape ? AspectMode.ratio16x9 : AspectMode.ratio9x16;
+  /// }
+  /// ```
+  /// 而 `ratio16x9` 的渲染是 `AspectRatio(16/9, child: texture)` ——
+  /// **`Texture` 没有固有尺寸，会被拉伸填满那个框**。
   ///
-  /// ## 正确语义（这次按**片源 × 屏幕**二维判定）
-  /// | 片源 | 屏幕 | 行为 | 理由 |
-  /// |---|---|---|---|
-  /// | 横(≥1) | 横 | **16:9 满屏** | 方向一致，铺满不变形（主场景）|
-  /// | 竖(<1) | 竖 | **9:16 满屏** | 方向一致，铺满不变形（竖拍素材）|
-  /// | 横 | 竖 | **contain** | 硬塞 9:16 会变形 —— 回退经典黑边 |
-  /// | 竖 | 横 | **contain** | 同理 |
+  /// **真机取证**（用户库里的《伟大的长征》3840×1608 = 2.388:1）：
+  /// ```
+  /// 横屏视口 2400x1080
+  ///   按真实比例应显示  2400 x 1005
+  ///   auto 强制 16:9    2400 x 1350
+  ///   ⇒ 纵向拉伸 34.3%（人脸明显变胖）
+  /// ```
+  /// 4:3 老片在横屏下同理会被横向压扁 ~19%。
+  /// 只有"恰好 16:9 / 恰好 9:16"才是对的 —— 而**电影绝大多数不是 16:9**。
   ///
-  /// 即：auto = "方向一致时省去手动选档，不一致时绝不添乱"。
-  /// [videoRatio] 来自内核**显示尺寸**（dwidth/dheight，已含旋转/SAR），
-  /// 未知（null/0）时保守回 contain。
+  /// ## 主流播放器的一致做法（已核实出处，非印象）
+  /// | 播放器 | 默认行为 | 出处 |
+  /// |---|---|---|
+  /// | **mpv**（我们的一号内核）| `keepaspect` 默认 `yes` ⇒ 保留比例 + 黑边 | `DOCS/man/options.rst` |
+  /// | **ExoPlayer/Media3**（二号内核）| `RESIZE_MODE_FIT` = 保持比例补黑边 | 本地 1.4.1 字节码实测枚举 |
+  /// | **VLC** | 比例菜单首项是"默认"（= 片源真实比例）| `src/libvlc-module.c` |
+  ///
+  /// ⇒ **"保留片源比例"才是正确默认**；强制比例是"片源比例信息有误"时的
+  ///    **纠错开关** —— mpv 的 `--video-aspect-override` 正是这个定位
+  ///    （手册原文："in case aspect information is incorrect or missing"）。
+  ///
+  /// ## 语义变更（本轮）
+  /// · 改前：auto = "方向一致就满屏"（宽银幕电影会纵向拉伸）
+  /// · 改后：auto = **始终保留片源比例**（绝不变形，黑边补足）
+  ///
+  /// 用户要"满屏"时用显式档位（16:9 / 4:3 / 9:16 / 裁剪 / 拉伸）——
+  /// 那些档位**语义不变**（本来就是"忽略片源比例"）。
+  ///
+  /// [videoRatio] 来自内核**显示尺寸**（dwidth/dheight，已含旋转/SAR）。
+  /// 未知（null/0）时同样回 [AspectMode.contain]（渲染层按 16:9 兜底）。
   static AspectMode resolveAuto({
     required double width,
     required double height,
     required double? videoRatio,
   }) {
-    // 片源比例未知/非法 ⇒ **一律 contain**（不能猜：猜横竖都可能变形）。
-    if (videoRatio == null || videoRatio <= 0) return AspectMode.contain;
-    final screenLandscape = width >= height;
-    // 片源方向：ratio ≥ 1 为横向画面（含正方形 —— 正方按横处理更安全，
-    // 竖屏看正方形内容用 contain 黑边最少）。
-    final videoLandscape = videoRatio >= 1;
-    if (screenLandscape == videoLandscape) {
-      return screenLandscape ? AspectMode.ratio16x9 : AspectMode.ratio9x16;
-    }
-    // 方向不一致：绝不能强行塞比例（变形）⇒ 回 contain
+    // ★ 无论屏幕方向如何，都保留片源比例 ⇒ 永不变形。
+    //
+    // 比原来的"方向一致就强制"更简单也更正确：
+    // 画面该多宽多高**只取决于片源**，与屏幕方向无关；
+    // 屏幕方向只决定"黑边留在上下还是左右"（`contain` 自动处理）。
     return AspectMode.contain;
   }
 

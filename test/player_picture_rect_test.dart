@@ -108,32 +108,76 @@ void main() {
       expect(z.height, 0);
     });
 
-    test('★★ auto 解析后再算，结果必须是"方向一致才满屏"', () {
-      // 竖屏 + 横片源 ⇒ contain（不满屏）
-      final m1 = AspectMode.resolveAuto(
-          width: vw, height: vh, videoRatio: 16 / 9);
-      expect(m1, AspectMode.contain);
-      final r1 = AspectMode.pictureSize(
-          mode: m1, viewportW: vw, viewportH: vh, videoRatio: 16 / 9);
-      expect(r1.height, lessThan(vh * 0.35),
-          reason: '竖屏看横片 ⇒ 画面只占中间一条');
+    test('★★ auto 必须"忠于片源"（绝不变形）—— 本轮修正的行为', () {
+      // ## 改前 vs 改后（真机实测驱动的修正）
+      // 改前：方向一致就**强制 16:9/9:16** ⇒ 宽银幕电影纵向拉伸 34.3%
+      //      （真机取证：《伟大的长征》3840x1608 = 2.388:1，
+      //        横屏视口 2400x1080 下应显示高 1005，被拉到 1350）
+      // 改后：**始终 contain**（保留片源比例，黑边补足）
+      //
+      // 依据：mpv `keepaspect` 默认 yes、Media3 `RESIZE_MODE_FIT`、
+      //       VLC 比例菜单首项"默认" —— 三家一致。
 
-      // 横屏 + 横片源 ⇒ 16:9（满屏）
-      final m2 = AspectMode.resolveAuto(
-          width: vh, height: vw, videoRatio: 16 / 9);
-      expect(m2, AspectMode.ratio16x9);
-      final r2 = AspectMode.pictureSize(
-          mode: m2, viewportW: vh, viewportH: vw, videoRatio: 16 / 9);
-      expect(r2.height, closeTo(vw * 16 / 9 > vw ? vw : r2.height, 0.01),
-          reason: '16:9 在横屏视口里按宽度内接');
+      // ① 横屏 + 16:9 片源 ⇒ contain（不再强制，也不该变形）
+      expect(
+          AspectMode.resolveAuto(width: 2400, height: 1080, videoRatio: 16 / 9),
+          AspectMode.contain,
+          reason: '★★ 若这里返回 ratio16x9，2.39:1 的电影就会被拉伸');
 
-      // 竖屏 + 竖片源 ⇒ 9:16（满屏）
-      final m3 = AspectMode.resolveAuto(
-          width: vw, height: vh, videoRatio: 9 / 16);
-      expect(m3, AspectMode.ratio9x16);
-      final r3 = AspectMode.pictureSize(
-          mode: m3, viewportW: vw, viewportH: vh, videoRatio: 9 / 16);
-      expect(r3.width, closeTo(vw, 0.01), reason: '竖屏看竖片 ⇒ 铺满宽');
+      // ② 横屏 + 2.39:1 宽银幕 ⇒ contain（关键：改前会被拉伸 34%）
+      expect(
+          AspectMode.resolveAuto(width: 2400, height: 1080, videoRatio: 2.388),
+          AspectMode.contain);
+
+      // ③ 竖屏 + 16:9 ⇒ contain
+      expect(AspectMode.resolveAuto(width: vw, height: vh, videoRatio: 16 / 9),
+          AspectMode.contain);
+
+      // ④ 竖屏 + 9:16 ⇒ contain（改前是 ratio9x16；现在也走 contain，
+      //    因为 9:16 内容在 9:16 屏里 contain 的结果**本来就是满屏**）
+      expect(AspectMode.resolveAuto(width: vw, height: vh, videoRatio: 9 / 16),
+          AspectMode.contain);
+
+      // ⑤ 比例未知 ⇒ contain（不能猜；渲染层按 16:9 兜底）
+      expect(AspectMode.resolveAuto(width: vw, height: vh, videoRatio: null),
+          AspectMode.contain);
+      expect(AspectMode.resolveAuto(width: vw, height: vh, videoRatio: 0),
+          AspectMode.contain);
+    });
+
+    test('★★ 宽银幕电影：contain 的结果必须保留原比例（不变形）', () {
+      // 真机实测场景复现：2.388:1 片源 + 横屏视口 2400x1080
+      const ratio = 2.388;
+      final m = AspectMode.resolveAuto(
+          width: 2400, height: 1080, videoRatio: ratio);
+      final r = AspectMode.pictureSize(
+          mode: m, viewportW: 2400, viewportH: 1080, videoRatio: ratio);
+      // 按真实比例内接：高受限（2.388 > 16/9=1.778）
+      expect(r.width / r.height, closeTo(ratio, 0.01),
+          reason: '★★ 显示矩形的宽高比**必须等于片源比例** ——\n'
+              '    这是"不变形"的定义。改前强制 16:9 会得到 1.778。');
+      expect(r.width, closeTo(2400, 1));
+      expect(r.height, closeTo(2400 / ratio, 1));
+      // 与"错误做法"的量化对比
+      final wrong = 2400 / (16 / 9);
+      expect(wrong / r.height - 1, greaterThan(0.3),
+          reason: '改前的高度比正确值大 34% ⇒ 纵向拉伸（真机实测值）');
+    });
+
+    test('★★ 竖屏看宽银幕电影 ⇒ 上下大黑边（用户看到的"加黑边"）', () {
+      const ratio = 2.388;
+      final m = AspectMode.resolveAuto(
+          width: vw, height: vh, videoRatio: ratio);
+      final r = AspectMode.pictureSize(
+          mode: m, viewportW: vw, viewportH: vh, videoRatio: ratio);
+      expect(r.width, closeTo(vw, 0.01));
+      expect(r.height, closeTo(vw / ratio, 0.01));
+      final bar = (vh - r.height) / 2;
+      // ⚠️ 视口单位是**逻辑 dp**（393×873），不是物理像素（1080×2400）
+      //    高 873 - 画面 164.5 = 708.5，上下各 ≈ 354dp
+      expect(bar, greaterThan(300),
+          reason: '★ 竖屏看 2.39:1 电影，上下黑边各约 354dp '
+              '（占屏高 40%）—— 这正是用户说的"上下增加点黑边"');
     });
 
     test('★ 内接数学：取"更受限"的那一维（两种情形都验）', () {
