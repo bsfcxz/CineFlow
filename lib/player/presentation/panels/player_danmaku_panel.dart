@@ -23,7 +23,8 @@ class PlayerDanmakuPanel extends StatelessWidget {
     required this.state,
     required this.onToggle,
     required this.onOpacity,
-    required this.onFontSize,
+    required this.onFontPercent,
+    required this.onShowArea,
     required this.onSpeedLevel,
     required this.onArea,
     required this.onImportLocal,
@@ -33,8 +34,16 @@ class PlayerDanmakuPanel extends StatelessWidget {
 
   final DanmakuPanelState state;
   final ValueChanged<bool> onToggle;
+
+  /// 不透明度 0–100（**0 = 完全隐藏**，B站 同款语义）。
   final ValueChanged<double> onOpacity;
-  final ValueChanged<DanmakuFontSize> onFontSize;
+
+  /// 字号百分比 60–180（B站 同款滑条）。
+  final ValueChanged<double> onFontPercent;
+
+  /// 显示区域 0–100（B站 同款滑条）= 弹幕占屏幕高度比例。
+  final ValueChanged<double> onShowArea;
+
   final ValueChanged<int> onSpeedLevel;
   final ValueChanged<DanmakuArea> onArea;
   final VoidCallback onImportLocal;
@@ -70,20 +79,40 @@ class PlayerDanmakuPanel extends StatelessWidget {
                   disabled: !state.enabled,
                   child: Column(
                     children: [
+                      // ---- 以下五项全部是**滑条**（B站 同款）----
+                      //
+                      // ## 为什么字号/显示区域从"档位选择"改成滑条
+                      // 用户明确要求：
+                      // > "弹幕的显示区域修改一下，改成 b站一样的 0-100
+                      // >  可以拖动的。字体大小也是可以拖动的和透明度一样"
+                      //
+                      // B站 的弹幕设置里这些都是滑条 —— 因为
+                      // "大一点/小一点"是很细的个人偏好，固定档位太粗。
                       SliderRow(
-                        label: '透明度',
+                        label: '不透明度',
                         value: state.opacity,
                         min: 0,
                         max: 100,
                         valueLabel: '${state.opacity.round()}%',
                         onChanged: onOpacity,
                       ),
-                      SegmentedGroup<DanmakuFontSize>(
+                      SliderRow(
                         label: '字体大小',
-                        options: DanmakuFontSize.values,
-                        value: state.fontSize,
-                        onChanged: onFontSize,
-                        labelBuilder: (f) => f.label,
+                        value: state.fontPercent,
+                        min: 60,
+                        max: 180,
+                        valueLabel: '${state.fontPercent.round()}%',
+                        onChanged: onFontPercent,
+                      ),
+                      SliderRow(
+                        label: '显示区域',
+                        value: state.showArea,
+                        min: 20,
+                        max: 100,
+                        // B站 的"弹幕区域"就是占屏高的比例
+                        valueLabel: '${state.showArea.round()}%'
+                            '${state.showArea <= 20 ? '（最小）' : ''}',
+                        onChanged: onShowArea,
                       ),
                       SliderRow(
                         label: '弹幕速度',
@@ -97,8 +126,11 @@ class PlayerDanmakuPanel extends StatelessWidget {
                             '${DanmakuPanelState.speedLabel(state.speedLevel)}',
                         onChanged: (v) => onSpeedLevel(v.round()),
                       ),
+                      // ⚠️ 标签是「弹幕类型」（不是"显示区域"）——
+                      //    取值是滚动/顶部/底部，那是**类型**的语义；
+                      //    "显示区域"已被上面那个 0–100 滑条占用。
                       SegmentedGroup<DanmakuArea>(
-                        label: '显示区域',
+                        label: '弹幕类型',
                         options: DanmakuArea.values,
                         value: state.area,
                         onChanged: onArea,
@@ -111,7 +143,7 @@ class PlayerDanmakuPanel extends StatelessWidget {
                 // ---- 来源 ----
                 SettingRow(
                   label: '导入本地弹幕文件',
-                  hint: '支持 .xml / .ass',
+                  hint: '支持 .xml / .ass / .json',
                   value: '选择文件',
                   onTap: onImportLocal,
                 ),

@@ -192,7 +192,10 @@ void main() {
 
     test('★★ overlay 必须**真的读** filterLevel（否则功能无效）', () {
       final o = code('lib/danmaku/danmaku_overlay.dart');
-      expect(o.contains('filterByLevel(widget.items, widget.filterLevel)'),
+      // ⚠️ 2026-10-10：接线形式变了 —— 现在是
+      // `filterByLevel(mergeDuplicates(widget.items), widget.filterLevel)`
+      //（先合并相同弹幕，再按等级过滤）。故断言改成"两段都在"。
+      expect(o.contains('filterByLevel('),
           isTrue,
           reason: '★★ 只是加了配置字段但渲染层不读 ⇒ 功能完全无效\n'
               '    （本仓库"配了没接线"的典型形态）');

@@ -1404,3 +1404,145 @@ flutter test      +1066: All tests passed!
 check-dev.ps1     21 项全过，退出码 0
 真机              横屏比例 2.397（理论 2.388）/ 旋转零重建 / 同比例换集零重建
 ```
+
+### 2026-10-10 · 第 15 轮 · 导入本地弹幕（真功能）+ 合并相同弹幕 + 连续滑条
+
+用户一次给了 5 件事：
+> "识别匹配到的弹幕全部转为中文简体，并合并相同弹幕。还有这个导入本地弹幕
+>  文件好像点不开。弹幕的显示区域修改一下，改成b站一样的0-100可以拖动的。
+>  字体大小也是可以拖动的和透明度一样。字幕的透明度你修改的好像有问题，
+>  为0时为全黑，有点儿问题，你可以参考b站。"
+
+（后经确认，"字幕的透明度"实际指的是**弹幕不透明度**。）
+
+#### ① 合并相同弹幕（新增 `mergeDuplicates`）
+
+与 `filterByLevel` 档 1 的去重**语义不同**：
+· `filterByLevel(1)` 是"过滤等级"的一部分，**用户可以关掉**（等级 0）
+· `mergeDuplicates` 是**默认行为**（不看等级）
+
+⇒ 接线顺序：`filterBlocked(filterByLevel(mergeDuplicates(items), lv), words)`
+合并放最内层（最基础的清洗），先去了重 ⇒ 后两步比对的条数变少。
+
+规则：同一**文本**（trim 后）只留**时间最早**那条 —— 首发在剧情点上，
+跟风重复在后面。**无重复时返回原列表**（省一次分配）。
+
+#### ② 导入本地弹幕文件（**真功能**，用户明确要求"接真功能"）
+
+原来只是 `debugPrint` = 死按钮（违反 AGENTS §5.8）。
+
+**新增 `lib/danmaku/danmaku_import.dart`**（纯函数，`parseDanmakuFile`）：
+| 格式 | 解析要点 |
+|---|---|
+| **B站 XML** | `<d p="…">`；**8 段布局颜色在 index 3、字号在 index 2** |
+| **弹弹play JSON** | `{"comments":[{"p","m"}]}`；**4 段布局颜色在 index 2** |
+| **ASS** | `Dialogue:` 行；带 `\move` 判滚动，否则顶部；**尽力而为**（已如实注明局限） |
+
+⚠️ **实现时抓到的真 bug（单测守住了）**：格式判定原来把
+"以 `[` 开头 ⇒ JSON" 放在 ASS 之前，而 **ASS 以 `[Script Info]` 开头**
+⇒ 被当成 JSON 解析，用户会看到"选 .ass 文件报 JSON 格式有误"。
+⇒ 改为**必须先判 ASS**（有单测守顺序）。
+
+其他防御：
+· 颜色 `& 0xFFFFFF` 夹到 24 位（带 alpha 的 32 位色会变全透明）
+· XML 实体反转义 `&amp;` **最后**替换（否则 `&amp;lt;` 双重解码）
+· 解析失败/空文件/超 10MB 都给明确文案；**跳过的行数如实告知**
+· 取消选择**不提示**（提示会显得像出错）
+
+⚠️ **file_picker 13.x 是静态 API**（不是 5.x 的 `FilePicker.platform`）：
+`FilePicker.pickFile()` 直接返回 `PlatformFile?`，且**没有 `withData`**，
+字节要走 `readAsBytes()`。踩过一次编译错。
+
+**真机验证**：点「选择文件」⇒ `mCurrentFocus=com.google.android.documentsui/
+...PickActivity`（系统文件选择器真的弹出）。按返回后 App 存活（pid 不变）。
+
+#### ③ 字号 / 显示区域改成连续滑条（B站 同款）
+
+| 项 | 原来 | 现在 |
+|---|---|---|
+| 字体大小 | 三档枚举（小/中/大）| **滑条 60–180%** |
+| 显示区域 | **标签用错了** —— 取值是滚动/顶部/底部 | **滑条 20–100%**（占屏高比例）|
+| 弹幕类型 | （原叫"显示区域"）| 改名**弹幕类型**（名副其实）|
+| 不透明度 | 滑条 0–100（但内部夹到 0.2）| 滑条 0–100（**0 真的是 0**）|
+
+新换算函数（纯静态，有单测）：`fontScaleFromPercent` / `fontPercentFromScale`
+/ `showAreaFromPercent` / `showAreaPercentFromValue`。
+范围与 `DanmakuConfig`（fontScale 0.6–1.8 / showArea 0.2–1.0）一致。
+
+#### ④ 不透明度 0 = 完全可见性修复（用户报障"为 0 时为全黑"）
+
+**根因（两层）**：
+1. **描边颜色固定 `0xCC`（80% 不透明），完全没乘 opacity**
+   ```dart
+   final strokeColor =
+       lum > 0.55 ? const Color(0xCC000000) : const Color(0xCCFFFFFF);
+   ```
+   ⇒ opacity=0 时**填充透明了、描边仍 80%** ⇒ 满屏黑/白轮廓 = "全黑"
+2. `opacityToConfig` 把 0 **夹到 0.2** ⇒ 滑到 0 实际还有 20% 可见
+
+**修法（双重保险）**：
+· `if (config.opacity <= 0.01) return;` —— 整层短路不画
+· 描边基色改 `0xFF000000/0xFFFFFFFF` 并 **`withValues(alpha: 0.8 * opacity)`**
+· 允许滑到 0（`clamp(0.0, 1.0)`），与 B站 语义一致
+
+⚠️ **描边缓存 key 必须含 alpha** —— 已含在 `strokeColor.toARGB32()` 里，
+加注释守住（否则拖透明度滑条时已缓存的弹幕仍用旧描边）。
+
+**真机验证（逐像素对照，最强形态）**：
+```
+暂停视频（画面冻结，自检 diff=0.0000）
+弹幕区 y=900..1500，遮掉控制层：
+  A(不透明度 100%) vs C(弹幕关) = 90.18%   ← 本片有大量弹幕，对照组有效
+  B(不透明度   0%) vs C(弹幕关) =  0.0000% ← 0/408020 像素
+```
+⇒ **不透明度 0 ≡ 关闭弹幕**，bug 彻底修好。
+
+> 📌 **测量方法演进（值得记下）**：前两次对照全失败 ——
+> ① 未暂停视频 ⇒ 两张截图是不同帧（diff 0.21–0.24 全是画面变化）
+> ② 未排除控制层 ⇒ 差异集中在进度条(y≈2078)与底栏(y≈2306)
+> **修正后**先冻结画面 + 排除控制层，才得到可信结论。
+> 又一次印证：**测量手段本身也要验证**。
+
+#### ⑤ 全部转简体
+
+`chConvert` 默认已是 `simplified`（服务端转换，`=1`），缓存 key 含它。
+本轮补了守卫测试（默认值 + 请求带参 + 缓存 key）。
+
+#### ★★ 顺带修掉一个严重缺陷：弹幕面板设置**从不落盘**
+
+扫代码发现 `DanmakuPanelController.onPersist` **全仓库没人接线**
+（只出现在它自己的定义与 `_emit()` 里）。
+⇒ 面板里改的任何值**只在内存**，关掉播放页就丢 —— 用户每次看片都得重设。
+
+**修**：在 `PlayerUiPage` 加 `_persistDanmaku(ref)`，
+把面板值换算成 `DanmakuConfig` 并调 `danmakuConfigProvider.notifier.patch(...)`，
+接到全部 6 个回调上。
+
+这是本仓库反复出现的"**配了没接线**"形态的第 N 例
+（前有 `setSurfaceSize`、`chConvert`、`onMatchDanmaku`、`ensureTexture` 记账）。
+
+#### ★ 还修掉"同一个值被应用两次"
+
+```dart
+fontScale: (cfg?.fontScale ?? 1.0) * _fontScaleOf(panel.fontSize),
+```
+`cfg.fontScale` 已持久化，panel 又由它同步 ⇒ 乘两次 = **字号被平方**
+（用户设 1.5 ⇒ 实际 1.95）。
+⇒ 改为**只从 panel 取**（panel 是唯一真源）。
+
+#### 本轮验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1097: All tests passed!（1066 → 1097，+31）
+check-dev.ps1     21 项全过，退出码 0
+反向注入          8 项全部抓到
+真机              ③ 文件选择器真的弹出（documentsui/PickActivity）
+                  ④ 面板 5 个滑条 + 弹幕类型改名生效
+                  ⑤ 弹幕区 B(0%) vs C(关) = **0.0000%**（0/408020 像素）
+```
+
+#### 未验证
+- ① 简体转换的真机字形核对（服务端 `chConvert` 已单测，但未截图核对字形）
+- ② 导入本地文件后弹幕真的渲染（只验证到"选择器弹出"，未真选一个文件走完）
+- ③ 合并相同弹幕的真机条数对比（纯函数已单测）

@@ -392,10 +392,12 @@ class _TestbedDanmakuLayer extends ConsumerWidget {
       items: data.items,
       position: position,
       enabled: panel.enabled,
+      // 与 player_flow_page 同款：**只从 panel 取**，不再乘 cfg 的同类值
+      //（乘两次 = 字号被平方，见 player_flow_page 里的详细说明）
       opacity: panel.opacity / 100,
-      fontScale: (cfg?.fontScale ?? 1.0) * _fontScaleOf(panel.fontSize),
+      fontScale: panel.fontPercent / 100,
       blockedWords: cfg?.blockedWords ?? const [],
-      showArea: cfg?.showArea ?? 1.0,
+      showArea: panel.showArea / 100,
       modes: switch (panel.area) {
         DanmakuArea.scroll =>
           const DanmakuDisplayModes(scroll: true, top: false, bottom: false),
@@ -404,17 +406,11 @@ class _TestbedDanmakuLayer extends ConsumerWidget {
         DanmakuArea.bottom =>
           const DanmakuDisplayModes(scroll: false, top: false, bottom: true),
       },
-      speed: panel.speedLevel / 5,
+      speed: DanmakuPanelState.speedToConfig(panel.speedLevel),
       bold: cfg?.bold ?? false,
       avoidSubtitle: cfg?.avoidSubtitle ?? true,
     );
   }
-
-  double _fontScaleOf(DanmakuFontSize size) => switch (size) {
-        DanmakuFontSize.small => 0.8,
-        DanmakuFontSize.medium => 1.0,
-        DanmakuFontSize.large => 1.3,
-      };
 }
 
 /// 内核切换浮层：显示当前内核 + 能力表 + 切换按钮。

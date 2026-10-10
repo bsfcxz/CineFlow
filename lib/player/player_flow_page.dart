@@ -26,15 +26,18 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
     show DeviceOrientation, SystemChrome, SystemUiMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import '../core/theme.dart';
 
 import '../danmaku/danmaku_config.dart';
+import '../danmaku/danmaku_import.dart';
 import '../danmaku/danmaku_overlay.dart';
 import '../danmaku/danmaku_models.dart';
 import '../danmaku/danmaku_match_sheet.dart';
@@ -2034,6 +2037,87 @@ _stage('open');
     }
   }
 
+  // ---------- 导入本地弹幕文件 ----------
+
+  /// 让用户选一个弹幕文件并加载（**真功能**，用户要求"接真功能"）。
+  ///
+  /// ## 支持格式（自动判定，不只看扩展名）
+  /// `.xml`（B站）/ `.json`（弹弹play）/ `.ass`（尽力而为）
+  /// —— 解析在 `parseDanmakuFile`（纯函数，有单测）。
+  ///
+  /// ## 加载后的行为
+  /// **替换**当前弹幕（而不是追加）—— 用户导入本地文件通常是想
+  /// "用这个文件而不是自动匹配的"，追加会混在一起反而更乱。
+  ///
+  /// ## 失败处理（不静默）
+  /// 解析失败 / 没选中文件 / 读取异常 ⇒ 都给明确的 SnackBar 文案。
+  /// 解析成功但有跳过的行 ⇒ 也如实告知条数（不假装"全部成功"）。
+  Future<void> _importLocalDanmaku() async {
+    DanmakuImportResult res;
+    try {
+      // ⚠️ **file_picker 13.x 是静态 API**（不是 5.x 的 `FilePicker.platform`）
+      //   实测：`FilePicker.pickFile(...)` 直接返回 `PlatformFile?`，
+      //   且没有 `withData` 参数 —— 字节要走 `readAsBytes()`（异步读）。
+      //   故**不再需要**"withData 会占内存"的顾虑（读的时候才分配）。
+      final f = await FilePicker.pickFile(
+        dialogTitle: '选择弹幕文件',
+        type: FileType.any,
+      );
+      if (f == null) {
+        // 用户主动取消 ⇒ **不提示**（提示会显得像出错）
+        debugPrint('[PlayerFlow] 导入弹幕：用户取消');
+        return;
+      }
+      final bytes = await f.readAsBytes();
+      if (bytes.isEmpty) {
+        _snack('文件是空的：${f.name}');
+        return;
+      }
+      // 10MB 上限：弹幕文本文件通常几百 KB，超过说明选错了文件
+      // （放到**读之后**判断：`PlatformFile.size` 在某些平台可能不准）
+      if (bytes.length > 10 * 1024 * 1024) {
+        _snack('文件过大（${(bytes.length / 1048576).toStringAsFixed(1)}MB），'
+            '弹幕文件通常 < 1MB');
+        return;
+      }
+      // 优先 UTF-8；失败再试 latin1（B站老导出文件常是 GBK，
+      // 没有内置 GBK 解码器，latin1 至少不抛异常、能保留字节不崩）
+      String content;
+      try {
+        content = utf8.decode(bytes);
+      } catch (_) {
+        content = latin1.decode(bytes, allowInvalid: true);
+        debugPrint('[PlayerFlow] 导入弹幕：非 UTF-8，按 latin1 容错解码');
+      }
+      res = parseDanmakuFile(content, fileName: f.name);
+    } catch (e, st) {
+      _snack('选择文件失败：$e');
+      debugPrint('[PlayerFlow] 导入弹幕异常：$e\n$st');
+      return;
+    }
+
+    if (!mounted) return;
+
+    if (!res.ok) {
+      _snack('导入失败：${res.error}');
+      debugPrint('[PlayerFlow] 导入弹幕失败：${res.error}');
+      return;
+    }
+
+    // ★ 替换当前弹幕（见方法头说明）
+    ref.read(danmakuUiProvider.notifier).set(DanmakuLoadResult(
+          items: res.items,
+          // 顶部信息显示文件名 —— 用户能一眼确认"用的是哪个文件"
+          matchedTitle: res.fileName,
+          fromCache: false,
+        ));
+    final extra = res.skipped > 0 ? '，跳过 ${res.skipped} 行' : '';
+    _snack('已导入 ${res.items.length} 条弹幕'
+        '（${res.format}：${res.fileName}）$extra');
+    debugPrint('[PlayerFlow] 导入弹幕成功：${res.format} '
+        '${res.fileName} ${res.items.length} 条，跳过 ${res.skipped} 行');
+  }
+
   // ---------- 手动匹配弹幕 ----------
 
   /// 打开手动匹配面板，选中后**立即替换当前弹幕**。
@@ -2514,8 +2598,16 @@ _stage('open');
       // 文件选择器未接（task-board 有独立任务卡）；回调已到接线层，先记录
       onImportSubtitle: () =>
           debugPrint('[PlayerFlow] 导入字幕：待接 file_picker（CF-P4 任务卡）'),
-      onImportDanmaku: () =>
-          debugPrint('[PlayerFlow] 导入弹幕：待接 file_picker（CF-P4 任务卡）'),
+      // ★★ 导入本地弹幕文件 —— **接真功能**（用户要求："接真功能"）
+      //
+      // ## 原来这里是死按钮
+      // ```dart
+      // onImportDanmaku: () =>
+      //     debugPrint('[PlayerFlow] 导入弹幕：待接 file_picker（CF-P4 任务卡）'),
+      // ```
+      // 点了只有一行日志 ⇒ 用户报障"这个导入本地弹幕文件好像点不开"。
+      // 违反 AGENTS §5.8（"未接入统一用 showComingSoon，不要留死按钮"）。
+      onImportDanmaku: () => unawaited(_importLocalDanmaku()),
       // ★★ 在线匹配弹幕 —— **手动选**（用户要求"增加搜弹幕方便自动匹配，
       //    防止有些弹幕匹配错误"）
       //
@@ -2600,10 +2692,22 @@ class _DanmakuLayer extends ConsumerWidget {
       position: position,
       playing: playing,
       enabled: panel.enabled,
+      // ★★ 以下四项**只从 panel 取**（不再乘 cfg 的同类值）
+      //
+      // ## 原来错在哪（"同一个值被应用两次"）
+      // ```dart
+      // fontScale: (cfg?.fontScale ?? 1.0) * _fontScaleOf(panel.fontSize),
+      // ```
+      // `cfg.fontScale` 是**持久化的**用户设置，而 panel 的档位
+      // 也是从它同步来的（`syncFromConfig`）⇒ 乘两次 = 字号被平方。
+      // 例：用户设 1.5 ⇒ 面板同步成"大"(1.3) ⇒ 实际 1.5 × 1.3 = **1.95**。
+      //
+      // 现在 panel 是唯一真源（它在启动时从 cfg 同步、改动时写回 cfg），
+      // 故直接取 panel 的百分比即可。
       opacity: panel.opacity / 100,
-      fontScale: (cfg?.fontScale ?? 1.0) * _fontScaleOf(panel.fontSize),
+      fontScale: panel.fontPercent / 100,
       blockedWords: cfg?.blockedWords ?? const [],
-      showArea: cfg?.showArea ?? 1.0,
+      showArea: panel.showArea / 100,
       modes: switch (panel.area) {
         DanmakuArea.scroll =>
           const DanmakuDisplayModes(scroll: true, top: false, bottom: false),
@@ -2612,20 +2716,13 @@ class _DanmakuLayer extends ConsumerWidget {
         DanmakuArea.bottom =>
           const DanmakuDisplayModes(scroll: false, top: false, bottom: true),
       },
-      speed: panel.speedLevel / 5,
+      speed: DanmakuPanelState.speedToConfig(panel.speedLevel),
       bold: cfg?.bold ?? false,
       avoidSubtitle: cfg?.avoidSubtitle ?? true,
       // ★ 过滤等级（用户设置的一键降密）
       filterLevel: cfg?.filterLevel ?? 0,
     );
   }
-
-  /// 面板字号档 → 缩放系数（与字幕字号同一手感）。
-  double _fontScaleOf(DanmakuFontSize size) => switch (size) {
-        DanmakuFontSize.small => 0.8,
-        DanmakuFontSize.medium => 1.0,
-        DanmakuFontSize.large => 1.3,
-      };
 }
 
 /// 弹幕 UI 数据中转（flow page 写、弹幕层读）。

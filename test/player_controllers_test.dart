@@ -521,21 +521,54 @@ void main() {
   });
 
   group('DanmakuPanelController · 单位换算（易错点）', () {
-    test('★ 透明度 0–100 ⇄ 0.2–1.0', () {
+    test('★ 不透明度 0–100 ⇄ 0.0–1.0（0 = 完全隐藏）', () {
       expect(DanmakuPanelState.opacityToConfig(80), closeTo(0.8, 0.001));
       expect(DanmakuPanelState.opacityToConfig(100), 1.0);
-      expect(DanmakuPanelState.opacityToConfig(0), 0.2,
-          reason: '下限 0.2 —— 0 会被设置页 Slider(min 0.2) 判越界');
+      // ★ 2026-10-10 改为允许 0（用户报障"为 0 时为全黑"，
+      //   参照 B站 语义"不透明度 0 ⇒ 完全看不见"）
+      expect(DanmakuPanelState.opacityToConfig(0), 0.0,
+          reason: '0 就是 0 —— 不透明度 0 = 完全隐藏（B站 同款）');
       expect(DanmakuPanelState.opacityFromConfig(0.8), 80);
     });
 
-    test('★ 字号三档 ⇄ fontScale', () {
-      expect(DanmakuPanelState.fontSizeToConfig(DanmakuFontSize.small), 0.85);
-      expect(DanmakuPanelState.fontSizeToConfig(DanmakuFontSize.medium), 1.0);
-      expect(DanmakuPanelState.fontSizeToConfig(DanmakuFontSize.large), 1.25);
-      expect(DanmakuPanelState.fontSizeFromConfig(0.8), DanmakuFontSize.small);
-      expect(DanmakuPanelState.fontSizeFromConfig(1.0), DanmakuFontSize.medium);
-      expect(DanmakuPanelState.fontSizeFromConfig(1.3), DanmakuFontSize.large);
+    test('★ 字号百分比 ⇄ fontScale（连续滑条，B站 同款）', () {
+      // ★ 2026-10-10：从"三档枚举"改成"60–180 连续滑条"
+      //   （用户要求"字体大小也是可以拖动的和透明度一样"）
+      expect(DanmakuPanelState.fontScaleFromPercent(100), 1.0);
+      expect(DanmakuPanelState.fontScaleFromPercent(60),
+          closeTo(0.6, 0.001));
+      expect(DanmakuPanelState.fontScaleFromPercent(180),
+          closeTo(1.8, 0.001));
+      // 越界夹紧
+      expect(DanmakuPanelState.fontScaleFromPercent(10),
+          closeTo(0.6, 0.001));
+      expect(DanmakuPanelState.fontScaleFromPercent(999),
+          closeTo(1.8, 0.001));
+      // 反向（往返一致）
+      expect(DanmakuPanelState.fontPercentFromScale(1.0), 100);
+      for (final pct in [60.0, 85.0, 100.0, 137.0, 180.0]) {
+        expect(
+            DanmakuPanelState.fontPercentFromScale(
+                DanmakuPanelState.fontScaleFromPercent(pct)),
+            closeTo(pct, 0.001));
+      }
+    });
+
+    test('★ 显示区域百分比 ⇄ showArea（新增，B站 同款）', () {
+      expect(DanmakuPanelState.showAreaFromPercent(100), 1.0);
+      expect(DanmakuPanelState.showAreaFromPercent(50),
+          closeTo(0.5, 0.001));
+      // 下限 0.2：再小只剩一两行轨道，没有实用价值
+      expect(DanmakuPanelState.showAreaFromPercent(5),
+          closeTo(0.2, 0.001));
+      expect(DanmakuPanelState.showAreaFromPercent(999), 1.0);
+      expect(DanmakuPanelState.showAreaPercentFromValue(0.5), 50);
+      for (final pct in [20.0, 50.0, 75.0, 100.0]) {
+        expect(
+            DanmakuPanelState.showAreaPercentFromValue(
+                DanmakuPanelState.showAreaFromPercent(pct)),
+            closeTo(pct, 0.001));
+      }
     });
 
     test('★ 速度档 1–10 ⇄ speed 0.5–2.0（单调递增）', () {
@@ -587,8 +620,9 @@ void main() {
       final c = makeContainer();
       final n = c.read(danmakuPanelProvider.notifier);
       var persisted = 0;
-      n.onPersist = ({bool? enabled, double? opacity, double? fontScale,
-              double? speed, DanmakuArea? area}) => persisted++;
+        n.onPersist = ({bool? enabled, double? opacity, double? fontScale,
+                double? showArea, double? speed, DanmakuArea? area}) =>
+            persisted++;
       n.toggle();
       expect(c.read(danmakuPanelProvider).enabled, isFalse);
       expect(persisted, 1);
@@ -612,7 +646,8 @@ void main() {
       final s = c.read(danmakuPanelProvider);
       expect(s.enabled, isFalse);
       expect(s.opacity, 50);
-      expect(s.fontSize, DanmakuFontSize.large);
+        expect(s.fontPercent, 125,
+            reason: 'fontScale 1.25 → 125%（连续滑条）');
       expect(s.speedLevel, 10);
     });
 

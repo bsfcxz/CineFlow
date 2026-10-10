@@ -21,12 +21,14 @@ class DanmakuPanelController extends Notifier<DanmakuPanelState> {
 
   /// 换算后的配置落盘回调（UI 层注入）。
   ///
-  /// 参数是**既有 `DanmakuConfig` 的单位**（opacity 0.2–1.0 / fontScale /
-  /// speed / modes）。换算在 [DanmakuPanelState] 里完成，那里有单测。
+  /// 参数是**既有 `DanmakuConfig` 的单位**
+  /// （opacity 0.0–1.0 / fontScale 0.6–1.8 / showArea 0.2–1.0 / speed / modes）。
+  /// 换算在 [DanmakuPanelState] 里完成，那里有单测。
   void Function({
     bool? enabled,
     double? opacity,
     double? fontScale,
+    double? showArea,
     double? speed,
     DanmakuArea? area,
   })? onPersist;
@@ -34,7 +36,8 @@ class DanmakuPanelController extends Notifier<DanmakuPanelState> {
   void _emit() => onPersist?.call(
         enabled: state.enabled,
         opacity: DanmakuPanelState.opacityToConfig(state.opacity),
-        fontScale: DanmakuPanelState.fontSizeToConfig(state.fontSize),
+        fontScale: DanmakuPanelState.fontScaleFromPercent(state.fontPercent),
+        showArea: DanmakuPanelState.showAreaFromPercent(state.showArea),
         speed: DanmakuPanelState.speedToConfig(state.speedLevel),
         area: state.area,
       );
@@ -44,12 +47,17 @@ class DanmakuPanelController extends Notifier<DanmakuPanelState> {
     required bool enabled,
     required double opacity,
     required double fontScale,
+    double? showArea,
     required double speed,
   }) {
     state = state.copyWith(
       enabled: enabled,
       opacity: DanmakuPanelState.opacityFromConfig(opacity),
-      fontSize: DanmakuPanelState.fontSizeFromConfig(fontScale),
+      fontPercent: DanmakuPanelState.fontPercentFromScale(fontScale),
+      // showArea 可能来自旧配置（未设置时为 null）⇒ 保持默认 100
+      showArea: showArea == null
+          ? null
+          : DanmakuPanelState.showAreaPercentFromValue(showArea),
       speedLevel: DanmakuPanelState.speedFromConfig(speed),
     );
   }
@@ -67,7 +75,7 @@ class DanmakuPanelController extends Notifier<DanmakuPanelState> {
     _emit();
   }
 
-  /// 透明度 0–100。
+  /// 不透明度 0–100（**0 = 完全隐藏**，B站 同款语义）。
   void setOpacity(double percent) {
     final v = percent.clamp(0.0, 100.0);
     if (state.opacity == v) return;
@@ -75,9 +83,19 @@ class DanmakuPanelController extends Notifier<DanmakuPanelState> {
     _emit();
   }
 
-  void setFontSize(DanmakuFontSize size) {
-    if (state.fontSize == size) return;
-    state = state.copyWith(fontSize: size);
+  /// 字号百分比 60–180（B站 同款滑条，替代原三档枚举）。
+  void setFontPercent(double percent) {
+    final v = percent.clamp(60.0, 180.0);
+    if (state.fontPercent == v) return;
+    state = state.copyWith(fontPercent: v);
+    _emit();
+  }
+
+  /// 显示区域 0–100（B站 同款滑条）= 弹幕占屏幕高度比例。
+  void setShowArea(double percent) {
+    final v = percent.clamp(0.0, 100.0);
+    if (state.showArea == v) return;
+    state = state.copyWith(showArea: v);
     _emit();
   }
 

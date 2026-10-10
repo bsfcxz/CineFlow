@@ -20,6 +20,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../application/providers/player_providers.dart';
 import '../application/controllers/video_transform_controller.dart';
+import '../../danmaku/danmaku_config.dart';
+import '../../danmaku/danmaku_providers.dart';
+import '../domain/models/danmaku_panel_state.dart';
 import '../domain/models/media_state.dart';
 import '../domain/models/panel_state.dart';
 import '../domain/player_constants.dart';
@@ -483,20 +486,42 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
                       ),
                       danmaku: PlayerDanmakuPanel(
                         state: danmaku,
-                        onToggle: (v) => ref
-                            .read(danmakuPanelProvider.notifier)
-                            .setEnabled(v),
-                        onOpacity: (v) => ref
-                            .read(danmakuPanelProvider.notifier)
-                            .setOpacity(v),
-                        onFontSize: (f) => ref
-                            .read(danmakuPanelProvider.notifier)
-                            .setFontSize(f),
-                        onSpeedLevel: (l) => ref
-                            .read(danmakuPanelProvider.notifier)
-                            .setSpeedLevel(l),
-                        onArea: (a) =>
-                            ref.read(danmakuPanelProvider.notifier).setArea(a),
+                        onToggle: (v) {
+                          ref
+                              .read(danmakuPanelProvider.notifier)
+                              .setEnabled(v);
+                          // ★ 落盘（原来**从不落盘**，见 _persistDanmaku 说明）
+                          _persistDanmaku(ref);
+                        },
+                        onOpacity: (v) {
+                          ref
+                              .read(danmakuPanelProvider.notifier)
+                              .setOpacity(v);
+                          _persistDanmaku(ref);
+                        },
+                        // ★ 字号/显示区域改用滑条（B站 同款，用户明确要求）
+                        onFontPercent: (v) {
+                          ref
+                              .read(danmakuPanelProvider.notifier)
+                              .setFontPercent(v);
+                          _persistDanmaku(ref);
+                        },
+                        onShowArea: (v) {
+                          ref
+                              .read(danmakuPanelProvider.notifier)
+                              .setShowArea(v);
+                          _persistDanmaku(ref);
+                        },
+                        onSpeedLevel: (l) {
+                          ref
+                              .read(danmakuPanelProvider.notifier)
+                              .setSpeedLevel(l);
+                          _persistDanmaku(ref);
+                        },
+                        onArea: (a) {
+                          ref.read(danmakuPanelProvider.notifier).setArea(a);
+                          _persistDanmaku(ref);
+                        },
                         onImportLocal: widget.callbacks.onImportDanmaku,
                         onMatchOnline: widget.callbacks.onMatchDanmaku,
                         onClose: () =>
@@ -518,6 +543,45 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
   /// 第二次点击"，且必须处理 widget 已销毁的情况（`mounted` 检查）。
   /// 第一次点击时控制层是否可见（双击判定需要它来"恢复可见"）。
   bool _tapStartedVisible = false;
+
+  /// 把弹幕面板的改动**落盘**到 `DanmakuConfig`（用户设置）。
+  ///
+  /// ## ★★ 为什么必须补这一步（真机 + 代码双重取证）
+  /// `DanmakuPanelController` 有 `onPersist` 回调，但**全仓库没人接线**
+  /// （实测扫过：`onPersist` 只出现在它自己的定义与 `_emit()` 里）。
+  /// ⇒ 面板里改的任何值（不透明度/字号/速度/类型）**只在内存**，
+  ///    关掉播放页就丢 —— 用户下次看片又得重设。
+  ///
+  /// 这是本仓库反复出现的"**配了没接线**"形态的又一例
+  /// （同前几轮的 `setSurfaceSize`、`chConvert`、`onMatchDanmaku`）。
+  ///
+  /// ## 为什么放在 UI 层（而不是控制器内部直接读 config）
+  /// 控制器属 `application/` 层，**不依赖数据层**（`DanmakuConfig`
+  /// 在 `lib/danmaku/`）。让控制器持 `DanmakuConfig` 会引入跨层依赖。
+  /// ⇒ 由 UI 层做"面板值 → 配置值"的桥接（它本来就同时看得到两边）。
+  ///
+  /// ## 单位换算在这里完成
+  /// 面板用"百分比/档位"（B站 同款），配置用"倍率"（0.0–1.0 等）。
+  /// 换算函数是 `DanmakuPanelState` 上的纯静态函数（有单测）。
+  void _persistDanmaku(WidgetRef ref) {
+    final p = ref.read(danmakuPanelProvider);
+    final notifier = ref.read(danmakuConfigProvider.notifier);
+    notifier.patch(
+      enabled: p.enabled,
+      opacity: DanmakuPanelState.opacityToConfig(p.opacity),
+      fontScale: DanmakuPanelState.fontScaleFromPercent(p.fontPercent),
+      showArea: DanmakuPanelState.showAreaFromPercent(p.showArea),
+      speed: DanmakuPanelState.speedToConfig(p.speedLevel),
+      modes: switch (p.area) {
+        DanmakuArea.scroll =>
+          const DanmakuDisplayModes(scroll: true, top: false, bottom: false),
+        DanmakuArea.top =>
+          const DanmakuDisplayModes(scroll: false, top: true, bottom: false),
+        DanmakuArea.bottom =>
+          const DanmakuDisplayModes(scroll: false, top: false, bottom: true),
+      },
+    );
+  }
 
   void _handleTap() {
     final uiCtl = ref.read(uiVisibilityProvider.notifier);

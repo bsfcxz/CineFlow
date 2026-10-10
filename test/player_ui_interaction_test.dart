@@ -294,7 +294,8 @@ void main() {
       expect(find.byKey(keys.player.danmakuPanel), findsOneWidget);
       // 面板内的控件齐全
       expect(find.text('弹幕开关'), findsOneWidget);
-      expect(find.text('透明度'), findsOneWidget);
+      // ★ 2026-10-10 改名「不透明度」（与 B站 一致，且 0 = 完全隐藏）
+      expect(find.text('不透明度'), findsOneWidget);
       expect(find.text('字体大小'), findsOneWidget);
       expect(find.text('弹幕速度'), findsOneWidget);
       expect(find.text('显示区域'), findsOneWidget);

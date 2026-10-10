@@ -35,12 +35,16 @@ enum DanmakuFontSize {
   final String label;
 }
 
-/// 弹幕显示区域（规格 §7.7：滚动/顶部/底部）。
+/// 弹幕**类型**（滚动/顶部/底部）。
 ///
-/// ⚠️ 规格是**单值选择**，而现有 `DanmakuDisplayModes` 是**三个独立开关**。
-/// 面板按规格做单值（用户更易懂），换算时把其余两项关掉。
-/// 注意这会**覆盖**用户在旧设置页做的精细组合 —— 属于预期行为：
-/// 两套 UI 表达同一份配置，后改的生效。
+/// ## ⚠️ 这不是"显示区域"（标签曾用错）
+/// 面板里这一项的标签**原来写的是「显示区域」** —— 但它的取值是
+/// 滚动/顶部/底部，那是**弹幕类型**的语义。
+/// 「显示区域」在 B站 指的是**弹幕占屏幕的高度比例**（0–100%）。
+///
+/// ⇒ 2026-10-10 修正：
+/// · 本枚举的标签改为「弹幕类型」（名副其实）
+/// · 新增 `DanmakuPanelState.showArea`（0–100 滑条）= 真正的「显示区域」
 enum DanmakuArea {
   scroll('滚动'),
   top('顶部'),
@@ -55,7 +59,8 @@ class DanmakuPanelState {
   const DanmakuPanelState({
     this.enabled = true,
     this.opacity = 80,
-    this.fontSize = DanmakuFontSize.medium,
+    this.fontPercent = 100,
+    this.showArea = 100,
     this.speedLevel = 5,
     this.area = DanmakuArea.scroll,
     this.activeCount = 0,
@@ -64,14 +69,34 @@ class DanmakuPanelState {
   /// 弹幕开关。
   final bool enabled;
 
-  /// 透明度 0–100（规格滑块 `min=0 max=100 value=80`）。
+  /// 不透明度 0–100（B站 同款滑条；**0 = 完全隐藏**）。
   final double opacity;
 
-  final DanmakuFontSize fontSize;
+  /// 字号百分比 **60–180**（B站 同款滑条）。
+  ///
+  /// ## 为什么从三档枚举改成连续滑条（用户明确要求）
+  /// > "字体大小也是可以拖动的和透明度一样"
+  ///
+  /// 三档（小/中/大）对"大一点/小一点"这种细偏好太粗；
+  /// B站 的弹幕字号就是滑条。
+  /// 范围与 `DanmakuConfig.fontScale`（0.6–1.8）一致，保证两处不打架。
+  final double fontPercent;
+
+  /// 显示区域 0–100（B站 同款滑条）= 弹幕**占屏幕的高度比例**。
+  ///
+  /// · 100 = 铺满画面
+  /// · 50  = 只占上半屏（下半屏留给画面/字幕）
+  ///
+  /// ## 与 `avoidSubtitle`（防挡字幕）的关系
+  /// 两者**正交**：`showArea` 决定"弹幕最多铺多高"，
+  /// `avoidSubtitle` 决定"是否额外给字幕留一行"。
+  /// 最终轨道区高 = `screenHeight × showArea × (avoidSubtitle ? 0.88 : 1.0)`。
+  final double showArea;
 
   /// 速度档 1–10（规格滑块 `min=1 max=10 value=5`）。
   final int speedLevel;
 
+  /// 弹幕类型（滚动/顶部/底部）—— 标签已从"显示区域"改正。
   final DanmakuArea area;
 
   /// 当前屏上弹幕数（用于「>100 条降采样」的性能提示）。
@@ -80,7 +105,8 @@ class DanmakuPanelState {
   DanmakuPanelState copyWith({
     bool? enabled,
     double? opacity,
-    DanmakuFontSize? fontSize,
+    double? fontPercent,
+    double? showArea,
     int? speedLevel,
     DanmakuArea? area,
     int? activeCount,
@@ -88,7 +114,8 @@ class DanmakuPanelState {
       DanmakuPanelState(
         enabled: enabled ?? this.enabled,
         opacity: opacity ?? this.opacity,
-        fontSize: fontSize ?? this.fontSize,
+        fontPercent: fontPercent ?? this.fontPercent,
+        showArea: showArea ?? this.showArea,
         speedLevel: speedLevel ?? this.speedLevel,
         area: area ?? this.area,
         activeCount: activeCount ?? this.activeCount,
@@ -100,47 +127,72 @@ class DanmakuPanelState {
       other is DanmakuPanelState &&
           other.enabled == enabled &&
           other.opacity == opacity &&
-          other.fontSize == fontSize &&
+          other.fontPercent == fontPercent &&
+          other.showArea == showArea &&
           other.speedLevel == speedLevel &&
           other.area == area &&
           other.activeCount == activeCount;
 
   @override
-  int get hashCode => Object.hash(
-      enabled, opacity, fontSize, speedLevel, area, activeCount);
+  int get hashCode => Object.hash(enabled, opacity, fontPercent, showArea,
+      speedLevel, area, activeCount);
 
   // ---------------- 单位换算（规格单位 ⇄ 既有 DanmakuConfig 单位）----------------
   //
   // 全部为 static 纯函数，便于逐条断言边界。
 
-  /// 规格 `0–100` → `DanmakuConfig.opacity`（0.2–1.0）。
+  /// 规格 `0–100` → `DanmakuConfig.opacity`（**0.0–1.0**）。
   ///
-  /// 下限取 0.2 而不是 0：完全不透明度的弹幕没有意义，
-  /// 而 0 会被设置页的 Slider（min 0.2）判为越界。
+  /// ## ★ 2026-10-10 改为允许 0（用户要求"参考 B 站"）
+  /// 原来下限是 **0.2**，旧注释说"完全不透明度的弹幕没有意义"。
+  /// 但用户报障："为 0 时为全黑" —— 那正是**描边没乘 opacity** 的 bug
+  /// （已修，见 `_DanmakuPainter._strokePainterFor`）。
+  ///
+  /// B站 的语义：**不透明度 0% ⇒ 完全看不见**（等价于关闭弹幕显示）。
+  /// 这是唯一合理的解释 —— "不透明度 0"就该是"不可见"。
+  /// ⇒ 现在滑到 0 就是 0，整层不绘制。
   static double opacityToConfig(double percent) =>
+      (percent / 100.0).clamp(0.0, 1.0);
+
+  /// `DanmakuConfig.opacity`（0.0–1.0）→ 规格 `0–100`。
+  static double opacityFromConfig(double opacity) =>
+      (opacity.clamp(0.0, 1.0) * 100).roundToDouble();
+
+  // ---------------- 连续量：字号 / 显示区域（B 站同款滑条）----------------
+  //
+  // ## 为什么从"三档枚举"改成"连续滑条"（用户明确要求）
+  // > "弹幕的显示区域修改一下，改成b站一样的0-100可以拖动的。
+  // >  字体大小也是可以拖动的和透明度一样。"
+  //
+  // B站的弹幕设置里这两项都是**滑条**（不是固定档），
+  // 因为"大一点/小一点"是很细的个人偏好，三档太粗。
+
+  /// 字号百分比（60–180）→ `DanmakuConfig.fontScale`。
+  ///
+  /// 范围取 **0.6–1.8**：与 `DanmakuConfig.fontScale` 的取值范围一致
+  /// （全局设置页的滑条也是这个区间），保证两处不打架。
+  static double fontScaleFromPercent(double percent) =>
+      (percent / 100.0).clamp(0.6, 1.8);
+
+  /// `DanmakuConfig.fontScale` → 字号百分比（60–180）。
+  static double fontPercentFromScale(double scale) =>
+      (scale.clamp(0.6, 1.8) * 100).roundToDouble();
+
+  /// 显示区域百分比（20–100）→ `DanmakuConfig.showArea`。
+  ///
+  /// ## 语义（B站叫"弹幕区域"）
+  /// 弹幕**占屏幕的高度比例**：
+  /// · 100% = 铺满画面（可能有弹幕压到字幕）
+  /// · 50% = 只占上半屏（下半屏留给画面/字幕）
+  ///
+  /// 下限取 **20%**：再小就只剩一两行轨道，弹幕几乎叠在一起，
+  /// 没有实用价值（而 0 等于关闭弹幕 —— 那该用弹幕开关）。
+  static double showAreaFromPercent(double percent) =>
       (percent / 100.0).clamp(0.2, 1.0);
 
-  /// `DanmakuConfig.opacity`（0.2–1.0）→ 规格 `0–100`。
-  static double opacityFromConfig(double opacity) =>
-      (opacity.clamp(0.2, 1.0) * 100).roundToDouble();
-
-  /// 规格字号档 → `DanmakuConfig.fontScale`（0.6–1.8）。
-  ///
-  /// 取 0.85 / 1.0 / 1.25：与原型 `DANMAKU_FONT_SIZE = {12, 16, 22}`
-  /// 的比例（0.75 / 1.0 / 1.375）接近，但收窄到既有 Slider 的可用范围，
-  /// 避免"大"档直接顶到 1.8 显得突兀。
-  static double fontSizeToConfig(DanmakuFontSize size) => switch (size) {
-        DanmakuFontSize.small => 0.85,
-        DanmakuFontSize.medium => 1.0,
-        DanmakuFontSize.large => 1.25,
-      };
-
-  /// `fontScale` → 最接近的字号档（用于反向同步）。
-  static DanmakuFontSize fontSizeFromConfig(double fontScale) {
-    if (fontScale < 0.925) return DanmakuFontSize.small;
-    if (fontScale > 1.125) return DanmakuFontSize.large;
-    return DanmakuFontSize.medium;
-  }
+  /// `DanmakuConfig.showArea` → 显示区域百分比（20–100）。
+  static double showAreaPercentFromValue(double area) =>
+      (area.clamp(0.2, 1.0) * 100).roundToDouble();
 
   /// 规格速度档 1–10 → `DanmakuConfig.speed`（0.5–2.0）。
   ///

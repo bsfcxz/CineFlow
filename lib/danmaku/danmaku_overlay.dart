@@ -228,9 +228,18 @@ class _DanmakuOverlayState extends State<DanmakuOverlay>
       child: LayoutBuilder(
         builder: (context, c) {
           final config = _config(c);
-          // ★ 先按等级过滤（砍掉刷屏），再按屏蔽词（用户显式指定的）
+          // ★ 三步数据清洗（顺序有讲究）：
+          //   ① `mergeDuplicates` —— **默认合并相同弹幕**（用户明确要求）
+          //   ② `filterByLevel`   —— 按"过滤等级"砍刷屏（用户可关）
+          //   ③ `filterBlocked`   —— 按屏蔽词（用户显式指定）
+          //
+          // ①放最前：它是最基础的清洗（不看任何用户设置），
+          // 且先去了重 ⇒ 后两步比对的条数变少（真实开销收益）。
           final shown = filterBlocked(
-            filterByLevel(widget.items, widget.filterLevel),
+            filterByLevel(
+              mergeDuplicates(widget.items),
+              widget.filterLevel,
+            ),
             widget.blockedWords,
           );
 
@@ -300,6 +309,20 @@ class _DanmakuPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // ★★ 不透明度为 0 ⇒ **整层不画**（用户报障"为 0 时为全黑"）
+    //
+    // ## 根因（不只是"填充透明"那么简单）
+    // 描边颜色原来是**固定** `0xCC`（80% 不透明），**没乘 opacity**：
+    // ```dart
+    // final strokeColor =
+    //     lum > 0.55 ? const Color(0xCC000000) : const Color(0xCCFFFFFF);
+    // ```
+    // ⇒ opacity=0 时填充透明了，但**描边仍以 80% 画出来**
+    //   ⇒ 屏幕上一层黑色/白色轮廓 = 用户看到的"全黑"。
+    //
+    // 这里做**双重保险**：① 整层短路（最省）② 描边也乘 opacity（见下）。
+    if (config.opacity <= 0.01) return;
+
     final nowSeconds = position.inMilliseconds / 1000.0;
     final visible = plan.visibleAt(
       nowSeconds,
@@ -321,7 +344,10 @@ class _DanmakuPainter extends CustomPainter {
 
       // 描边层：深色画面上白字也需要轮廓才清晰。
       // 用同一 TextPainter 的 foreground stroke 画一遍，比 shadow 更快更锐利。
-      final stroke = _strokePainterFor(v.danmaku.text, style, color);
+      //
+      // ⚠️ 必须把 opacity 一起传进去（否则 0 时留轮廓，见方法头说明）
+      final stroke = _strokePainterFor(v.danmaku.text, style, color,
+          opacity: v.opacity);
       stroke.paint(canvas, offset);
 
       final fill = _painterFor(v.danmaku.text, style, color);
@@ -331,12 +357,23 @@ class _DanmakuPainter extends CustomPainter {
 
   static final _strokePainters = <String, TextPainter>{};
 
+  /// 描边 TextPainter。
+  ///
+  /// [opacity] **必须传**（用户报障"不透明度为 0 时为全黑"）：
+  /// 描边基色是固定 0xCC（80%），若不乘 opacity，
+  /// 则 opacity=0 时填充透明、**描边仍可见** ⇒ 满屏轮廓。
   static TextPainter _strokePainterFor(
-      String text, TextStyle style, Color fillColor) {
+      String text, TextStyle style, Color fillColor,
+      {double opacity = 1.0}) {
     final lum = 0.299 * fillColor.r + 0.587 * fillColor.g + 0.114 * fillColor.b;
+    // ★ 描边基色 0xCC（80%）**乘以用户 opacity** —— 这是本轮修的 bug：
+    //   原来固定 0xCC，opacity=0 时填充透明但描边仍 80% ⇒ 满屏轮廓。
+    //   乘 0.8 后与填充同步淡出（描边本就该比填充略强，故保留 0.8 系数）。
+    final base = lum > 0.55 ? const Color(0xFF000000) : const Color(0xFFFFFFFF);
     final strokeColor =
-        lum > 0.55 ? const Color(0xCC000000) : const Color(0xCCFFFFFF);
+        base.withValues(alpha: (0.8 * opacity).clamp(0.0, 1.0));
     // 同 _painterFor：key 必须含 fontWeight，否则加粗开关对已缓存项无效
+    // ⚠️ key 也必须含 alpha —— 否则改了透明度仍命中旧缓存（"开关没生效"）
     final key = '$text|${style.fontSize}|${style.fontWeight?.value}|'
         's${strokeColor.toARGB32()}';
     final hit = _strokePainters[key];
