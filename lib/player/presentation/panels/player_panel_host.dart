@@ -132,6 +132,8 @@ class _Drawer extends StatelessWidget {
             height: double.infinity,
             child: DecoratedBox(
               decoration: BoxDecoration(
+                // ★ 面板底色现在是 `Colors.transparent`（用户要求：
+                //   "侧边栏全都改成透明的"）⇒ 可读性全靠下面那层文字阴影。
                 color: PlayerUi.panelBg,
                 border: Border(
                   left: fromLeft
@@ -145,7 +147,30 @@ class _Drawer extends StatelessWidget {
               child: SafeArea(
                 left: fromLeft,
                 right: !fromLeft,
-                child: child,
+                // ★★ **完全透明面板的可读性保障**（用户要求面板全透明）
+                //
+                // ## 为什么必须显式加（否则像素级不可读）
+                // 面板底色去掉后，面板里的 12–14px 文字直接压在**视频像素**上：
+                // · 亮画面（雪景/白墙/字幕条）→ 白字**完全看不见**
+                // · 暗画面 → 深色字看不见
+                // ⇒ 必须给所有文字加双层阴影（见 `PlayerUi.panelTextShadows`）。
+                //
+                // ## 为什么用 `DefaultTextStyle.merge` 而不是逐处改
+                // 面板内有几十个 `Text`（含 `SettingRow`/`SliderRow`/
+                // `SegmentedGroup` 等复用组件）——逐处改必然漏掉几个，
+                // 且将来新增控件还会再漏。`merge` 在**树根**统一施加，
+                // 一次覆盖全部后代（含后续新增）。
+                //
+                // ⚠️ `merge`（而非 `DefaultTextStyle.of` 直接覆盖）：
+                //    它在**继承**现有样式的基础上只加 `shadows`
+                //    ⇒ 不会破坏各控件自己的字号/字重/颜色。
+                //
+                // ⚠️ 不能用 `BackdropFilter` 替代 —— 已实测那会模糊
+                //    **视频像素**，用户看到"这块被遮挡了"（本文件已记录该坑）。
+                child: DefaultTextStyle.merge(
+                  style: const TextStyle(shadows: PlayerUi.panelTextShadows),
+                  child: child,
+                ),
               ),
             ),
           ),

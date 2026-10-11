@@ -176,6 +176,31 @@ dependencies {
     //    后者是已停止维护的 ExoPlayer 2.x 命名空间。
     implementation("androidx.media3:media3-exoplayer:1.4.1")
 
+    // ---- ★★ HLS 模块（**必须显式引**，否则 Media3 内核**完全打不开文件**）----
+    //
+    // ## 真机事故（2026-10-11，用户报"双内核字幕都有问题"排查中发现）
+    // ```
+    // E CF-Media3: java.lang.IllegalStateException:
+    //     java.lang.ClassNotFoundException:
+    //     androidx.media3.exoplayer.hls.HlsMediaSource$Factory
+    //   at com.cineflow.app.player.Media3Channel.open(SourceFile:140)
+    // ```
+    // 现象：切到 Media3 内核后**黑屏 + 时长 00:00**（`open` 直接抛异常）。
+    //
+    // ## 为什么 `media3-exoplayer` 不带它
+    // `DefaultMediaSourceFactory` 会**按 MIME/URI 后缀反射**创建对应的
+    // `MediaSource`：`.m3u8` → `HlsMediaSource`、`.mpd` → `DashMediaSource`。
+    // 这两个类在**独立模块**里（`media3-exoplayer-hls` / `-dash`），
+    // 编译期不报错（走反射 `Class.forName`），**运行期才炸**。
+    //
+    // ⚠️ 关键：**普通 MKV 也会走到这条路径** —— 我们给的是 Emby 直链，
+    //   URL 里可能带 `?api_key=…&Static=true` 等参数，
+    //   `DefaultMediaSourceFactory` 的 `inferContentType` 对**无法识别**的
+    //   URI 会尝试所有已注册的模块工厂；缺模块时**抛异常而不是降级**。
+    //
+    // ⇒ 必须显式引（这也是为什么双内核要"两个都能用"就必须把依赖备齐）。
+    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
+
     // ---- Media3 会话层（K3 / CF-P3-KERNEL-004，2026-10-09）----
     //
     // 提供通知栏控制、蓝牙/耳机媒体键、后台播放、与系统的媒体会话协商。

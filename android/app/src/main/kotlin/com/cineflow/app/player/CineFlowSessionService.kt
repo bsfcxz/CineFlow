@@ -1,7 +1,11 @@
 package com.cineflow.app.player
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.media3.common.AudioAttributes
@@ -51,8 +55,131 @@ class CineFlowSessionService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
 
+    /** 是否已进前台（`startForeground` 幂等保护）。 */
+    private var foregroundStarted = false
+
     /** 音频焦点管理（自研，见其注释）。 */
     private var audioFocus: AudioFocusManager? = null
+
+    /**
+     * ★★ **5 秒内必须 `startForeground`**（真机事故修复，2026-10-10）。
+     *
+     * ## 事故现象
+     * 播放《复仇者联盟》（TRUEHD 音轨 + 我们多等了几秒轨道）时：
+     * ```
+     * FATAL EXCEPTION: main
+     * android.app.RemoteServiceException$ForegroundServiceDidNotStartInTimeException
+     *   at ContextImpl.startForegroundService
+     * ```
+     * ⇒ **进程被系统杀掉 ⇒ 直接回手机桌面**（用户报障）。
+     *
+     * ## 根因（时序，极隐蔽）
+     * Android 规定：`startForegroundService()` 后 **必须在 5 秒内**
+     * 调 `startForeground()`，否则抛 `ForegroundServiceDidNotStartInTime`
+     * 并**杀进程**（不是崩溃在服务里，而是主线程抛致命异常）。
+     *
+     * 而 `MediaSessionService` 只在**满足它的条件**时才调 `startForeground`：
+     * 它内部按 `player.isPlaying` / 通知是否该显示来判断。
+     * 我们的播放器包装（`CineFlowSessionPlayer`）的 `isPlaying` 来自
+     * **Dart 推来的快照** ⇒ 起播那一刻还是 `false` ⇒ Media3 不贴通知
+     * ⇒ **永不调 `startForeground`**。
+     *
+     * 平时为什么没炸：`start` 只在起播后才调，而"起播→isPlaying=true"
+     * 通常 < 5 秒。**本轮改动把这段时间拉长了**（等轨道上报最多 6 秒）
+     * ⇒ 窗口超过 5 秒 ⇒ 必崩。
+     * ⇒ 教训：**任何"让起播变慢"的改动都可能引爆这个 5 秒限制**。
+     *
+     * ## 修法：自己立刻进前台（不依赖 Media3 的判断）
+     * 用 `startForeground(id, 通知)` 立即满足系统约束；
+     * Media3 之后仍会用自己的 `MediaNotificationManager` 更新**同一条**通知
+     *（只要通知 id 一致）—— 这样既满足 5 秒约束，又不丢 Media3 的通知样式。
+     *
+     * ⚠️ 通知渠道 id 必须与 Media3 用的一致（`MediaSessionService` 默认
+     *    渠道名见 `Media3` 的 `DefaultMediaNotificationProvider`）。
+     *    实测其默认 id 是 `media3_default_channel`（若取不到则自建同名渠道）。
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // ① 立刻进前台（满足 5 秒硬约束）
+        ensureForegroundNow()
+        // ② 交给 Media3（它会 addSession / 更新通知）
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    /**
+     * 立即进前台（幂等），满足 **5 秒硬约束**。
+     *
+     * ## 为什么不复用 Media3 的渠道/通知 id（实测核实过）
+     * 试图复用 Media3 的默认渠道时，我在 `media3-session-1.4.1.aar`
+     * 的 `classes.jar` + `res/` 里**找不到字面量渠道 id**
+     *（它是从资源动态取的，混在 `resources.arsc` 里）。
+     *
+     * ⇒ 猜错会造出**两条通知**（一条我们的、一条 Media3 的），
+     *    比"占位通知短暂存在"更糟。
+     *
+     * ## 采用的策略（务实且无副作用）
+     * · **独立渠道 + 独立 id** ⇒ 与 Media3 的通知**不冲突**
+     * · 起播后 Media3 会贴它自己的 MediaStyle 通知（用户看到的是那条）
+     * · 我们这条"正在准备播放"的占位通知在**起播完成后移除**
+     *   （见 `dropPlaceholder()`）
+     *
+     * 用户体验：点播放 → 通知栏短暂出现"CineFlow 正在准备播放" →
+     * 起播后变成正常的播放控制通知。**比进程被杀好得多**。
+     */
+    private fun ensureForegroundNow() {
+        if (foregroundStarted) return
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                nm.getNotificationChannel(PLACEHOLDER_CHANNEL_ID) == null
+            ) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        PLACEHOLDER_CHANNEL_ID,
+                        "播放准备",
+                        // LOW：不响不震、不在锁屏高亮（只是满足系统约束）
+                        NotificationManager.IMPORTANCE_LOW,
+                    ).apply {
+                        setShowBadge(false)
+                        description = "起播准备期间的前台服务通知"
+                        setSound(null, null)
+                        enableVibration(false)
+                    },
+                )
+            }
+            val icon = applicationInfo.icon.takeIf { it != 0 }
+                ?: android.R.drawable.ic_media_play
+            val n = Notification.Builder(this, PLACEHOLDER_CHANNEL_ID)
+                .setContentTitle("CineFlow")
+                .setContentText("正在准备播放…")
+                .setSmallIcon(icon)
+                .setOngoing(true)
+                .setShowWhen(false)
+                .build()
+            startForeground(PLACEHOLDER_NOTIFICATION_ID, n)
+            foregroundStarted = true
+            Log.i(TAG, "已进前台（5 秒约束满足）")
+        } catch (e: Throwable) {
+            // ⚠️ 失败**不能吞** —— 5 秒后进程会被杀，必须留下线索
+            Log.e(TAG, "进前台失败（5 秒后可能被系统杀进程）", e)
+        }
+    }
+
+    /**
+     * 起播完成后撤掉占位通知（Media3 已贴上正式的控制通知）。
+     *
+     * ⚠️ **不能**调 `stopForeground(true)` —— 那会把服务退出前台，
+     *    失去"防杀"的意义。只 `cancel` 通知即可；
+     *    Media3 随后会用**它自己的 id** 贴正式通知。
+     */
+    private fun dropPlaceholder() {
+        if (!foregroundStarted) return
+        try {
+            getSystemService(NotificationManager::class.java)
+                .cancel(PLACEHOLDER_NOTIFICATION_ID)
+        } catch (_: Throwable) {
+            // 撤不掉只是"多一条通知"，不致命
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -207,6 +334,9 @@ class CineFlowSessionService : MediaSessionService() {
         // 有这一层，失败时至少留下痕迹；成功时零开销。
         try {
             super.onUpdateNotification(session, startInForegroundRequired)
+            // ★ Media3 已贴上它自己的通知 ⇒ 撤掉我们的"正在准备播放"占位
+            //（否则用户会看到两条通知）
+            dropPlaceholder()
         } catch (e: Throwable) {
             // 贴通知失败**不能**让播放崩溃 —— 但必须留下痕迹
             Log.e(TAG, "onUpdateNotification 失败（通知栏可能不显示）", e)
@@ -270,6 +400,18 @@ class CineFlowSessionService : MediaSessionService() {
 
     private companion object {
         const val TAG = "CineFlowSession"
+
+        /**
+         * 占位通知 id（**与 Media3 的 id 不同**，避免两条通知互相覆盖）。
+         *
+         * 为什么不能确保与 Media3 一致：在 `media3-session-1.4.1.aar`
+         * 里找不到字面量渠道/通知 id（动态取自资源）⇒ 猜错会造出两条通知。
+         * 故用独立 id + 起播后 `cancel` 掉（见 `dropPlaceholder`）。
+         */
+        const val PLACEHOLDER_NOTIFICATION_ID = 8801
+
+        /** 占位通知的渠道（独立渠道，与 Media3 的互不干扰）。 */
+        const val PLACEHOLDER_CHANNEL_ID = "cineflow_prepare"
     }
 }
 

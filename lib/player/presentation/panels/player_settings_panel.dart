@@ -275,14 +275,33 @@ class PlayerSettingsPanel extends StatelessWidget {
           onChanged: actions.onSubtitleFontSize,
           labelBuilder: (x) => x.label,
         ),
-        SegmentedGroup<SubtitleEncoding>(
-          label: '字幕编码',
-          options: SubtitleEncoding.values,
-          value: s.encoding,
-          onChanged: actions.onSubtitleEncoding,
-          labelBuilder: (x) => x.label,
-          showDivider: false,
-        ),
+        // ★★ 「字幕编码」**已隐藏**（用户要求："字幕编码隐藏"）
+        //
+        // ## 为什么可以隐藏（它不是"少了个功能"，而是"本来就该自动"）
+        // `SubtitleEncoding`（UTF-8 / GBK / BIG5 / 自动）是给**外挂字幕文件**
+        // 用的：老式 SRT 常有 GBK 编码，需要用户手动指定，否则乱码。
+        //
+        // 但现在：
+        // · **内嵌字幕**（PGS/ASS/SUBRIP）由内核/libass 处理，
+        //   编码是容器元数据，**不需要用户干预**
+        // · 我们已有 `sub-codepage=auto`（见 `PlayerChannel.kt`）⇒
+        //   mpv 会**自动探测**编码
+        // · 实测绝大多数片源是 UTF-8 ⇒ 这一项**几乎没人改**
+        //
+        // ⇒ 藏在面板里只会让用户困惑"我该选哪个"。
+        //   保留代码（`onSubtitleEncoding` 回调仍在）⇒ 将来要做
+        //   "导入本地字幕时的编码选择"可以随时恢复。
+        //
+        // ⚠️ 不删代码、不删回调，只**不渲染**这一项 —— 最小改动。
+        //    若将来要恢复，把下面这段取消注释即可。
+        // SegmentedGroup<SubtitleEncoding>(
+        //   label: '字幕编码',
+        //   options: SubtitleEncoding.values,
+        //   value: s.encoding,
+        //   onChanged: actions.onSubtitleEncoding,
+        //   labelBuilder: (x) => x.label,
+        //   showDivider: false,
+        // ),
       ],
     );
   }

@@ -97,8 +97,53 @@ abstract final class PlayerUi {
   static const Color chapterTick = Color(0x99FFFFFF);
 
   // ---- 面板（原型 `.side-panel`）----
-  static const Color panelBg = Color(0xF20D1328);
-  static const Color panelMask = Colors.black54;
+
+  /// 面板底色 —— **完全透明**（用户要求："侧边栏全都改成透明的"）。
+  ///
+  /// ## 演变（三次，都是用户要求）
+  /// | 版本 | 值 | 效果 | 用户反馈 |
+  /// |---|---|---|---|
+  /// | 初版 | `0xF20D1328`（95%） | 与纯色无异 | — |
+  /// | 上轮 | `0xD90D1328`（85%） | 隐约可见 | "改成半透明的" ✅ |
+  /// | **本轮** | **`Colors.transparent`** | **完全透出画面** | "全都改成透明的" |
+  ///
+  /// ## ★ 完全透明后**必须**靠文字阴影保证可读性
+  /// 去掉底色后，纯白文字压在亮画面上会**完全看不见**
+  ///（这不是审美问题，是可用性问题）。
+  /// ⇒ 本类新增 [panelTextShadows]，由 `_Drawer` 通过
+  ///   `DefaultTextStyle.merge` 施加到面板内**所有**文字上。
+  ///
+  /// ⚠️ 阴影是"不改背景也能读"的通行做法 —— 与本文件已记录的
+  ///    [overlayIconShadows]（控制层图标）同一思路，且**不能用
+  ///    `BackdropFilter`**（那会模糊视频像素，用户看到"这块被遮挡了"）。
+  static const Color panelBg = Colors.transparent;
+
+  /// 面板遮罩。
+  ///
+  /// ## 为什么配合"完全透明面板"要**更淡**
+  /// 遮罩铺满整屏（面板之下）⇒ 面板区看到的也是"被遮罩压暗的画面"。
+  /// 若遮罩太深，面板虽透明但看起来仍是一块黑 —— 透明的意义就没了。
+  ///
+  /// 24% 的实测取舍：
+  /// · 够压住画面里最亮的区域（雪景/白墙）让白字可读
+  /// · 又明显能看出"后面是视频"，不是一块黑板
+  static const Color panelMask = Color(0x3D000000);
+
+  /// **面板内文字的阴影**（完全透明面板的可读性保障）。
+  ///
+  /// ## 为什么是"双层"而不是一层
+  /// 单层阴影在**中等亮度**背景上效果最差（既不够黑压不住，又不够散盖不住）。
+  /// 双层（近距紧 + 远距散）能同时覆盖亮/暗/中间三种背景
+  /// —— 与本文件 [overlayIconShadows] 同款配方。
+  ///
+  /// ## 为什么不用更粗的字重/描边替代
+  /// 描边（stroke）在 12–14px 小字上会让字形糊成一团；
+  /// 加粗则会改变排版节奏（面板里已经用了 w600/w700 做层级）。
+  /// 阴影是**不侵入排版**的方案。
+  static const List<Shadow> panelTextShadows = [
+    Shadow(blurRadius: 3, color: Colors.black),
+    Shadow(blurRadius: 8, color: Colors.black87),
+  ];
 
   /// Tab 选中态（规格 §7.6：`0x2E007AFF` 底 + `0xFF4DA3FF` 字）。
   static const Color tabActiveBg = Color(0x2E007AFF);
@@ -161,40 +206,36 @@ abstract final class PlayerUi {
   static const double levelIndicatorSize = 96;
 
   // ---- 抽屉动画 ----
-  /// 面板宽度（规格 §7.6 / §7.8）。**用可用宽而非屏宽**，分屏下才正确。
+  /// 面板宽度。**用可用宽而非屏宽**，分屏下才正确。
+  ///
+  /// ★ 2026-10-10 统一为 **280dp 基准**（用户要求 + 窄屏安全钳制）——
+  /// 算法唯一入口是 `PlayerPanels.panelWidth`，这里只做转调。
+  /// 详情（为什么 280、为什么竖横屏同款、85% 钳制的由来）见那边注释。
   static double settingsWidth(double availableWidth) =>
-      (availableWidth * PlayerPanels.settingsWidthRatio)
-          .clamp(0.0, PlayerPanels.settingsMaxWidth);
+      PlayerPanels.panelWidth(availableWidth);
 
   static double playlistWidth(double availableWidth) =>
-      (availableWidth * PlayerPanels.playlistWidthRatio)
-          .clamp(0.0, PlayerPanels.playlistMaxWidth);
+      PlayerPanels.panelWidth(availableWidth);
 
-  /// ★ 按方向取面板宽（横屏用更小比例/上限 —— 用户反馈"横屏占了半个屏"）。
+  /// 面板宽（**竖屏/横屏同款** —— 280dp 在两种方向都落在合理区间）。
   ///
-  /// 纯函数可测；横竖判据 `w >= h`（与 `AspectMode.resolveAuto` 同口径）。
-  /// 常量与横屏取值依据见 `PlayerPanels.settingsMaxWidthLandscape` 注释。
+  /// ## 为什么删掉"按方向分发"（原来横屏更窄）
+  /// 280dp 在横屏 873dp 上只占 32%，本就在主流播放器（28–35%）区间内，
+  /// 不需要再单独收窄。删掉一套比例 ⇒ 少一个"为什么横竖不一样"的疑问，
+  /// 也少一处可能不同步的数学。
+  ///
+  /// 保留 API（而非删函数）是为了不动调用点 —— 它现在只是转调。
   static double settingsWidthFor({
     required double width,
     required double height,
-  }) {
-    if (width >= height) {
-      return (width * PlayerPanels.settingsWidthRatioLandscape)
-          .clamp(0.0, PlayerPanels.settingsMaxWidthLandscape);
-    }
-    return settingsWidth(width);
-  }
+  }) =>
+      settingsWidth(width);
 
   static double playlistWidthFor({
     required double width,
     required double height,
-  }) {
-    if (width >= height) {
-      return (width * PlayerPanels.playlistWidthRatioLandscape)
-          .clamp(0.0, PlayerPanels.playlistMaxWidthLandscape);
-    }
-    return playlistWidth(width);
-  }
+  }) =>
+      playlistWidth(width);
 
   // ---- 透明浮层的可读性保障（用户第四轮要求：全部控件透明）----
 

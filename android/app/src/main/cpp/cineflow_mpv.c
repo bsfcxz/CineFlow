@@ -191,6 +191,36 @@ static void sb_json_number(sb_t *sb, double v) {
     sb_raw(sb, n);
 }
 
+/* ★★ 整数的 JSON 序列化：**必须输出真整数，不能走 double**。
+ *
+ * ## 为什么必须单独一个函数（真机实测的"没声音"回归）
+ * 原实现把 `MPV_FORMAT_INT64` 也交给 `sb_json_number`（`%.6f`）：
+ * ```
+ * mpv 的 track-list: {id: 1 (INT64)}
+ *   → sb_json_number(1.0) → "1.000000"
+ *   → JSON {"id": 1.000000}
+ *   → Dart '${t['id']}'         ⇒ "1.0"    ← **不是 "1"**
+ *   → mpv_setPropertyString("aid", "1.0")
+ *   → mpv 的 aid 只接受整数/auto/no ⇒ 非法值
+ *   → 日志：`Audio: no audio`      ← **播放变成无声**
+ * ```
+ * 真机时序（《复仇者联盟》，6 条音轨）：
+ * ```
+ * 22:10:51.586  Audio --aid=1 ... truehd 8ch 48000Hz   ← 6 条都在
+ * 22:10:51.672  Audio: no audio                         ← 0.086s 后被关掉
+ * ```
+ *
+ * ## 为什么以前没暴露
+ * 修复前 `parseTracks` 因解析 bug 返回空列表 ⇒ `_applyServerDefaultTracks`
+ * 找不到默认轨 ⇒ **从不调用** `setAudioTrack`。
+ * 解析修好后它第一次真正执行，于是把这个 id 格式 bug 暴露成"没声音"。
+ * ⇒ 教训：**修好一处会让下游隐藏的 bug 立刻显形**（回归测试必须覆盖链路）。 */
+static void sb_json_int(sb_t *sb, int64_t v) {
+    char n[32];
+    snprintf(n, sizeof(n), "%lld", (long long)v);
+    sb_raw(sb, n);
+}
+
 static void sb_json_bool(sb_t *sb, int v) { sb_raw(sb, v ? "true" : "false"); }
 
 /* ---------------- mpv_node → JSON ----------------
@@ -235,7 +265,10 @@ static void sb_json_node(sb_t *sb, const mpv_node *node) {
         sb_json_bool(sb, node->u.flag);
         return;
     case MPV_FORMAT_INT64:
-        sb_json_number(sb, (double)node->u.int64);
+        /* ★ 必须走整数序列化（见 sb_json_int 的说明）——
+         * 走 double 会让 `id` 变成 "1.0"，而 mpv 的 aid/sid 只吃整数
+         * ⇒ 设轨失败 ⇒ **播放无声**（真机实测的回归）。 */
+        sb_json_int(sb, node->u.int64);
         return;
     case MPV_FORMAT_DOUBLE:
         sb_json_number(sb, node->u.double_);

@@ -361,6 +361,42 @@ abstract class PlayerKernel {
   Future<void> setAudioTrack(String id);
   Future<void> setSubtitleTrack(String id);
 
+  /// **加载外挂字幕**（Emby 的 `IsExternal=true` 字幕）。
+  ///
+  /// ## 为什么必须单独一个方法（自查 Emby API 时发现的缺口）
+  /// Emby 的外挂字幕是**服务端媒体库里的独立文件**（或用户上传的），
+  /// **不在视频容器里** ⇒ 播放内核打开视频时，它的 track-list
+  /// **根本看不到这些轨道**（mpv 只列容器内的流；Media3 同理）。
+  ///
+  /// ⇒ 唯一可行的路径是：App 拿到服务端的 `DeliveryUrl`，
+  ///   **主动**让内核去加载它：
+  ///   · mpv：`sub-add <url> [select] [<title>]`
+  ///   · Media3：`MediaItem.SubtitleConfiguration`
+  ///
+  /// ## 不做的后果（用户报障的形态）
+  /// > "播放复仇者联盟时它也没有识别出字幕，正常这个是有多个字幕的"
+  ///
+  /// 其中**内嵌**字幕丢失是解析 bug（已修：`parseTracks` 逐条兜底）；
+  /// 而**外挂**字幕即使解析对了也拿不到 —— 就是缺这个方法。
+  ///
+  /// ## 参数
+  /// · [url] 字幕直链（**含 api_key ⇒ 绝不写日志**）
+  /// · [title] 面板显示名（如 `Chinese (SUBRIP) · 外挂`）
+  /// · [language] 语言码（mpv 用于自动选轨）
+  /// · [select] 加载后是否立即选中
+  ///
+  /// 返回 true 表示内核接受了这条字幕。
+  Future<bool> addExternalSubtitle({
+    required String url,
+    String? title,
+    String? language,
+    bool select = false,
+  }) async =>
+      false;
+
+  /// 移除**全部**外挂字幕（换集/换片时清理 —— 否则上一集的字幕会串到下一集）。
+  Future<void> removeExternalSubtitles() async {}
+
   // ---------------- 引擎能力协商（双内核的关键）----------------
   //
   // ## 为什么需要"能力声明"

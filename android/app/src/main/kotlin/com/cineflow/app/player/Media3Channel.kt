@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -13,9 +14,12 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.datasource.DefaultHttpDataSource
 import io.flutter.embedding.engine.FlutterEngine
@@ -89,10 +93,30 @@ class Media3Channel(
     private var surfaceProducer: TextureRegistry.SurfaceProducer? = null
     private var eventSink: EventChannel.EventSink? = null
 
+    /** 当前媒体 URL 与请求头（重建 `MediaItem` 时需要，见 `addExternalSubtitle`）。 */
+    private var mediaUrl: String? = null
+    private var currentHeaders: Map<String, String> = emptyMap()
+
+    /**
+     * 已注册的**外挂字幕**（Emby `IsExternal=true`）。
+     *
+     * ## 为什么要缓存
+     * Media3 的字幕配置是**创建 `MediaItem` 时固定**的
+     * （`MediaItem.SubtitleConfigurations`），运行中不能"追加"。
+     * ⇒ 只能记下来，然后重建 `MediaItem` 并 seek 回原位置。
+     */
+    private val externalSubs = mutableListOf<ExternalSub>()
+
+    /** 一条外挂字幕（**url 含 api_key ⇒ 绝不写入日志**）。 */
+    private data class ExternalSub(
+        val url: String,
+        val title: String?,
+        val language: String?,
+    )
+
     /** 请求头（115 网盘的 UA 绑定与 Cookie 必须透传，见 ADR 0007）。 */
     /// 待应用起始位置（ms）。open 时在 prepare **之前** 消费。
     private var pendingStartMs = 0L
-    private var currentHeaders: Map<String, String> = emptyMap()
 
     /** 上一次上报的状态，避免重复推同一份快照。 */
     private var lastPositionMs = 0L
@@ -137,6 +161,61 @@ class Media3Channel(
             emitTracks(tracks)
         }
 
+        /** ★★ **字幕 cue 到达**（PGS 图形字幕的唯一出口）。
+         *
+         * ## 为什么必须自己处理（真机取证，2026-10-11）
+         * Media3 **能解析** PGS（`PgsParser`），但**渲染**靠 `SubtitleView`
+         *（`media3-ui`）。而本项目**不引 `media3-ui`** ——
+         * 视频走 `setVideoSurface(Flutter Texture)`，**没有 View 层**。
+         * ⇒ 真机现象：`选轨 3 index=1 → ... mime=application/x-media3-cues`
+         *   选轨成功、cue 也解析了，但**画面里什么都没有**（无人渲染）。
+         *
+         * ## 判据：`cue.bitmap != null` 就是图形字幕
+         * · PGS / VOBSUB ⇒ `bitmap != null`（要按位图绘制）
+         * · SRT / ASS ⇒ `bitmap == null` + `text != null`（按文本绘制）
+         *
+         * ⇒ 本轮先把 cue **上报到 Dart**，由 Flutter 侧绘制（我们的弹幕层
+         *   已是"在视频上叠加自绘内容"的成熟通路）。
+         */
+        override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
+            emitCues(cueGroup)
+        }
+
+        /** 把 cue 转成 JSON 上报（位图转 base64 PNG，文本直传）。
+         *
+         * ⚠️ 位图**必须转 PNG 再传**：`Cue.bitmap` 是 `Bitmap`，
+         *    跨 MethodChannel 只能传字节。PNG 无损且体积可接受
+         *    （PGS 一帧通常几 KB ~ 几十 KB）。
+         */
+        private fun emitCues(group: androidx.media3.common.text.CueGroup) {
+            val arr = JSONArray()
+            for (cue in group.cues) {
+                val o = JSONObject()
+                cue.text?.let { o.put("text", it.toString()) }
+                val bmp = cue.bitmap
+                if (bmp != null) {
+                    try {
+                        val bos = java.io.ByteArrayOutputStream()
+                        bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bos)
+                        o.put("png", android.util.Base64.encodeToString(
+                            bos.toByteArray(), android.util.Base64.NO_WRAP))
+                        o.put("w", bmp.width)
+                        o.put("h", bmp.height)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "cue 位图编码失败: ${e.message}")
+                        continue
+                    }
+                }
+                o.put("line", cue.line.toDouble())
+                o.put("lineType", cue.lineType)
+                arr.put(o)
+            }
+            eventSink?.success(JSONObject().apply {
+                put("type", "cues")
+                put("data", arr)
+            }.toString())
+        }
+
         override fun onPlayerError(error: PlaybackException) {
             Log.w(TAG, "播放错误: ${error.errorCodeName} ${error.message}")
             eventSink?.success(JSONObject().apply {
@@ -147,8 +226,60 @@ class Media3Channel(
         }
     }
 
-    fun register(flutterEngine: FlutterEngine) {
-        val messenger = flutterEngine.dartExecutor.binaryMessenger
+    /**
+     * ★★ 音频/字幕轨**编码不受支持**时上报（真机实测的关键缺口）。
+     *
+     * ## 为什么必须单独一个 listener（用户报障的直接原因）
+     * 播《复仇者联盟》时 Media3 报：
+     * ```
+     * MediaCodecAudioRenderer error, index=1,
+     *   format=Format(3, 国语, null, audio/true-hd, ...),
+     *   format_supported=NO_UNSUPPORTED_TYPE
+     * ```
+     * 但**用户什么都看不到** —— 只是"没声音"，无从知道原因与对策。
+     *
+     * ## 为什么不能用 `Player.Listener`
+     * `onAudioInputFormatChanged` 属 **`AudioRendererEventListener`**
+     *（`androidx.media3.exoplayer.audio`），**不在 `Player.Listener` 上**。
+     * 已在 `media3-exoplayer-1.4.1.aar` 的 `classes.jar` 里核实：
+     * 该符号只出现在 `androidx/media3/exoplayer/audio/AudioRendererEventListener`。
+     * ⇒ 用 `AnalyticsListener`（它转发渲染器事件）。
+     *
+     * ## 上报的是**可行动信息**（不是"出错了"）
+     * "该音轨编码在此内核上解不了，已跳过，请换一条" ——
+     * 用户据此能自己解决。
+     */
+    private val analyticsListener = object : AnalyticsListener {
+        override fun onAudioInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime,
+            format: Format,
+            decoderReuseEvaluation: DecoderReuseEvaluation?,
+        ) {
+            val mime = format.sampleMimeType ?: return
+            // 已知 Android/MediaCodec 不支持的编码
+            // （真机实测 audio/true-hd → NO_UNSUPPORTED_TYPE）
+            val unsupported = mime.contains("true-hd") ||
+                mime.contains("truehd") ||
+                mime.contains("mlp")
+            if (!unsupported) return
+            Log.w(TAG, "音频轨编码不受支持: $mime（label=${format.label}）")
+            // ⚠️ 用**独立事件类型** —— `log` 类型 Dart 侧是**忽略**的，
+            //    那正是"用户看不到任何提示"的原因
+            eventSink?.success(JSONObject().apply {
+                put("type", "trackUnsupported")
+                put("kind", "audio")
+                put("mime", mime)
+                put("label", format.label ?: "")
+                put(
+                    "message",
+                    "该音轨编码（${mime.substringAfterLast('/')}）" +
+                        "当前播放内核无法解码，已跳过。请换一条音轨。",
+                )
+            }.toString())
+        }
+    }
+
+    fun register(flutterEngine: FlutterEngine) {        val messenger = flutterEngine.dartExecutor.binaryMessenger
         MethodChannel(messenger, METHOD).setMethodCallHandler(this)
         EventChannel(messenger, EVENT).setStreamHandler(this)
     }
@@ -186,6 +317,10 @@ class Media3Channel(
                 }
                 "open" -> {
                     val url = call.argument<String>("url").orEmpty()
+                    // ★ 记住当前 URL（重建 MediaItem 加外挂字幕时要用）
+                    mediaUrl = url
+                    // ★ 换片时清掉上一片的外挂字幕（否则字幕会串到下一片）
+                    externalSubs.clear()
                     @Suppress("UNCHECKED_CAST")
                     currentHeaders = (call.argument<Map<String, String>>("headers")
                         ?: emptyMap()).filterValues { it != null }
@@ -236,6 +371,46 @@ class Media3Channel(
                     selectSubtitleTrack(id)
                     result.success(true)
                 }
+                // ★ 外挂字幕（Emby `IsExternal=true` 的独立字幕文件）
+                //
+                // ## 为什么需要原生侧参与（Media3 的硬约束）
+                // Media3 的字幕配置是**创建 `MediaItem` 时固定**的
+                // （`MediaItem.SubtitleConfigurations`），运行中无法"追加一条"。
+                // ⇒ 只能**记住**它，然后重建 `MediaItem` 并 seek 回原位置。
+                //
+                // ⚠️ 代价：重建会**短暂中断播放**（重新 prepare）。
+                //    这是 Media3 架构决定的，不是实现偷懒 —— mpv 那边用
+                //    `sub-add` 就是**无中断**的（两个内核的能力差异，
+                //    已在 EngineFeature.externalSubtitle 之外如实记录）。
+                "addExternalSubtitle" -> {
+                    val url = call.argument<String>("url").orEmpty()
+                    val title = call.argument<String>("title")
+                    val lang = call.argument<String>("language")
+                    val select = call.argument<Boolean>("select") ?: false
+                    if (url.isEmpty()) {
+                        result.error("bad_args", "addExternalSubtitle 缺少 url", null)
+                        return
+                    }
+                    // ⚠️ 只记 title/lang，**不记 url 正文**（含 api_key）
+                    Log.i(TAG, "addExternalSubtitle: title=${title ?: "-"} " +
+                        "lang=${lang ?: "-"} select=$select（url 已省略）")
+                    externalSubs.add(ExternalSub(url, title, lang))
+                    // 有正在播的媒体才需要重建（否则下次 open 自然带上）
+                    val rebuilt = if (player != null && mediaUrl != null) {
+                        rebuildWithExternalSubs(select)
+                    } else {
+                        true
+                    }
+                    result.success(rebuilt)
+                }
+
+                "removeExternalSubtitles" -> {
+                    externalSubs.clear()
+                    if (player != null && mediaUrl != null) {
+                        rebuildWithExternalSubs(false)
+                    }
+                    result.success(true)
+                }
                 "setAspectMode" -> {
                     // Media3 的画面比例由**渲染 View** 决定，而我们是
                     // `setVideoSurface`（无 View）→ 由 Dart 侧用
@@ -272,6 +447,69 @@ class Media3Channel(
 
     // ---------------- 纹理 ----------------
 
+    /**
+     * 构造 `MediaItem`（**带已注册的外挂字幕**）。
+     *
+     * ## 为什么抽成方法（而不是就地 `MediaItem.fromUri`）
+     * 两处需要构造：① `open()` ② 加/删外挂字幕后的重建。
+     * 若两处各写一份，忘了带外挂字幕的那处会让字幕"时有时无"。
+     *
+     * ⚠️ 外挂字幕的 `url` 由 Emby 的 `DeliveryUrl` 提供，**含 api_key**。
+     */
+    @UnstableApi
+    private fun mediaItemFor(url: String): MediaItem {
+        val builder = MediaItem.Builder().setUri(Uri.parse(url))
+        if (externalSubs.isNotEmpty()) {
+            val configs = externalSubs.map { s ->
+                val b = MediaItem.SubtitleConfiguration.Builder(Uri.parse(s.url))
+                    // ⚠️ 必须指定 MIME：Emby 的 DeliveryUrl 常以 `.srt`
+                    //    结尾但**也可能带查询串**，Media3 从 URL 猜不可靠。
+                    //    srt 是外挂字幕的最常见形态。
+                    .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                if (s.language != null && s.language.isNotEmpty()) {
+                    b.setLanguage(s.language)
+                }
+                if (s.title != null && s.title.isNotEmpty()) {
+                    b.setLabel(s.title)
+                }
+                b.build()
+            }
+            builder.setSubtitleConfigurations(configs)
+        }
+        return builder.build()
+    }
+
+    /**
+     * 用"当前 URL + 最新外挂字幕集合"重建 MediaItem（保留播放位置）。
+     *
+     * ## 为什么必须重建（Media3 的架构约束，不是实现偷懒）
+     * `MediaItem.SubtitleConfigurations` **只能在创建时设定**，运行中无法追加。
+     * 而 mpv 有 `sub-add` 命令、无中断 —— 这是两个内核的真实能力差异。
+     *
+     * ⚠️ 代价：重建会**短暂中断播放**（重新 prepare + seek）。
+     *    对"打开外挂字幕"这种低频操作是可接受的；
+     *    若将来要消除它，唯一路径是改用 Media3 的
+     *    `MergingMediaSource` 把字幕源拼进去（同样需要重建，无本质差别）。
+     */
+    @UnstableApi
+    private fun rebuildWithExternalSubs(select: Boolean): Boolean {
+        val url = mediaUrl ?: return false
+        val p = player ?: return false
+        val pos = p.currentPosition
+        val wasPlaying = p.isPlaying
+        try {
+            p.setMediaItem(mediaItemFor(url), pos)
+            p.prepare()
+            if (wasPlaying) p.play()
+            Log.i(TAG, "rebuildWithExternalSubs: 重建完成，保留位置 ${pos}ms，" +
+                "外挂字幕 ${externalSubs.size} 条，select=$select")
+            return true
+        } catch (e: Throwable) {
+            Log.e(TAG, "rebuildWithExternalSubs 失败（非致命）", e)
+            return false
+        }
+    }
+
     private fun createTexture(width: Int, height: Int): Long {
         disposeTexture()
         val producer = registry.createSurfaceProducer()
@@ -306,6 +544,52 @@ class Media3Channel(
         val sourceFactory = DefaultMediaSourceFactory(
             androidx.media3.datasource.DefaultDataSource.Factory(context, httpFactory)
         )
+
+        // ★★ **必须显式开启"内嵌字幕解析"**（否则字幕轨永远没有 cue）
+        //
+        // ## 真机事故（2026-10-11，《复仇者联盟》PGS 字幕不显示）
+        // 现象链：
+        // 1. 选轨**成功**：`选轨 3 index=1 → ... mime=application/x-media3-cues`
+        // 2. **但 `onCues` 一次都没触发** ⇒ 画面里什么都没有
+        //
+        // ## 根因：Media3 1.4 默认**不解析**内嵌字幕
+        // Media3 从 1.0 起把字幕处理改为"延迟到 `SubtitleParser`"，
+        // **内嵌字幕**（容器里的 PGS/SUBRIP 轨）需要显式提供
+        // `SubtitleParser.Factory` —— 注意官方 API 名带
+        // **`experimental`** 前缀（接口未稳定）：
+        // ```
+        // DefaultMediaSourceFactory.setSubtitleParserFactory(f)
+        // ```
+        // ⚠️ **方法名不带 `experimental` 前缀** —— 我第一版按记忆写成
+        //   `experimentalSetSubtitleParserFactory`，编译直接
+        //   `Unresolved reference`。已用 `javap` 从
+        //   `media3-exoplayer-1.4.1.aar` 的 `classes.jar` 核实真实签名：
+        //   ```
+        //   public DefaultMediaSourceFactory setSubtitleParserFactory(
+        //       androidx.media3.extractor.text.SubtitleParser$Factory)
+        //   ```
+        //   （教训：**API 名必须从产物核实，不能凭记忆**。）
+        // 不设置时，Media3 只把字幕轨**列在 `Tracks` 里**（所以面板上
+        // 8 条字幕都在），但**不产出 cue** ⇒ 依赖 cue 的渲染通路全程静默。
+        //
+        // ## 为什么用 `DefaultSubtitleParserFactory`
+        // 它是 `media3-extractor` 里的**总厂**，按 MIME 分派到：
+        // · `PgsParser`（**PGS 图形字幕** ← 这部片 8 条全是 PGS）
+        // · `SubripParser` / `SsaParser` / `WebvttParser` / `Tx3gParser`
+        // ⇒ 一次注册覆盖全部格式（这些类已核实存在于
+        //   `media3-extractor-1.4.1.aar`）。
+        //
+        // ⚠️ 与用户报障的对应：这就是"别的播放器能显示、
+        //    我们显示不出来"的直接原因之一。
+        try {
+            sourceFactory.setSubtitleParserFactory(
+                androidx.media3.extractor.text.DefaultSubtitleParserFactory()
+            )
+            Log.i(TAG, "已开启内嵌字幕解析（含 PGS）")
+        } catch (e: Throwable) {
+            // ⚠️ 兜底：不能让"字幕解析配置失败"拖垮**整个播放**
+            Log.w(TAG, "开启内嵌字幕解析失败（降级为无内嵌字幕）: ${e.message}")
+        }
 
         // ★★ 起播优化：`LoadControl` 调优（2026-10-10）
         //
@@ -351,7 +635,39 @@ class Media3Channel(
             .setLoadControl(loadControl)
             .setHandleAudioBecomingNoisy(true) // 拔耳机自动暂停
             .build()
+        // ★★ **禁止 Media3 自动选"它自己认为可播"的音轨**
+        //
+        // ## 真机事故（2026-10-11，《复仇者联盟》）
+        // Dart 侧已按内核能力排除 truehd/dts，选了 **AC3**，
+        // 但 Media3 仍然自己去选了 `国语 DTS`：
+        // ```
+        // 10-11 01:29:57.530 CF-Media3: 播放错误: ERROR_CODE_DECODER_INIT_FAILED
+        //   MediaCodecAudioRenderer error, index=1,
+        //   format=Format(5, 国语, null, audio/vnd.dts, ...),
+        //   format_supported=NO_UNSUPPORTED_TYPE
+        // ```
+        // ⇒ 原因是 **Media3 的 `DefaultTrackSelector` 独立选轨**，
+        //   它在 `prepare` 时按自己的偏好（语言/声道数）挑，
+        //   **覆盖**我们之前用 `setAudioTrack` 下的 override。
+        //
+        // ## 为什么 `NO_UNSUPPORTED_TYPE` 会让**整个播放停住**
+        // `MediaCodecAudioRenderer` 初始化失败 ⇒ `PlaybackException`
+        // ⇒ 画面也是黑的（不是"静音继续"）。用户看到的是"卡在黑屏"。
+        //
+        // ## 修法：把**音频**轨的选择权完全收归 Dart
+        // `setTrackTypeDisabled(AUDIO, false)` 保留音频 + 清 overrides，
+        // 但**不启用** Media3 的"自适应选择"；真正的选择由 Dart 通过
+        // `setAudioTrack`（`applyOverride`）下达。
+        // 初次 `prepare` 前若 Dart 还没下达，则**先禁用音频**，
+        // 避免 Media3 抢选一条解不了的（宁可短暂无声，也不要黑屏）。
+        p.trackSelectionParameters = p.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+            .build()
         p.addListener(listener)
+        // ★ 渲染器级事件（音频编码是否受支持）走 AnalyticsListener ——
+        //   `onAudioInputFormatChanged` 不在 Player.Listener 上（见其注释）
+        p.addAnalyticsListener(analyticsListener)
         player = p
         surfaceProducer?.let { p.setVideoSurface(it.surface) }
         return p
@@ -378,9 +694,9 @@ class Media3Channel(
             val src = DefaultMediaSourceFactory(
                 androidx.media3.datasource.DefaultDataSource.Factory(context, dataSourceFactory)
             )
-            p.setMediaSource(src.createMediaSource(MediaItem.fromUri(Uri.parse(url))))
+            p.setMediaSource(src.createMediaSource(mediaItemFor(url)))
         } else {
-            p.setMediaItem(MediaItem.fromUri(Uri.parse(url)))
+            p.setMediaItem(mediaItemFor(url))
         }
 
         // ★★ 起始位置在 **prepare 之前** 设定（起播优化，2026-10-10）
@@ -455,31 +771,63 @@ class Media3Channel(
         applyOverride(p, C.TRACK_TYPE_TEXT, index, p.currentTracks)
     }
 
-    /** 按"轨道组内的第几条"选择 —— id 用的是 mpv 风格的序号，这里映射到 Media3 索引。 */
+    /** 按"该类型的第几条"选择轨道。
+     *
+     * ## ★★ 真机修的两个 bug（2026-10-11，《复仇者联盟》选轨错位）
+     *
+     * ### bug 1：**差一位**（`seen` 是 0-based，而上报的 id 是 1-based）
+     * `emitTracks` 用 `++audioId` ⇒ 第一条音轨的 id 是 **1**。
+     * 而这里 `seen` 从 **0** 开始 ⇒ `seen == index` 命中**第二条**。
+     * 结果：Dart 说"选第 5 条（AC3）"，实际选中**第 6 条**。
+     *
+     * ### bug 2：`format.id` **撞车**（更隐蔽、危害更大）
+     * 原实现同时接受 `format.id?.toIntOrNull() == index`。
+     * 但 Media3 的 `Format.id` 是**容器自己的轨号**（matroska 的 track number），
+     * 与我们的"第几条音轨"**语义完全不同**：
+     * ```
+     * 真机日志：要求选 id=5（AC3），实际生效
+     *   format=Format(5, 国语, null, audio/vnd.dts, ...)
+     *   format_supported=NO_UNSUPPORTED_TYPE   ← 选到了 DTS ⇒ 解码失败 ⇒ 黑屏
+     * ```
+     * ⇒ 两条判据"或"在一起时，`format.id` 会**抢先命中错误的轨**。
+     *
+     * ## 修法
+     * · **只用位置序**（`seen + 1 == index`）——与 `emitTracks` 的编号口径一致
+     * · **删掉 `format.id` 判据**（它的语义不是我们发的那个 id）
+     */
     private fun applyOverride(
         p: ExoPlayer,
         trackType: Int,
         index: Int,
         tracks: Tracks,
     ) {
+        // ★ `seenCounter` / `groupIndex` 跨 group 连续计数
+        //   （`emitTracks` 也是"跨所有同类型 group 连续编号"）
+        var seenCounter = 1
+        var groupIndex = 0
         for (group in tracks.groups) {
             if (group.type != trackType) continue
-            var seen = 0
+            // 跨**所有同类型 group** 连续计数（emitTracks 也是这么编的）
             for (i in 0 until group.length) {
-                val format = group.getTrackFormat(i)
-                val numericId = format.id?.toIntOrNull()
-                val match = (numericId == index) || (seen == index)
-                if (match) {
+                if (seenCounter == index) {
                     p.trackSelectionParameters = p.trackSelectionParameters
                         .buildUpon()
                         .setTrackTypeDisabled(trackType, false)
-                        .addOverride(TrackSelectionOverride(group.mediaTrackGroup, i))
+                        .addOverride(
+                            TrackSelectionOverride(group.mediaTrackGroup, i))
                         .build()
+                    Log.i(
+                        TAG,
+                        "选轨 $trackType index=$index → group=$groupIndex " +
+                            "track=$i mime=${group.getTrackFormat(i).sampleMimeType}",
+                    )
                     return
                 }
-                seen++
+                seenCounter++
             }
+            groupIndex++
         }
+        Log.w(TAG, "选轨失败：$trackType index=$index 超出范围（共 $seenCounter 条）")
     }
 
     // ---------------- 事件上报 ----------------

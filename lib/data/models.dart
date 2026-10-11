@@ -1,6 +1,7 @@
 /// Emby 数据模型 —— 防御式解析：字段缺失/为空是常态（多服务器实测归纳）
 library;
 
+import 'language_names.dart';
 import 'media_provider.dart' show MediaProvider;
 
 class MediaUser {
@@ -565,6 +566,71 @@ class MediaSource {
 
   String get versionLabel =>
       (name == null || name!.isEmpty) ? (container ?? '默认版本') : name!;
+
+  /// ★ 版本选择的**完整标签**（用户要求"服务端有多个大小和画质的视频时
+  /// 我可以选择播放"）。
+  ///
+  /// ## 为什么不能只用 `versionLabel`
+  /// `versionLabel` 只给名字。而多版本片源里，服务端给的 `Name` 常常是
+  /// **空的或重复的**（实测：同一部片三路源，`Name` 全是 `null`）⇒
+  /// 面板上三行一模一样的"默认版本"，用户根本分不清该选哪个。
+  ///
+  /// ⇒ 用**画质 + 大小 + 容器**拼出可区分的信息：
+  /// `4K HEVC · 12.3 GB · mkv`、`1080p H264 · 2.1 GB · mp4`
+  ///
+  /// ## 画质怎么来（不猜）
+  /// 优先用视频流的**真实宽高**（`Width`/`Height`，服务端元数据）：
+  /// · 高 ≥ 2000 ⇒ `4K`（UHD 是 3840 宽，但竖屏/宽银幕高度会低，
+  ///   故用 `min(w,h)` 判更稳 —— 见下方实现）
+  /// · 高 ≥ 1000 ⇒ `1080p`；≥ 700 ⇒ `720p`；≥ 400 ⇒ `480p`
+  /// · 有宽高就用 `'${w}×$h'`（最准确，不猜档位）
+  String get fullVersionLabel {
+    final parts = <String>[];
+
+    // ① 画质（优先真实分辨率）
+    final v = streams.where((s) => s.type == 'Video').toList();
+    if (v.isNotEmpty) {
+      final w = v.first.width ?? 0;
+      final h = v.first.height ?? 0;
+      if (w > 0 && h > 0) {
+        // 用「短边」判档：3840x1608 的短边是 1608 ⇒ 1080p 级（不是 4K）——
+        // 这符合"画质"的直觉（宽银幕的 4K 片源短边也就 1608）。
+        // 竖屏视频同理（1080x1920 短边 1080 ⇒ 1080p）。
+        final short = w < h ? w : h;
+        final tier = short >= 1600
+            ? '4K'
+            : short >= 1000
+                ? '1080p'
+                : short >= 700
+                    ? '720p'
+                    : short >= 400
+                        ? '480p'
+                        : '${short}p';
+        parts.add(tier);
+      }
+      final codec = v.first.codec;
+      if (codec != null && codec.isNotEmpty) parts.add(codec.toUpperCase());
+    }
+
+    // ② 大小（用户最关心的"哪个更大/更清晰"的直观指标）
+    final sz = sizeLabel;
+    if (sz.isNotEmpty) parts.add(sz);
+
+    // ③ 容器
+    if (container != null && container!.isNotEmpty) parts.add(container!);
+
+    // ④ 服务端给的名字（放最后：它是"备注"而不是"标识"）
+    if (name != null && name!.isNotEmpty) parts.add(name!);
+
+    return parts.isEmpty ? versionLabel : parts.join(' · ');
+  }
+
+  /// 码率标签（如 `8.5 Mbps`）—— 版本选择时辅助判断画质。
+  String get bitrateLabel {
+    final b = bitrate;
+    if (b == null || b <= 0) return '';
+    return '${(b / 1000000).toStringAsFixed(1)} Mbps';
+  }
 }
 
 class MediaStream {
@@ -644,6 +710,27 @@ class MediaStream {
   /// 是否文本字幕（文本可调样式；PGS/VOBSUB 等图形字幕不可）
   final bool isTextSubtitleStream;
 
+  /// ★ 外挂字幕的**下载直链**（Emby 的 `DeliveryUrl`）。
+  ///
+  /// ## 为什么需要它（自查 Emby API 时发现的缺口）
+  /// Emby 支持**外挂字幕**（`IsExternal=true`）：字幕是服务端媒体库里的
+  /// 独立文件、或用户上传的，**不在视频容器里** ⇒
+  /// mpv/Media3 打开视频时**看不到这些轨道**（它们的 track-list 只列容器内的）。
+  ///
+  /// ⇒ 必须由 App 主动把 `DeliveryUrl` 交给播放内核加载
+  ///   （mpv：`sub-add <url>`；Media3：`SubtitleConfiguration`）。
+  ///
+  /// ## 为什么之前"复仇者联盟没识别到字幕"可能也有这一半原因
+  /// 那次实测的内嵌字幕（`IsExternal=false`）丢失是**解析 bug**（已修）。
+  /// 但**外挂**字幕即使解析对了，内嵌路径也拿不到 —— 需要本条 + 加载逻辑。
+  ///
+  /// ⚠️ 值里通常带 `api_key` ⇒ **绝不入库、不写日志**（安全红线）。
+  final String? deliveryUrl;
+
+  /// 外挂字幕的**来源文件名**（Emby `Path` 的文件名部分）——
+  /// 用于 UI 上区分同一语言的多条外挂字幕。
+  final String? externalFileName;
+
   final int? bitDepth;
   final double? averageFrameRate;
 
@@ -673,6 +760,8 @@ class MediaStream {
     this.isTextSubtitleStream = false,
     this.bitDepth,
     this.averageFrameRate,
+    this.deliveryUrl,
+    this.externalFileName,
   });
 
   factory MediaStream.fromJson(Map<String, dynamic> j) => MediaStream(
@@ -702,7 +791,192 @@ class MediaStream {
         isTextSubtitleStream: j['IsTextSubtitleStream'] == true,
         bitDepth: (j['BitDepth'] as num?)?.toInt(),
         averageFrameRate: (j['AverageFrameRate'] as num?)?.toDouble(),
+        // ★ 外挂字幕直链（自查 API 时补的缺口，见字段注释）
+        deliveryUrl: j['DeliveryUrl'] as String?,
+        // 外挂字幕的来源文件名（`Path` 的最后一段；服务端可能不给）
+        externalFileName: _fileNameOf(j['Path'] as String?),
       );
+
+  /// 从路径取文件名（Windows/Unix 分隔符都处理）。
+  static String? _fileNameOf(String? path) {
+    if (path == null || path.isEmpty) return null;
+    final norm = path.replaceAll('\\', '/');
+    final i = norm.lastIndexOf('/');
+    return i >= 0 ? norm.substring(i + 1) : norm;
+  }
+
+  /// **中文轨道名**（用户要求："音频为国语、粤语等，
+  /// 字幕为简体中文、繁体中文、中英双语…"）。
+  ///
+  /// ## 为什么要本地化（真机实测）
+  /// 服务端的 `DisplayTitle` 是**英文**：
+  /// `English TRUEHD 7.1 (默认)`、`Chinese Simplified (PGSSUB)`。
+  /// 但 mpv 侧同一个轨道的 `title` 却是**中文**：
+  /// `英语`、`国语`、`简英特字`、`繁體中字`。
+  ///
+  /// ⇒ 最优解 = **两者合并**：
+  /// · 语言名用中文（内核的 title 已是最好的中文名，如"简英特字"）
+  /// · 编码/声道/默认标记仍用服务端（内核没有这些）
+  ///
+  /// [kernelTitle] 是内核上报的同轨道标题（可为 null）。
+  ///
+  /// 结果示例：`国语 · TRUEHD · 7.1`、`简英特字 · PGS`、`英语 · AC3 · 5.1 (默认)`
+  String chineseLabel({String? kernelTitle}) {
+    // ★ 内核的中文标题优先 —— 它是最贴合片源的叫法
+    //   （`简英特字`/`繁體中字` 这种是压制组写进片源的，比"中文"精确得多）
+    final kt = kernelTitle?.trim();
+
+    final parts = <String>[];
+    if (kt != null && kt.isNotEmpty) {
+      parts.add(kt);
+    } else {
+      // 无内核标题 → 用语言码/英文名翻译
+      final zh = languageToChinese(language) ??
+          languageToChinese(displayLanguage);
+      if (zh != null) {
+        parts.add(zh);
+      } else {
+        // 实在翻不出来 → 保留服务端的可读部分（不猜）
+        final dl = displayLanguage?.trim();
+        if (dl != null && dl.isNotEmpty) parts.add(dl);
+      }
+    }
+
+    // ② 声道（**保留** —— "7.1/5.1" 是用户能理解的音质信息）
+    final layout = channelLayout?.trim();
+    if (layout != null && layout.isNotEmpty) {
+      parts.add(layout);
+    } else if (type == 'Audio' && channels != null && channels! > 0) {
+      parts.add('${channels!}ch');
+    }
+
+    // ③ 标记
+    if (isForced) parts.add('强制');
+    if (isExternal) parts.add('外挂');
+
+    if (parts.isEmpty) return stripCodecSuffix(label);
+    return stripCodecSuffix(parts.join(' · '));
+  }
+
+  /// **去掉名字里的编码后缀**（用户要求）。
+  ///
+  /// ## 用户原话
+  /// > "去掉字幕的后缀 pgssub 等，音轨后缀也去除"
+  ///
+  /// ## 为什么要去掉（不是审美问题）
+  /// 服务端 `DisplayTitle` 会把**编码名**塞进括号：
+  /// `Chinese Simplified (PGSSUB)`、`Mandarin EAC3 5.1 (默认)`。
+  /// 而编码名对**选轨决策毫无帮助**：
+  /// · 用户要选的是"**中文/英文**"和"**国配/原声**"
+  /// · `PGSSUB`/`SUBRIP`/`ASS` 是容器细节（且 PGS 是图形字幕，说不了）
+  /// · 反而**挤占宽度** —— 面板上「简体特字（国配） · PGSSUB」几乎占满
+  ///
+  /// ⇒ 去掉编码后缀，保留**语言 + 声道 + 标记**（那些才是决策依据）。
+  ///
+  /// ## 去掉哪些（保守清单，不误删有意义的内容）
+  /// · 字幕编码：`PGSSUB`/`PGS`/`SUBRIP`/`SRT`/`ASS`/`SSA`/`VOBSUB`/
+  ///   `DVDSUB`/`MOV_TEXT`/`TEXT`/`WEBVTT`/`HDMV_PGS_SUBTITLE`
+  /// · 音频编码：`TRUEHD`/`MLP`/`DTS-HD`/`DTS`/`DCA`/`EAC3`/`AC3`/
+  ///   `AAC`/`FLAC`/`OPUS`/`VORBIS`/`MP3`/`PCM`/`ATMOS`
+  ///
+  /// ⚠️ 只删**独立的编码词**（词边界），不删单词内部的子串 ——
+  ///    否则 `DTS` 会误伤 `DTSX` 之外的词，`AC3` 会误伤含它的名字。
+  static String stripCodecSuffix(String s) {
+    var out = s;
+    // ① 括号包裹的编码：`Chinese (PGSSUB)` → `Chinese`
+    for (final c in _codecNames) {
+      // 形如 ` (PGSSUB)` / `（PGSSUB）` / `(PGSSUB)`（前后可有空格）
+      out = out.replaceAll(
+          RegExp(r'\s*[（(]\s*' + RegExp.escape(c) + r'\s*[)）]',
+              caseSensitive: false),
+          '');
+    }
+    // ② 分隔符形式的编码：`英语 · TRUEHD · 7.1` → `英语 · 7.1`
+    for (final c in _codecNames) {
+      out = out.replaceAll(
+          RegExp(r'\s*[·,，/|]\s*' + RegExp.escape(c) + r'\s*(?=[·,，/|]|$)',
+              caseSensitive: false),
+          '');
+    }
+    // ③ 末尾裸编码：`简英特字 PGSSUB` → `简英特字`
+    for (final c in _codecNames) {
+      out = out.replaceAll(
+          RegExp(r'\s+' + RegExp.escape(c) + r'\s*$', caseSensitive: false),
+          '');
+    }
+    // ④ ★★ **空格分隔的裸编码**（真机实测漏掉的形态，用户报障）
+    //
+    // ## 为什么必须补这一条
+    // 服务端的 `DisplayTitle` 最常见形态是**空格分隔**：
+    // ```
+    // English TRUEHD 7.1 (默认)     ← TRUEHD 夹在中间
+    // English DTS-HD MA 7.1
+    // Chinese AC3 5.1 (默认)
+    // ```
+    // 前三条规则都覆盖不到"中间 + 空格分隔"：
+    // ① 要括号、② 要 `·`/`,`、③ 要末尾
+    // ⇒ 实测 `«English TRUEHD 7.1 (默认)»` **原样返回，没去掉**
+    //   （由临时探针测试抓到 —— 单看代码以为已经生效了）。
+    //
+    // ## 词边界（不能误伤）
+    // `(?<![A-Za-z0-9])` / `(?![A-Za-z0-9])` 确保只删**独立词**：
+    // · `DTS-HD MA` 里的 `DTS` 不会被单独删（长串先处理）
+    // · `TEXTURE` 不会被 `TEXT` 误伤
+    for (final c in _codecNames) {
+      out = out.replaceAll(
+          RegExp(
+            r'(?<![A-Za-z0-9])' +
+                RegExp.escape(c) +
+                r'(?![A-Za-z0-9])',
+            caseSensitive: false,
+          ),
+          '');
+    }
+    // ⑤ 清掉首尾与连续的分隔符残留
+    out = out.replaceAll(RegExp(r'\s*·\s*$'), '');
+    out = out.replaceAll(RegExp(r'^\s*·\s*'), '');
+    out = out.replaceAll(RegExp(r'(\s*·\s*)+'), ' · ');
+    // ⚠️ 删掉编码词后会留下**连续空格**（`English  7.1`）⇒ 收敛为一个
+    out = out.replaceAll(RegExp(r'[ \t]{2,}'), ' ');
+    return out.trim();
+  }
+
+  /// 需要从展示名里去掉的编码名（**长串优先**，避免 `PGS` 吃掉 `PGSSUB`）。
+  static const List<String> _codecNames = [
+    // 字幕（长 → 短）
+    'HDMV_PGS_SUBTITLE',
+    'PGS SUBTITLE',
+    'PGSSUB',
+    'VOBSUB',
+    'DVDSUB',
+    'MOV_TEXT',
+    'SUBRIP',
+    'WEBVTT',
+    'PGS',
+    'SRT',
+    'ASS',
+    'SSA',
+    'TEXT',
+    // 音频（长 → 短）
+    'DOLBY TRUEHD',
+    'TRUEHD',
+    'DTS-HD MA',
+    'DTS-HD',
+    'DTSX',
+    'DTS',
+    'DCA',
+    'EAC3',
+    'E-AC3',
+    'AC3',
+    'MLP',
+    'AAC',
+    'FLAC',
+    'OPUS',
+    'VORBIS',
+    'MP3',
+    'PCM',
+    'ATMOS',
+  ];
 
   /// **用户可读的轨道名** —— 优先用服务端拼好的 `DisplayTitle`。
   ///

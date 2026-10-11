@@ -92,6 +92,7 @@ class MediaTraits {
     this.isHls = false,
     this.isTranscoding = false,
     this.hasExternalSubtitle = false,
+    this.hasPgsSubtitle = false,
     this.videoRange,
   });
 
@@ -117,6 +118,21 @@ class MediaTraits {
 
   /// 是否有外挂字幕（mpv 对字幕编码/字体的支持更好）。
   final bool hasExternalSubtitle;
+
+  /// ★★ 是否有 **PGS 图形字幕**（真机报障"字幕没显示在画面中"）。
+  ///
+  /// ## 为什么它必须参与内核决策
+  /// 用户实测**两个内核都显示不出**这部片（《复仇者联盟》）的字幕，
+  /// 而"别的播放器能显示"。已知的客观事实：
+  /// · `media3-extractor-1.4.1.aar` 里**有** `...text.pgs.PgsParser`
+  /// · 自持 `libmpv.so` **没有** `ff_pgssub_decoder`（符号表已核实）
+  ///
+  /// ⇒ 本字段用于**在内核选择时把 PGS 片源优先给 Media3**
+  ///   （即便 Media3 侧仍有别的坑，也让"能显示的那条路"优先被走到）。
+  ///
+  /// ⚠️ 若将来补上 `libmpv.so` 的 pgssub，此规则应放宽
+  ///   （`tool/check_mpv_decoders.py` 会给出提示）。
+  final bool hasPgsSubtitle;
 
   /// 视频动态范围（服务端 `VideoRange` / `VideoRangeType`）。
   /// 取值如 `SDR` / `HDR10` / `HLG` / `DOVI` / `DolbyVision`。
@@ -284,7 +300,39 @@ abstract final class KernelAutoSelect {
   ///
   /// 5. **其余 → mpv**（保守：格式覆盖最全）
   static KernelDecision _selectAuto(MediaTraits t) {
-    // ---- 规则 0：杜比视界 / HDR → mpv（最高优先级，见方法注释）----
+    // ---- ★★ 规则 -1：**PGS 图形字幕 → Media3**（**最高优先级**）----
+    //
+    // ## 为什么必须在规则 0 **之前**（真机实测抓到的顺序 bug）
+    // 我第一版把它放在规则 4 之后，结果《复仇者联盟》**根本没走到它**：
+    // ```
+    // [Kernel] MediaTraits(..., 3840x2160, ...) -> mpv（HDR（HDR 10）走 mpv）
+    //                                                  ↑ 规则 0 先命中
+    // ```
+    // ⇒ 落到**缺 PGS 解码器**的 mpv，而该片的 8 条字幕**全是 PGS**：
+    // ```
+    // [mpv/sub] Could not find subtitle decoder for format 'hdmv_pgs_subtitle'.
+    // [PlayerFlow] 字幕：自动选中«简英特字» id=1   ← 选中了但显示不出来
+    // 画面下方亮像素 = 41                          ← ❌ 确认无字幕
+    // ```
+    //
+    // ## 为什么这条能升到最高优先级（取舍依据）
+    // 规则 0（HDR→mpv）的理由是"色调映射更好" —— 那是**画质偏好**。
+    // 本条解决的是"**字幕完全看不到**" —— 那是**功能缺失**。
+    // ⇒ 功能缺失优先于画质偏好。
+    //
+    // ## 反例（为什么只在 PGS 时才覆盖规则 0）
+    // HDR + **非 PGS** 字幕（如 SRT/ASS）仍走 mpv（规则 0 继续生效）——
+    // 那时 mpv 的字幕能力没问题，保留它的色调映射优势。
+    if (t.hasPgsSubtitle) {
+      return KernelDecision(
+        kernel: KernelType.media3,
+        reason: 'PGS 图形字幕：Media3 内置 PgsParser 能显示，'
+            '自持 mpv 缺该解码器（真机已证实）',
+        confidence: KernelConfidence.high,
+      );
+    }
+
+    // ---- 规则 0：杜比视界 / HDR → mpv（见方法注释）----
     if (t.isHdr) {
       return KernelDecision(
         kernel: KernelType.mpv,

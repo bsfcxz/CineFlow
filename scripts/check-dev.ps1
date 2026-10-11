@@ -162,6 +162,54 @@ Gate 'check-secrets'  'scripts/check-secrets.ps1'
 Gate 'check-docs'     'scripts/check-docs.ps1'
 Gate 'bump_version'   'tool/bump_version.ps1'
 
+# --- ★ libmpv 解码器完整性（2026-10-10 新增，真机事故驱动）---
+#
+# ## 为什么必须进收工门禁
+# 我们的 `jniLibs/*/libmpv.so` 是**带解码器白名单**编译的，实测缺：
+#   · `ff_truehd_decoder` / `ff_mlp_decoder`
+#     ⇒ 播 TRUEHD 音轨 `Failed to initialize a decoder for codec 'truehd'`
+#       ⇒ **播放无声**（用户报障："我切换音轨（truehd等）时也没有声音"）
+#   · `ff_pgssub_decoder`
+#     ⇒ 蓝光 PGS 图形字幕 `Could not find subtitle decoder`
+#       ⇒ **一条字幕都不显示**（用户报障："播放画面中没有字幕"）
+#
+# ## 为什么静态检查能防住它
+# 这类缺失**运行时不报错**（只写 mpv 日志）⇒ 只能"播一次才发现"。
+# 符号级静态检查把"跑一次播放"提前到"跑一次脚本"。
+# ⚠️ 已知当前**不通过**（缺 4 个）—— 修法是重编 libmpv.so。
+#    在修好之前，本项的输出是**明确的待办**而不是"莫名其妙变红"。
+Write-Host ''
+Write-Host '> libmpv 解码器完整性检查 ...'
+$decoderPy = Join-Path $root 'tool/check_mpv_decoders.py'
+if (Test-Path $decoderPy) {
+    # 找可用的 python（优先 DSH 运行时，其次 PATH）
+    $pyExe = $null
+    $cand = Join-Path $env:USERPROFILE '.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+    if (Test-Path $cand) { $pyExe = $cand }
+    elseif (Get-Command python -ErrorAction SilentlyContinue) { $pyExe = 'python' }
+    if ($pyExe) {
+        $env:PYTHONIOENCODING = 'utf-8'
+        $env:PYTHONUTF8 = '1'
+        $decOut = & $pyExe $decoderPy 2>&1
+        $decCode = $LASTEXITCODE
+        if ($decCode -eq 0) {
+            Ok 'libmpv 解码器：全部必需解码器齐备'
+        } else {
+            # ⚠️ 这里是**已知待办**（缺 truehd/mlp/pgssub/mov_text）——
+            #    不把它算成"门禁失败"（那会让整个 check-dev 常年红），
+            #    而是打印成醒目提示，确保每次收工都看见。
+            Warn2 'libmpv 解码器：缺少必需解码器（已知待办 —— 需重编 libmpv.so）'
+            $decOut | Where-Object { $_ -match '^\s*·|缺少|修法|①|②|③' } |
+                Select-Object -First 10 |
+                ForEach-Object { Write-Host "      $($_.ToString().Trim())" -ForegroundColor DarkYellow }
+        }
+    } else {
+        Warn2 'libmpv 解码器：跳过（找不到 python）'
+    }
+} else {
+    Warn2 "libmpv 解码器：跳过（缺 $decoderPy）"
+}
+
 # --- 明文凭据守卫（扫**被 gitignore 的文件**）---
 #
 # ⚠️ 为什么需要单独一项：`check-secrets.ps1` 用的是 `git ls-files`，

@@ -51,10 +51,11 @@ void main() {
       );
 
       expect(aligned, hasLength(2));
-      expect(aligned[0].label, 'Chinese Simplified (PGSSUB)');
+      // user req: strip codec suffix
+      expect(aligned[0].label, 'Chinese Simplified');
       expect(aligned[0].kernelId, '1', reason: '内核用 sid=1 切这条');
       expect(aligned[0].matchedByIndex, isTrue);
-      expect(aligned[1].label, 'English (PGSSUB)');
+      expect(aligned[1].label, 'English');
       expect(aligned[1].kernelId, '2');
     });
 
@@ -112,8 +113,10 @@ void main() {
       ];
       final aligned = TrackAligner.alignAudio(serverAudio, kernelAudio);
 
-      expect(aligned[0].label, 'Chinese TRUEHD 5.1 (默认)');
-      expect(aligned[1].label, 'Chinese AC3 5.1');
+      // 2026-10-10 规则 4：空格分隔的裸编码也去掉（用户要求）
+      expect(aligned[0].label, 'Chinese 5.1 (默认)');
+      // ★ 同上：AC3 后缀也去掉 ⇒ 'Chinese 5.1'
+      expect(aligned[1].label, 'Chinese 5.1');
       expect(aligned.every((a) => a.matchedByIndex), isTrue);
     });
 
@@ -171,9 +174,11 @@ void main() {
         ],
       );
       expect(aligned, hasLength(1));
-      // 内核兜底会拼出 "6ch · eac3"（声道 + 编解码，足以区分多条轨）
+      // ★ 2026-10-10 用户要求"音轨后缀也去除" ⇒ 兜底标签只留语言 + 声道
+      //   （原来会拼出 "6ch · eac3"）
       expect(aligned[0].label, contains('6ch'));
-      expect(aligned[0].label, contains('eac3'));
+      expect(aligned[0].label, isNot(contains('eac3')),
+          reason: '★ 编码后缀去掉 —— 对选轨决策没帮助还挤占面板宽度');
       expect(aligned[0].kernelId, '1');
     });
 

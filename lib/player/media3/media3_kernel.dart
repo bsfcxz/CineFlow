@@ -112,6 +112,16 @@ class Media3Kernel implements PlayerKernel {
           // "其中一边静默解析出空轨道"（不报错、不崩溃，极难发现）。
           _tracks = KernelEventParser.parseTracks(m['data']);
           if (!_tracksController.isClosed) _tracksController.add(_tracks);
+        case 'trackUnsupported':
+          // ★★ 轨道编码不受支持（真机实测：Media3 对 audio/true-hd 报
+          //    `NO_UNSUPPORTED_TYPE`，用户只感到"没声音"、无任何提示）
+          //
+          // ## 为什么用独立的错误流（而不是 `log`）
+          // `_onEvent` 里 `case 'log'` 是**故意不处理**的（日志不进 UI）。
+          // 而这属于"用户必须知道"的信息 ⇒ 走 errorStream。
+          final msg = m['message'] as String? ?? '该轨道编码不受支持';
+          if (!_errorController.isClosed) _errorController.add(msg);
+          debugPrint('[Media3] 轨道不受支持：$msg');
         case 'property':
           if (m['name'] == 'video-size') {
             final d = m['data'];
@@ -324,6 +334,52 @@ class Media3Kernel implements PlayerKernel {
     await _method.invokeMethod('setSubtitleTrack', id);
     _selection = KernelSelection(audioId: _selection.audioId, subtitleId: id);
     if (!_selectionController.isClosed) _selectionController.add(_selection);
+  }
+
+  /// 加载外挂字幕（Media3 的 `MediaItem.SubtitleConfiguration`）。
+  ///
+  /// ## 为什么 Media3 的实现比 mpv 复杂得多（如实说明）
+  /// mpv 有 `sub-add` 命令，**运行中随时加**。
+  /// 而 Media3 的字幕配置是**创建 `MediaItem` 时**就固定的
+  /// （`MediaItem.SubtitleConfigurations`），运行中加不了 ⇒
+  /// 必须把当前 URL 与已有外挂字幕**重新组装成新的 MediaItem 再 setMediaItem**。
+  ///
+  /// 那会**重启播放**（回到 0 或需 seek），代价明显。
+  /// ⇒ 原生侧（`Media3Channel.kt`）的实现策略是：
+  ///   1. 记下这条外挂字幕（供下次 setMediaItem 用）
+  ///   2. 若当前**已经开始播放**，就用 `setMediaItem` 重建并 seek 回原位置
+  ///      （有短暂卡顿，但功能可用 —— 比"完全用不了"好）
+  @override
+  Future<bool> addExternalSubtitle({
+    required String url,
+    String? title,
+    String? language,
+    bool select = false,
+  }) async {
+    if (url.isEmpty) return false;
+    try {
+      final ok = await _method.invokeMethod<bool>('addExternalSubtitle', {
+        'url': url,
+        'title': title,
+        'language': language,
+        'select': select,
+      });
+      debugPrint('[Kernel] 外挂字幕已添加（media3，'
+          'title=${title ?? '-'}，ok=$ok）— url 含凭据故不打印');
+      return ok ?? false;
+    } catch (e) {
+      debugPrint('[Kernel] 外挂字幕添加失败（media3）: $e');
+      return false;
+    }
+  }
+
+  @override
+  Future<void> removeExternalSubtitles() async {
+    try {
+      await _method.invokeMethod('removeExternalSubtitles');
+    } catch (e) {
+      debugPrint('[Kernel] 移除外挂字幕失败（media3，非致命）: $e');
+    }
   }
 
   // ---------------- 能力受限的项：不抛异常，静默忽略 ----------------

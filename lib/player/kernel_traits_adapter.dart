@@ -42,6 +42,25 @@ MediaTraits traitsFromLaunch(PlaybackLaunch launch) {
   String? audioCodec;
   var hasExternalSubtitle = false;
 
+  /// ★★ 是否有 **PGS 图形字幕**（真机报障："字幕还是没有显示出在画面中"）。
+  ///
+  /// ## 为什么这个字段决定内核选择
+  /// 两个内核对 PGS 的能力**不同**（都已核实）：
+  /// | 内核 | PGS 支持 | 证据 |
+  /// |---|---|---|
+  /// | **Media3** | ✅ 有 | `media3-extractor-1.4.1.aar` 里确有<br>`androidx.media3.extractor.text.pgs.PgsParser` |
+  /// | **mpv（自持 .so）** | ❌ 缺 | 真机：`Could not find subtitle decoder for format 'hdmv_pgs_subtitle'`；<br>且符号表里**没有** `ff_pgssub_decoder` |
+  ///
+  /// ## 修法（不是"改 UI"，是**把这类片源路由给能显示的内核**）
+  /// 原规则 R4 把"有外挂字幕"判给 mpv —— 但**内嵌 PGS** 走的是
+  /// 规则 R5 默认（也是 mpv）⇒ PGS 片源**一律落到缺解码器的 mpv 上**
+  /// ⇒ "别的播放器能显示、我们显示不出来"。
+  /// ⇒ 新增规则：**有 PGS 字幕 ⇒ 优先 Media3**。
+  ///
+  /// ⚠️ 若将来换掉 `libmpv.so`（补上 pgssub），这条规则应删除或放宽
+  ///   （见 `tool/check_mpv_decoders.py` 的自检输出）。
+  var hasPgsSubtitle = false;
+
   /// 视频动态范围（SDR / HDR10 / DOVI…）。
   ///
   /// ★ 借鉴 LinPlayer 的"HDR / 杜比视界自动切软解"思路（**仅取思路，未抄代码** ——
@@ -62,6 +81,9 @@ MediaTraits traitsFromLaunch(PlaybackLaunch launch) {
         audioCodec ??= s.codec;
       case 'Subtitle':
         if (s.isExternal) hasExternalSubtitle = true;
+        // PGS 的编码名在服务端可能是 `pgssub`/`PGS`/`hdmv_pgs_subtitle`
+        final c = (s.codec ?? '').toLowerCase().replaceAll('-', '');
+        if (c.contains('pgs')) hasPgsSubtitle = true;
     }
   }
 
@@ -76,6 +98,7 @@ MediaTraits traitsFromLaunch(PlaybackLaunch launch) {
     isHls: isHls,
     isTranscoding: isTranscoding,
     hasExternalSubtitle: hasExternalSubtitle,
+    hasPgsSubtitle: hasPgsSubtitle,
     videoRange: videoRange,
   );
 }

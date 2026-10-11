@@ -312,6 +312,17 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
   PlaybackLaunch? _launch;
   bool _started = false;
 
+  /// **等待中的默认轨选择**（真机实测的时序兜底）。
+  ///
+  /// ## 为什么需要（"没声音 + 没字幕"的成因）
+  /// `_applyServerDefaultTracks` 若在轨道上报**之前**跑，看到的是空列表
+  /// ⇒ 选轨逻辑全部空转 ⇒ 既没声音（没选到可解轨）也没字幕（没选 sid）。
+  ///
+  /// 而 `_syncTrackLists`（喂面板）由 `tracksStream` 驱动，
+  /// **轨道到达时它一定会跑** ⇒ 存一份"待处理的 launch"，
+  /// 由那次回调补做选轨。
+  PlaybackLaunch? _pendingDefaultTracks;
+
   /// Emby API 引用缓存 —— [_finalize] 在 dispose 里也会被调，
   /// 那时 ref 已不可用（Riverpod 禁止），必须在 boot 时缓存。
   MediaProvider? _api;
@@ -1022,6 +1033,23 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       // 这里的列表仅含内核侧（对齐版在 _applyServerDefaultTracks 后
       // 以 AlignedTrack.label 替换 —— 见 _syncTrackLists）。
       _syncTrackLists(launch: _launch, kernel: t);
+
+      // ★★ **补做默认轨选择**（真机实测的时序兜底）
+      //
+      // ## 为什么必须在这里
+      // `_applyServerDefaultTracks` 可能在内核上报轨道**之前**就跑了
+      // （4K 片源 demuxer 分析要 3–5s）⇒ 它看到空列表、逻辑空转
+      // ⇒ 现象就是"没声音 + 没字幕"（用户上报的两个问题）。
+      //
+      // 而本回调**一定在轨道到达时触发** ⇒ 用它补做，只做一次。
+      final pending = _pendingDefaultTracks;
+      if (pending != null &&
+          (t.audio.isNotEmpty || t.subtitle.isNotEmpty)) {
+        _pendingDefaultTracks = null; // 先清，防重入
+        debugPrint('[PlayerFlow] 轨道已到达 ⇒ 补做默认轨选择'
+            '（音频 ${t.audio.length} / 字幕 ${t.subtitle.length}）');
+        unawaited(_applyServerDefaultTracks(pending));
+      }
     }));
     // ---- 错误处理：**必须限流 + 去重**（真机事故）----
     //
@@ -1054,6 +1082,30 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
         _kernelErrorDropped = 0;
       }
       ref.read(playbackStateProvider.notifier).setError(e);
+      // ★★ **解码失败 → 自动换到可播的音轨**（不能只报错就停在那）
+      //
+      // ## 为什么必须自动恢复（真机实测的死局）
+      // 《复仇者联盟》在 **Media3** 内核下：
+      // ```
+      // CF-Media3: 播放错误: ERROR_CODE_DECODER_INIT_FAILED
+      //            MediaCodecAudioRenderer error, index=1,
+      //            format=Format(3, 国语, ..., truehd)
+      // ```
+      // Media3 的 `AudioRenderer` 初始化失败 ⇒ **整个播放停住**
+      //（不是"静音继续播"）。用户看到的是黑屏/卡住 + 一条报错。
+      //
+      // ## 为什么"只报错"不够
+      // 该片有 6 条音轨，其中 **4 条可播**（DTS 核心 / AC3）。
+      // 报错时用户并不知道"换一条就有声音了"。
+      // ⇒ 自动退到可播轨（保留语言意图），并**告诉用户已经换了**。
+      //
+      // ⚠️ 只在**音频**解码失败时做；字幕失败不换轨（字幕失败不阻塞播放）。
+      // ⚠️ 每次播放只自动恢复**一次**（`_autoRecoveredAudio`）——
+      //    否则若所有轨都不可播，会无限循环切轨。
+      if (!_autoRecoveredAudio && _looksLikeAudioDecoderFailure(e)) {
+        _autoRecoveredAudio = true;
+        unawaited(_recoverAudioTrack(e));
+      }
       if (mounted) {
         ScaffoldMessenger.maybeOf(context)?.showSnackBar(
           SnackBar(content: Text(e), behavior: SnackBarBehavior.floating),
@@ -1138,6 +1190,9 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       _stage('resolve');
       if (!mounted) return;
       _launch = launch;
+      // ★ 换集/换片必须清掉"待处理默认轨"—— 否则
+      //   会用上一集的默认轨编号去选这一集的轨道（选错）
+      _pendingDefaultTracks = null;
       ref
           .read(playbackStateProvider.notifier)
           .setDuration(Duration(milliseconds: _current.runtimeTicks ?? 0));
@@ -1397,6 +1452,9 @@ _stage('open');
           '(resume=${resumeSeconds.toInt()}s)');
       _reportStart(launch);
       unawaited(_applyServerDefaultTracks(launch));
+      // ★ 外挂字幕（Emby IsExternal）—— 必须在 open 之后
+      //（内核看不到容器外的字幕流，只能由 App 主动加载）
+      unawaited(_loadExternalSubtitles(launch));
       _fillMediaInfo(launch);
       // 服务端流列表先喂轨道面板（内核轨道随后到达时会再对齐一次）
       _syncTrackLists(launch: launch, kernel: k2.tracks);
@@ -1717,9 +1775,15 @@ _stage('open');
       final launch = await api!.resolvePlayback(eps[index].id);
       if (!mounted) return;
       _launch = launch;
+      // ★ 换集/换片必须清掉"待处理默认轨"—— 否则
+      //   会用上一集的默认轨编号去选这一集的轨道（选错）
+      _pendingDefaultTracks = null;
       await k.open(launch.url, play: true, headers: launch.headers);
       _reportStart(launch);
       unawaited(_applyServerDefaultTracks(launch));
+      // ★ 外挂字幕（Emby IsExternal）—— 必须在 open 之后
+      //（内核看不到容器外的字幕流，只能由 App 主动加载）
+      unawaited(_loadExternalSubtitles(launch));
       _fillMediaInfo(launch);
       _syncTrackLists(launch: launch, kernel: k.tracks);
       unawaited(_loadDanmaku());
@@ -1844,6 +1908,38 @@ _stage('open');
     final serverSub = launch?.streams.where((s) => s.type == 'Subtitle').toList() ??
         const <MediaStream>[];
 
+    // ★★ 轨道诊断日志（**用户报"没识别到音频/字幕"时的唯一自查手段**）
+    //
+    // ## 为什么必须打（这条日志的由来）
+    // 用户报障："播放吞噬星空时没识别到音频（它有 3 个音频编码）"
+    //           "播放复仇者联盟时没识别出字幕（它有多个字幕）"
+    // 但当时**全仓库零条轨道日志** ⇒ 无法区分是
+    //   ① 服务端没给  ② 内核没上报  ③ 对齐逻辑丢了
+    // ⇒ 现在把三段数据都打出来，一次就能定位在哪一段丢的。
+    debugPrint('[Tracks] 服务端：音频 ${serverAudio.length} 条 / '
+        '字幕 ${serverSub.length} 条'
+        '（默认音 ${launch?.defaultAudioIndex} / '
+        '默认字 ${launch?.defaultSubtitleIndex}）');
+    for (final a in serverAudio) {
+      debugPrint('[Tracks]   srv.audio idx=${a.index} '
+          '«${a.displayTitle ?? a.label}» codec=${a.codec}');
+    }
+    for (final sb in serverSub) {
+      debugPrint('[Tracks]   srv.sub   idx=${sb.index} '
+          '«${sb.displayTitle ?? sb.label}» '
+          'ext=${sb.isExternal} forced=${sb.isForced}');
+    }
+    debugPrint('[Tracks] 内核：音频 ${kernel.audio.length} 条 / '
+        '字幕 ${kernel.subtitle.length} 条');
+    for (final a in kernel.audio) {
+      debugPrint('[Tracks]   k.audio id=${a.id} ff=${a.ffIndex} '
+          '«${a.title ?? '-'}» codec=${a.codec}');
+    }
+    for (final sb in kernel.subtitle) {
+      debugPrint('[Tracks]   k.sub   id=${sb.id} ff=${sb.ffIndex} '
+          '«${sb.title ?? '-'}»');
+    }
+
     // KernelTrack → FacadeTrack（TrackAligner 的入参类型；facade 内部同款映射）
     final kAudio = [
       for (final a in kernel.audio)
@@ -1881,8 +1977,24 @@ _stage('open');
           isDefault: a.isDefault,
         ),
     ]);
+    // ★★ **不要在这里加「关闭字幕」**（真机实测：面板里出现了两条）
+    //
+    // ## 为什么删掉这一行
+    // `SubtitleTrack.off`（`id: 'no'`）由**面板自己渲染**：
+    // `player_settings_panel.dart` 的字幕 Tab 里有一条固定的
+    // `_TrackRow(name: SubtitleTrack.off.name, ...)`。
+    // 而这里 `setTracks([...])` 又插了一条 ⇒ **面板里两条"关闭字幕"**
+    //（用户报障："字幕轨道的关闭字幕关闭字幕有两个"）。
+    //
+    // ## 职责归属（哪一层该加）
+    // 「关闭字幕」不是**数据**（它不是服务端或内核上报的轨道），
+    // 而是 **UI 的一个动作**（"不选任何字幕"）。
+    // ⇒ 归 UI 层（面板）拥有；数据层（setTracks）只放真实轨道。
+    //
+    // ⚠️ 删掉后要确认「选关闭」仍然可用：面板那条 `off` 的 `onTap` 调
+    //    `onSubtitleTrack(null)` ⇒ 最终传到内核 `setSubtitleTrack('no')`
+    //    （`SubtitleTrack.off.id` 就是 `'no'`）⇒ 语义不变。
     ref.read(subtitleStateProvider.notifier).setTracks([
-      const SubtitleTrack(id: 'no', name: '关闭字幕'),
       for (final s in alignedSub)
         SubtitleTrack(
           id: s.kernelId,
@@ -1890,51 +2002,381 @@ _stage('open');
           isExternal: s.isExternal,
         ),
     ]);
+
+    // ★ 对齐结果（能一眼看出"服务端有 3 条但面板只显示 1 条"）
+    debugPrint('[Tracks] 对齐后 → 面板：音频 ${alignedAudio.length} 条 / '
+        '字幕 ${alignedSub.length} 条（面板会另加一条「关闭字幕」）');
+    for (final a in alignedAudio) {
+      debugPrint('[Tracks]   ui.audio «${a.label}» '
+          'id=${a.kernelId} 精确=${a.matchedByIndex}');
+    }
+    for (final sb in alignedSub) {
+      debugPrint('[Tracks]   ui.sub   «${sb.label}» '
+          'id=${sb.kernelId} 精确=${sb.matchedByIndex}');
+    }
   }
 
   /// 服务端指定的默认轨（旧页同款：等内核轨道到达后按 isDefault 应用）。
+  /// 应用默认轨（音轨用服务端的；字幕**服务端没给就自动选中文**）。
+  ///
+  /// ## ★ 2026-10-10 修"字幕没有显示在画面中"（用户报障）
+  ///
+  /// ### 原来的两个问题
+  /// **① 早退**：方法开头 `if (wantAudio == null && wantSub == null) return;`
+  /// 《复仇者联盟》有 6 音轨（`wantAudio=1`，不为 null）故没早退；
+  /// 但若某片**只有字幕没有默认音频**，字幕逻辑就完全不会执行。
+  ///
+  /// **② 服务端 `DefaultSubtitleStreamIndex = null` 时直接跳过**
+  /// ```
+  /// // 服务端未指定字幕 → 不主动关（尊重内核/用户习惯，旧页同款）
+  /// if (wantSub != null) { ... }
+  /// ```
+  /// 而这部片的默认字幕**就是 null** ⇒ **mpv 不选任何字幕**
+  /// ⇒ 画面里没有任何字幕（用户报障）。
+  ///
+  /// 真机 mpv 日志（8 条字幕，**没有一条带 `(*)` 选中标记**）：
+  /// ```
+  /// Subs --sid=5 --slang=chi '简体中字' (hdmv_pgs_subtitle)
+  /// ```
+  ///
+  /// ### 修法
+  /// 服务端没给默认字幕 ⇒ 按 `autoPickSubtitle` 选一条（**中文优先**）。
+  /// 用户仍可在设置面板里改或关（`关闭字幕` 是第一项）。
   Future<void> _applyServerDefaultTracks(PlaybackLaunch launch) async {
     final k = _kernel;
     if (k == null) return;
+    // ⚠️ 只对**当前**这次起播生效 —— 换集后旧 launch 已失效，
+    //    用它去选这一集的轨道会选错（编号空间不同）。
+    if (!identical(launch, _launch)) {
+      debugPrint('[PlayerFlow] 默认轨：launch 已过期（换集了），跳过');
+      return;
+    }
     final wantAudio = launch.defaultAudioIndex;
     final wantSub = launch.defaultSubtitleIndex;
-    if (wantAudio == null && wantSub == null) return;
+    // ⚠️ 不能在这里早退 —— 字幕需要"服务端没给也要自动选"的分支。
 
-    // 等内核上报轨道（最多 3s，每 200ms 探一次）
-    for (var i = 0; i < 15; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+    // ★★ 等内核上报轨道（最多 6s，每 150ms 探一次）
+    //
+    // ## 为什么从 3s 延长到 6s（真机实测的时序问题）
+    // 实测《复仇者联盟》两个现象**互相矛盾**：
+    // · `[Tracks] 内核：音频 6 条 / 字幕 8 条` ← 对齐器拿到了
+    // · `[PlayerFlow] 音轨：0 条全部编码不可解` ← 这里却是 0 条
+    // ⇒ 本方法**跑得比内核首次上报更早**，那次探测看到空列表就继续往下走，
+    //   于是 `aligned` 为空 ⇒ 选轨逻辑全部空转。
+    //
+    // ## 为什么要"轮询到真有轨道"而不是单次 sleep
+    // 首次上报的耗时取决于：demuxer 分析 + 网络（4K 片源实测 3–5s）。
+    // 固定 sleep 要么太长（拖慢起播）要么太短（拿到空）。
+    // ⇒ 轮询：一旦有轨道**立即**继续（正常片源 200ms 内就走了）。
+    //
+    // ## 拿到空列表后的兜底（关键：不能再"空转"）
+    // 超时仍为空 ⇒ **交给 `tracksStream` 的回调再试一次**
+    //（见 `_wireKernel` 里的 `_pendingDefaultTracks`）。
+    // 否则一旦这里错过，就**永远**不会选轨 —— 这正是"没声音/没字幕"的成因。
+    var tracksReady = false;
+    for (var i = 0; i < 40; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
       if (!mounted) return;
-      if (k.tracks.audio.isNotEmpty || k.tracks.subtitle.isNotEmpty) break;
+      // ⚠️ 每次都读 `k.tracks`（内核的**当前**值），不是捕获的快照
+      if (k.tracks.audio.isNotEmpty || k.tracks.subtitle.isNotEmpty) {
+        tracksReady = true;
+        break;
+      }
     }
     if (!mounted) return;
+    if (!tracksReady) {
+      // 还没上报 ⇒ 挂起，等 `tracksStream` 第一次非空时再执行
+      debugPrint('[PlayerFlow] 轨道未及时上报（等待超时）⇒ '
+          '挂起默认轨选择，待 tracksStream 到达后重试');
+      _pendingDefaultTracks = launch;
+      return;
+    }
 
     try {
-      if (wantAudio != null) {
+      if (launch.streams.any((s) => s.type == 'Audio') ||
+          k.tracks.audio.isNotEmpty) {
         final server = launch.streams.where((s) => s.type == 'Audio').toList();
         final aligned = TrackAligner.alignAudio(
             server, _facadeAudio(k.tracks.audio),
             defaultIndex: wantAudio);
-        final hit = aligned.where((a) => a.isDefault).toList();
-        if (hit.isNotEmpty) {
-          await k.setAudioTrack(hit.first.kernelId);
-          ref.read(audioStateProvider.notifier).selectTrack(hit.first.kernelId);
+        // ★★ 必须**过滤掉内核解不了的编码**（真机实测的"没声音"根因）
+        //
+        // ## 事故复盘（《复仇者联盟》）
+        // 服务端 `DefaultAudioStreamIndex=1` = **English TRUEHD 7.1**，
+        // 而 mpv 在 Android 上解不了 TRUEHD：
+        // ```
+        // [mpv/ad] Failed to initialize a decoder for codec 'truehd'.
+        // [mpv/cplayer] Audio: no audio          ← 播放无声
+        // ```
+        // ⇒ "忠实选服务端默认轨" = 选了一条**播不出来的轨**。
+        //
+        // ## 为什么以前反而有声（关键）
+        // 修好 `parseTracks` 之前轨道列表恒为空 ⇒ 本方法**从不执行**
+        // ⇒ mpv 用自己的策略（自动跳过 truehd）⇒ 恰好有声。
+        // **修好解析后忠实选轨，才暴露了这个真问题。**
+        //
+        // ## 修法
+        // 服务端默认轨**编码可解**才用它；不可解则退到**同语言可解轨**
+        // （保住"用户想听国语/英语"的意图），再退到任意可解轨。
+        final want = wantAudio != null
+            ? aligned.where((a) => a.isDefault).firstOrNull
+            : null;
+        // ★ 按**当前内核**判定可播性（真机实测：两内核能力不同）
+        //
+        // ## 为什么必须传（《复仇者联盟》真机取证）
+        // Media3 内核下 truehd 音轨：
+        // ```
+        // CF-Media3: 播放错误: ERROR_CODE_DECODER_INIT_FAILED
+        //            MediaCodecAudioRenderer error, format=(国语, truehd)
+        // ```
+        // 而 mpv 内核下同一编码是 `Failed to initialize a decoder`。
+        // ⇒ 两个内核都解不了 truehd（**Android 平台能力**），但
+        //   dtshd 之类只有 mpv 缺、Media3 可能能放 ⇒ 表必须区分。
+        final isMpv = k is NativeKernel;
+        final pick = TrackAligner.pickPlayableAudio(
+          aligned,
+          preferred: want,
+          codecOf: (t) => t.codec,
+          kernelMpv: isMpv,
+        );
+        if (pick != null) {
+          await k.setAudioTrack(pick.kernelId);
+          ref.read(audioStateProvider.notifier).selectTrack(pick.kernelId);
+          if (want != null && pick.kernelId != want.kernelId) {
+            debugPrint('[PlayerFlow] 音轨：服务端默认«${want.label}»编码'
+                '${want.codec} 在内核上不可解 ⇒ 自动退到«${pick.label}»');
+          } else {
+            debugPrint('[PlayerFlow] 音轨：选中«${pick.label}»'
+                '（codec=${pick.codec}）');
+          }
+        } else {
+          // 全部不可解 ⇒ **不设 aid**，让 mpv 自己挑（它至少会试）
+          debugPrint('[PlayerFlow] 音轨：${aligned.length} 条全部编码不可解 '
+              '⇒ 不指定 aid，交给 mpv 自行选择');
         }
       }
-      // 服务端未指定字幕 → 不主动关（尊重内核/用户习惯，旧页同款）
-      if (wantSub != null) {
-        final server = launch.streams.where((s) => s.type == 'Subtitle').toList();
+
+      // ---- 字幕：服务端指定优先，没指定则**自动选中文** ----
+      final serverSub =
+          launch.streams.where((s) => s.type == 'Subtitle').toList();
+      if (k.tracks.subtitle.isNotEmpty) {
         final aligned = TrackAligner.alignSubtitle(
-            server, _facadeSub(k.tracks.subtitle),
+            serverSub, _facadeSub(k.tracks.subtitle),
             defaultIndex: wantSub);
-        final hit = aligned.where((a) => a.isDefault).toList();
-        if (hit.isNotEmpty) {
-          await k.setSubtitleTrack(hit.first.kernelId);
-          ref.read(subtitleStateProvider.notifier).selectTrack(hit.first.kernelId);
+        // ★★ 服务端指定**也要校验可播性**（真机二次报障的根因）
+        //
+        // ## 事故复盘
+        // 修好"服务端没默认就自动选中文"之后，用户仍报
+        // "字幕没有在播放画面中"。真机取证：
+        // ```
+        // srv.sub idx=2 «Chinese Simplified (默认 PGSSUB)»
+        // [PlayerFlow] 字幕：自动选中«简体中文» id=1     ← 选中了 PGS
+        // [mpv/sub] Could not find subtitle decoder for format 'hdmv_pgs_subtitle'.
+        // ```
+        // ⇒ **选中了但永远不显示**（UI 显示已勾选 ⇒ 比"没选中"更难查）
+        //
+        // ## 规则
+        // · 服务端指定且**可播** → 用它（尊重服务端）
+        // · 服务端指定但**不可播** → 退到可播轨；全不可播则不选
+        // · 服务端未指定 → `autoPickSubtitle`（内部已按"先可播再中文"排序）
+        final wantTrack = wantSub != null
+            ? aligned.where((a) => a.isDefault).firstOrNull
+            : null;
+        final wantPlayable = wantTrack != null &&
+            TrackAligner.isSubtitleCodecLikelyPlayable(
+                wantTrack.codec ?? _serverCodecFor(serverSub, wantTrack));
+        final pick = wantPlayable
+            ? wantTrack
+            : TrackAligner.autoPickSubtitle(aligned,
+                codecOf: (t) => t.codec ?? _serverCodecFor(serverSub, t));
+        if (pick != null) {
+          await k.setSubtitleTrack(pick.kernelId);
+          ref.read(subtitleStateProvider.notifier).selectTrack(pick.kernelId);
+          if (wantTrack != null && pick.kernelId != wantTrack.kernelId) {
+            debugPrint('[PlayerFlow] 字幕：服务端默认«${wantTrack.label}»'
+                '编码 ${wantTrack.codec ?? "?"} 当前内核不支持 '
+                '⇒ 自动退到«${pick.label}»');
+          } else {
+            debugPrint('[PlayerFlow] 字幕：'
+                '${wantSub != null ? "服务端指定" : "自动选中"}'
+                '«${pick.label}» id=${pick.kernelId}');
+          }
+        } else {
+          // ★ 全部不可播 ⇒ **明确告诉用户**（而不是静默"勾了不显示"）
+          final codecs = aligned
+              .map((a) => a.codec ?? '?')
+              .toSet()
+              .join('/');
+          final msg = '该片源的字幕格式（$codecs）当前播放内核无法解码'
+              '（缺 PGS 解码器），无法显示字幕。请换带 SRT/ASS 字幕的片源。';
+          debugPrint('[PlayerFlow] 字幕：${aligned.length} 条全部不可播（$codecs）'
+              '⇒ 不选任何字幕，并提示用户');
+          // 走已有的可见通路提示用户（复用 `_surfaceMessage`）
+          unawaited(_surfaceMessage(msg));
         }
+      } else if (serverSub.isNotEmpty) {
+        // 服务端有字幕但内核没上报 ⇒ 说明是**外挂**（不在容器里），
+        // 由 `_loadExternalSubtitles` 负责加载。
+        debugPrint('[PlayerFlow] 字幕：服务端 ${serverSub.length} 条但内核未上报 '
+            '⇒ 应为外挂字幕，交给 _loadExternalSubtitles');
       }
     } catch (e) {
       debugPrint('[PlayerFlow] 应用服务端默认轨失败（非致命）: $e');
     }
+  }
+
+  /// 是否已做过一次"音频解码失败 → 自动换轨"（**防止无限循环**）。
+  ///
+  /// ⚠️ 必须限制次数：若该片**所有**音轨都不可播，
+  /// 不限次会导致"切轨→失败→再切轨"死循环（用户看到画面不断重载）。
+  bool _autoRecoveredAudio = false;
+
+  /// 这条错误是否像"**音频解码器起不来**"。
+  ///
+  /// ## 判据来自两个内核的**真实报错原文**
+  /// | 内核 | 真机原文 |
+  /// |---|---|
+  /// | Media3 | `ERROR_CODE_DECODER_INIT_FAILED` + `MediaCodecAudioRenderer error` |
+  /// | mpv | `Failed to initialize a decoder for codec '<x>'` |
+  ///
+  /// ⚠️ 用 `||` 而非"必须都匹配"：两个内核文案完全不同。
+  bool _looksLikeAudioDecoderFailure(String e) {
+    final s = e.toUpperCase();
+    if (s.contains('ERROR_CODE_DECODER_INIT_FAILED') &&
+        s.contains('AUDIORENDERER')) {
+      return true;
+    }
+    if (e.contains('Failed to initialize a decoder')) return true;
+    return false;
+  }
+
+  /// **音频解码失败后自动退到一条可播音轨**。
+  ///
+  /// ## 为什么不只是"报错给用户看"
+  /// 实测：Media3 的 `AudioRenderer` 初始化失败会让**整个播放停住**
+  ///（不是静音继续）。而该片 6 条音轨里有 4 条可播
+  ///（DTS `dca` / AC3）⇒ 换一条就正常了。
+  /// 用户不该自己猜到这件事。
+  ///
+  /// ## 语言意图要保留
+  /// 失败那条若是"国语"，优先在同一语言里找可播轨
+  ///（`pickPlayableAudio` 已实现该策略）。
+  Future<void> _recoverAudioTrack(String err) async {
+    final k = _kernel;
+    final launch = _launch;
+    if (k == null || launch == null) return;
+    try {
+      final serverAudio =
+          launch.streams.where((s) => s.type == 'Audio').toList();
+      final aligned = TrackAligner.alignAudio(
+              serverAudio, _facadeAudio(k.tracks.audio))
+          .where((a) => !a.isExternal)
+          .toList();
+      if (aligned.isEmpty) return;
+      // 当前选中的那条（把它排除，避免又选回同一个）
+      final cur = ref.read(audioStateProvider).activeTrackId;
+      final pick = TrackAligner.pickPlayableAudio(
+        aligned.where((a) => a.kernelId != cur).toList(),
+        codecOf: (t) => t.codec ?? _serverCodecFor(serverAudio, t),
+        kernelMpv: k is NativeKernel,
+      );
+      if (pick == null) {
+        debugPrint('[PlayerFlow] 音频解码失败且**没有可播的替代音轨** ⇒ '
+            '保持报错（$err）');
+        return;
+      }
+      await k.setAudioTrack(pick.kernelId);
+      ref.read(audioStateProvider.notifier).selectTrack(pick.kernelId);
+      final msg = '该音轨编码当前内核解不了，已自动切到«${pick.label}»';
+      debugPrint('[PlayerFlow] $msg');
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
+      );
+    } catch (ex) {
+      debugPrint('[PlayerFlow] 自动恢复音轨失败（非致命）: $ex');
+    }
+  }
+
+  /// 从服务端流里取该对齐轨对应的 `codec`（`AlignedTrack.serverIndex` 反查）。
+  ///
+  /// ## 为什么需要这个反查
+  /// `AlignedTrack.codec` 已由 `serverCodecAt` 填充，理论上直接可用；
+  /// 但**旧的对齐结果**（或走了启发式匹配的轨）可能没填
+  /// ⇒ 这里按 `serverIndex` 再查一次作为兜底，避免"codec 为 null
+  /// ⇒ 判为可播 ⇒ 又选到 PGS"。
+  String? _serverCodecFor(List<MediaStream> server, AlignedTrack t) {
+    final idx = t.serverIndex;
+    if (idx == null) return null;
+    for (final s in server) {
+      if (s.index == idx) return s.codec;
+    }
+    return null;
+  }
+
+  /// 把一条消息送到用户可见处（复用内核错误流 → 已有 SnackBar 通路）。
+  ///
+  /// ⚠️ 不能直接 `showSnackBar` —— 本方法可能在内核回调里被调，
+  /// 那时 widget 树状态不确定；走 `playbackStateProvider.setError`
+  /// 是既有的、已验证的可见通路。
+  Future<void> _surfaceMessage(String msg) async {
+    if (!mounted) return;
+    ref.read(playbackStateProvider.notifier).setError(msg);
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
+    );
+  }
+
+  /// **加载服务端的外挂字幕**（Emby `IsExternal=true`）。
+  ///
+  /// ## 为什么必须有这一步（自查 Emby API 时发现的缺口）
+  /// Emby 的外挂字幕是**媒体库里的独立文件**（或用户上传的），
+  /// **不在视频容器里** ⇒ 播放内核打开视频时，它的 `track-list`
+  /// **根本看不到这些轨道**（mpv 只列容器内的流；Media3 同理）。
+  ///
+  /// ⇒ 必须由 App 主动把 `DeliveryUrl` 交给内核加载。
+  ///
+  /// ## 与"内嵌字幕丢失"的区别（用户报障的两个不同原因）
+  /// · **内嵌**（`IsExternal=false`）丢失 = `parseTracks` 的解析 bug
+  ///   （已修：整个列表包一个 try ⇒ 任一条坏轨就让全部变空）
+  /// · **外挂**（`IsExternal=true`）看不到 = **缺这条加载逻辑**（本方法）
+  ///
+  /// ## 时机
+  /// 在 `open` **之后**（内核已就绪）调用。mpv 的 `sub-add` 可随时加；
+  /// Media3 会重建 `MediaItem`（有短暂中断，见其实现注释）。
+  Future<void> _loadExternalSubtitles(PlaybackLaunch launch) async {
+    final k = _kernel;
+    if (k == null) return;
+    if (!k.supports(EngineFeature.externalSubtitle)) {
+      debugPrint('[PlayerFlow] 当前内核不支持外挂字幕，跳过');
+      return;
+    }
+    final ext = launch.streams
+        .where((s) =>
+            s.type == 'Subtitle' &&
+            s.isExternal &&
+            (s.deliveryUrl?.isNotEmpty ?? false))
+        .toList();
+    if (ext.isEmpty) {
+      debugPrint('[PlayerFlow] 无外挂字幕（内嵌字幕由内核直接上报）');
+      return;
+    }
+    // 服务端指定的默认字幕若是外挂的 → 加载时直接选中
+    final wantSub = launch.defaultSubtitleIndex;
+    var okCount = 0;
+    for (final s in ext) {
+      final isDefault = wantSub != null && s.index == wantSub;
+      final ok = await k.addExternalSubtitle(
+        url: s.deliveryUrl!,
+        title: s.displayTitle ?? s.label,
+        language: s.language,
+        select: isDefault,
+      );
+      if (ok) okCount++;
+    }
+    debugPrint('[PlayerFlow] 外挂字幕：加载 $okCount/${ext.length} 条'
+        '（默认字 ${wantSub ?? '无'}）— url 含凭据故不打印');
+    // 加载后内核会重发 track-list ⇒ `_syncTrackLists` 自动把它们并入面板
   }
 
   List<FacadeAudioTrack> _facadeAudio(List<KernelTrack> list) => [

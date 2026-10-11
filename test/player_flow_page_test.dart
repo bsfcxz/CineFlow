@@ -110,6 +110,19 @@ class FakeKernel extends PlayerKernel {
   @override
   Future<void> setSubtitleTrack(String id) async => calls.add('sub:$id');
   @override
+  Future<bool> addExternalSubtitle({
+    required String url,
+    String? title,
+    String? language,
+    bool select = false,
+  }) async {
+    calls.add('addExternalSubtitle:${title ?? '-'}');
+    return true;
+  }
+  @override
+  Future<void> removeExternalSubtitles() async =>
+      calls.add('removeExternalSubtitles');
+  @override
   Future<void> setVideoFilters(
       {double? brightness,
       double? contrast,

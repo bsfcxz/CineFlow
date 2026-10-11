@@ -1155,7 +1155,13 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       SizedBox(height: 20),
       if (d.mediaSources.length > 1) ...[
-        Text('版本',
+        // ★ 版本选择（用户要求："服务端有多个大小和画质的视频时，
+        //   我可以选择播放"）
+        //
+        // ## 为什么标题带条数
+        // 原来只写「版本」—— 用户看不出**有几路可选**
+        //（内容还要横向滚动才发现）。带上条数即"一眼知道有多少"。
+        Text('版本（${d.mediaSources.length} 路可选）',
             style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w800,
@@ -1181,7 +1187,15 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                     border:
                         Border.all(color: active ? Cf.accent : Cf.border),
                   ),
-                  child: Text(m.versionLabel,
+                  // ★ 用 fullVersionLabel（画质 · 大小 · 容器 · 名字）
+                  //
+                  // ## 为什么不能只用 versionLabel（自查时发现的实际问题）
+                  // 服务端给的 `Name` 常常为空或重复（实测同一部片三路源
+                  // `Name` 全为 null）⇒ 面板上三行一模一样的"默认版本"，
+                  // 用户根本没法选。
+                  // fullVersionLabel 用**真实分辨率 + 文件大小 + 容器**
+                  // 拼出可区分的信息：`1080p · HEVC · 12.3 GB · mkv`。
+                  child: Text(m.fullVersionLabel,
                       style: TextStyle(
                           fontSize: 12,
                           fontWeight: active

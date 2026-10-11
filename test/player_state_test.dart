@@ -203,14 +203,28 @@ void main() {
   });
 
   group('面板常量', () {
-    test('抽屉宽度按 min(屏宽×比例, 上限)', () {
-      // 规格 §7.6：min(screenWidth * 0.9, 400)
-      expect(PlayerPanels.settingsWidth(360), closeTo(324, 0.1));
-      expect(PlayerPanels.settingsWidth(1000), 400,
-          reason: '超宽屏应被上限截住');
-      // 规格 §7.8：min(screenWidth * 0.8, 340)
-      expect(PlayerPanels.playlistWidth(360), closeTo(288, 0.1));
-      expect(PlayerPanels.playlistWidth(1000), 340);
+    test('抽屉宽度统一 280dp（含窄屏 85% 钳制）', () {
+      // ★ 2026-10-10 改为统一 280dp（用户要求，对齐 Material
+      //   NavigationDrawer 的规范宽度）
+      //
+      // 旧公式 min(屏宽×0.9, 400) / min(屏宽×0.8, 340) 已删除 ——
+      // 竖屏 393dp 上会得到 354dp（占 90%，几乎盖满，不像"侧栏"）。
+      //
+      // 新语义：**一个基准值 + 窄屏安全钳制**
+      //   width = clamp(280, 0, 屏宽 × 0.85)
+      expect(PlayerPanels.settingsWidth(393), 280,
+          reason: '393dp 屏：85% 上限=334 ⇒ 280 生效');
+      expect(PlayerPanels.settingsWidth(360), 280);
+      expect(PlayerPanels.settingsWidth(1000), 280,
+          reason: '★ 宽屏不再放大到 400 —— 统一 280 更整齐');
+      // 播放列表与设置**同宽**（原来列表更窄 340/0.8）
+      expect(PlayerPanels.playlistWidth(393), 280);
+      expect(PlayerPanels.playlistWidth(1000), 280);
+      // 窄屏钳制：320dp 屏上 85% = 272 < 280 ⇒ 取 272
+      expect(PlayerPanels.settingsWidth(320), closeTo(272, 0.1),
+          reason: '★ 窄屏安全钳制：320dp 屏上 280 会占 88%（又变"盖满"）');
+      // 退化输入不崩
+      expect(PlayerPanels.settingsWidth(0), 280);
     });
 
     test('动画时长与规格一致', () {

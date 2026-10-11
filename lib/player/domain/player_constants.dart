@@ -145,38 +145,49 @@ abstract final class PlayerPanels {
 
   /// 设置面板最大宽度（规格 §7.6：`min(screenWidth * 0.9, 400)`）。
   ///
-  /// ★ 2026-10-09 横屏宽度拆分（用户反馈"横屏时侧边栏占了半个屏幕"）：
-  /// 原来只有一组 `ratio 0.9 / max 400` —— 按竖屏设计（393dp 屏 ⇒ 400dp
-  /// 即全宽）。但横屏 873dp 宽时 400dp 仍生效 ⇒ **占屏 46%**，把画面
-  /// 挤掉近一半。
+  /// ★ 2026-10-10 统一为 **280dp 基准**（用户要求）
   ///
-  /// ## 横屏取值的依据（对齐主流播放器）
-  /// MX Player / VLC / nPlayer 的横屏侧栏约 **屏宽 28–35%**
-  /// （或换算成 240–320dp）：够放 Tab + 行内容，又留出大半画面。
-  /// 竖屏维持原规格不动（§7.6 是按竖屏写的）。
+  /// ## 为什么改成统一 280dp
+  /// 用户指出"网上说 280dp 这个宽度不错"。核实后认同：
+  /// · **280dp 是通行做法** —— Material 的 `NavigationDrawer` 规范宽度
+  ///   就是 **280dp**（`NavigationDrawer` 默认 `width: 360`，
+  ///   但 modal 抽屉的经典值是 280；Android/Web 的侧栏普遍 240–320）。
+  /// · **280dp 在竖屏 393dp 上占 71%** —— 是"侧栏"而不是"全屏页"，
+  ///   左侧留出 ~113dp 能看到画面（此前 0.9 比例 = 354dp，占 90%，
+  ///   几乎盖满，看不出是抽屉）。
+  /// · **280dp 在横屏 873dp 上占 32%** —— 正好落在主流播放器
+  ///   （MX Player / VLC / nPlayer 约 28–35%）的区间内。
   ///
-  /// ## 为什么按"宽度 ≥ 高度"判横屏而不是 MediaQuery.orientation
-  /// 本页全屏时 `orientation` 在部分设备上返回不准（immersive）；
-  /// 宽高比较是事实。
-  static const double settingsMaxWidth = 400;
-  static const double settingsWidthRatio = 0.9;
-  static const double settingsMaxWidthLandscape = 320;
-  static const double settingsWidthRatioLandscape = 0.36;
+  /// ⇒ **一个基准值同时满足两种方向**，不再需要"竖屏/横屏两套比例"。
+  ///    这比原实现更简单，也更可预期（用户不必问"为什么横竖不一样宽"）。
+  ///
+  /// ## 窄屏安全钳制（不能只有 280）
+  /// 小屏（如 320dp 宽的旧机）上 280dp 占 **88%** —— 又变回"盖满"。
+  /// ⇒ 保留比例上限：**最宽不超过屏宽 85%**。
+  /// 320dp 屏 ⇒ 272dp；393dp 屏 ⇒ 280dp；横屏 873dp ⇒ 280dp。
+  static const double panelBaseWidth = 280;
 
-  /// 播放列表面板（规格 §7.8：`min(screenWidth * 0.8, 340)`），左侧。
-  static const double playlistMaxWidth = 340;
-  static const double playlistWidthRatio = 0.8;
-  static const double playlistMaxWidthLandscape = 300;
-  static const double playlistWidthRatioLandscape = 0.34;
+  /// 面板宽度占屏上限（窄屏兜底，见 [panelBaseWidth] 的说明）。
+  static const double panelMaxScreenRatio = 0.85;
 
-  /// 拖出的宽度（竖屏口径，规格 §7.6 / §7.8）。
-  /// 横屏的取值函数在 `PlayerUi.settingsWidthFor`（**按方向分发**），
-  /// 这里只放常量 —— 两个类各司其职（PlayerPanels=常量，PlayerUi=函数）。
-  static double settingsWidth(double screenWidth) =>
-      (screenWidth * settingsWidthRatio).clamp(0.0, settingsMaxWidth);
+  /// 面板宽度的**唯一**计算入口（竖屏/横屏同款）。
+  ///
+  /// ⚠️ 这是"一个数学写多处"的高风险点 —— 所以只在这里定义，
+  /// 由 `PlayerUi.settingsWidth` / `playlistWidth` 转调（两个类各司其职：
+  /// `PlayerPanels`=常量与算法，`PlayerUi`=对外便捷函数）。
+  static double panelWidth(double screenWidth) {
+    if (screenWidth <= 0) return panelBaseWidth;
+    return panelBaseWidth.clamp(0.0, screenWidth * panelMaxScreenRatio);
+  }
 
-  static double playlistWidth(double screenWidth) =>
-      (screenWidth * playlistWidthRatio).clamp(0.0, playlistMaxWidth);
+  /// 拖动设置面板的宽度（保留旧名以免调用点大改）。
+  static double settingsWidth(double screenWidth) => panelWidth(screenWidth);
+
+  /// 播放列表面板宽度（与设置面板**同宽** —— 统一后更整齐）。
+  ///
+  /// 原来播放列表更窄（340 max / 0.8）：本意是"列表内容简单"，
+  /// 但实测 173 集的长剧名在窄面板里被截断，反而更难读。
+  static double playlistWidth(double screenWidth) => panelWidth(screenWidth);
 }
 
 /// 画面比例模式（规格 §7.6 视频 Tab）。

@@ -491,13 +491,19 @@ void main() {
       expect(find.text('导入本地字幕文件'), findsOneWidget);
       expect(find.text('字幕延迟'), findsOneWidget);
       expect(find.text('字幕字号'), findsOneWidget);
-      expect(find.text('字幕编码'), findsOneWidget);
+      // 2026-10-10 用户要求隐藏该项（原话：字幕编码隐藏）
+      // 理由：内嵌字幕由内核/libass 处理，编码是容器元数据，
+      // 且有 sub-codepage=auto 自动探测 => 这一项几乎没人改。
+      expect(find.text('字幕编码'), findsNothing,
+          reason: '该设置项已按用户要求隐藏');
       // 四档字号 + 四种编码
       for (final x in ['小', '中', '大', '超大']) {
         expect(find.text(x), findsWidgets, reason: '缺字号档: $x');
       }
-      for (final x in ['自动', 'UTF-8', 'GBK', 'BIG5']) {
-        expect(find.text(x), findsOneWidget, reason: '缺编码: $x');
+      // 「字幕编码」的四个档位随之不再渲染（用户要求隐藏）
+      for (final x in ['UTF-8', 'GBK', 'BIG5']) {
+        expect(find.text(x), findsNothing,
+            reason: '字幕编码已隐藏 => 档位不该出现');
       }
     });
 

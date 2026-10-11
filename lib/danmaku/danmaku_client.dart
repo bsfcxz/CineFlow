@@ -28,6 +28,7 @@ library;
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../data/db/app_database.dart';
 import 'danmaku_async.dart';
@@ -133,7 +134,13 @@ class DanmakuClient {
     final cached = await cache?.cacheGet(cacheKey);
     if (cached != null) {
       final parsed = _decodeComments(cached, episodeId);
-      if (parsed != null) return parsed;
+      if (parsed != null) {
+        // ★ 诊断（弹幕简繁排查用）：命中缓存时也要能看出"这份数据是哪档"
+        debugPrint('[Danmaku] 命中缓存（chConvert=$cv）：'
+            '${parsed.items.length} 条，首条«'
+            '${parsed.items.isNotEmpty ? parsed.items.first.text : ""}»');
+        return parsed;
+      }
     }
 
     // ★★ `async` 参数必须**按源类型**决定发不发（真机 + 实测定位）
@@ -161,6 +168,25 @@ class DanmakuClient {
       'chConvert': '$cv',
       if (useAsync && kind != DanmakuProviderKind.publicProxy) 'async': '1',
     };
+
+    // ★★ 诊断（弹幕简繁排查用）——把"到底发了哪一档"钉死
+    //
+    // ## 为什么要这条（用户两次报"弹幕还是繁体"）
+    // 已实测服务端 chConvert **确实有效**：
+    // ```
+    // chConvert=0（不转换）: 繁体特征 2   / 简体特征 207
+    // chConvert=1（转简体）: 繁体特征 0   / 简体特征 209
+    // chConvert=2（转繁体）: 繁体特征 209 / 简体特征 0
+    // ```
+    // ⇒ 问题在客户端某一环。这条日志同时暴露：
+    //   ① 本次 `chConvert` 的值（看是不是意外成了 0/2）
+    //   ② 请求路径与是否命中缓存
+    //   ③ 拿到后**首条弹幕原文** —— 用字形直接判断简繁，不用再猜
+    //
+    // ⚠️ 只打 chConvert 值，**不打 api_key/完整 URL**（安全红线）。
+    debugPrint('[Danmaku] 请求 comment/$episodeId：chConvert=$cv'
+        '（来源=${chConvert != null ? "显式参数" : "配置"}），'
+        'withRelated=$withRelated，kind=${kind.name}');
 
     // 2) 首次请求（异步模式下可能返回 pending）
     final raw = await _get(path, query: query);

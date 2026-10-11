@@ -26,6 +26,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import '../domain/player_constants.dart' show DecodeMode;
 import '../kernel.dart';
 import '../kernel_event_parser.dart';
+import '../track_aligner.dart' show TrackAligner;
 
 class NativeKernel implements PlayerKernel {
   NativeKernel() {
@@ -192,12 +193,112 @@ class NativeKernel implements PlayerKernel {
             _errorController.add('播放失败（内核报错）');
           }
         case 'log':
-          // 日志不进 UI（要排查时看 logcat 的 CineFlowMPV tag）
-          break;
+          // ★★ 日志**不再全部丢弃**（真机实测的关键缺口 + 开源对照）
+          //
+          // ## 为什么必须看日志（用户报障的两个问题都在日志里）
+          // 我们的 libmpv.so 缺解码器，而**只有 mpv 日志会说**：
+          // ```
+          // [mpv/ad]  Failed to initialize a decoder for codec 'truehd'.
+          // [mpv/sub] Could not find subtitle decoder for format
+          //           'hdmv_pgs_subtitle'.
+          // ```
+          // 而原来的 `break;` 把它们**全部丢掉** ⇒ 用户只感到
+          // "没声音/没字幕"，**没有任何提示**，也不知道原因。
+          //
+          // ## 为什么不能把所有日志都弹给用户
+          // mpv 日志量极大（播放中每秒数条）。⇒ 只挑**可行动的那几条**：
+          // 解码器缺失 / 字幕解码器缺失 —— 它们意味着"这条轨永远播不出来"，
+          // 必须让用户知道（换轨或换内核），而不是静默失败。
+          _maybeSurfaceDecodeFailure(
+              m['level'] as String?, m['text'] as String?);
+
+        // ★ Media3 侧的同类上报（`AnalyticsListener` 发出）
+        case 'trackUnsupported':
+          final msg = m['message'] as String? ?? '该轨道编码不受支持';
+          if (!_errorController.isClosed) _errorController.add(msg);
+          debugPrint('[Kernel] 轨道不受支持：$msg');
       }
     } catch (_) {
       // 单条事件解析失败不影响播放
     }
+  }
+
+  /// 已上报过的解码失败（**去重**用）。
+  ///
+  /// ## 为什么必须去重
+  /// mpv 在切轨/重试时会把同一条错误**重复打印多次**
+  ///（真机实测：切一次音轨就刷 2–3 条）。不去重会连弹多个提示。
+  final _reportedDecodeFailures = <String>{};
+
+  /// **把"解码器缺失"这类日志变成用户可见的提示**。
+  ///
+  /// ## 为什么只挑这两类（而不是所有日志）
+  /// | 日志特征 | 含义 | 用户能做什么 |
+  /// |---|---|---|
+  /// | `Failed to initialize a decoder for codec 'X'` | 该音轨/视频**永远播不出来** | 换一条轨 |
+  /// | `Could not find subtitle decoder for format 'X'` | 该字幕**永远显示不了** | 换一条字幕 |
+  ///
+  /// 其余日志（缓存、丢帧、时序）都是**过程性**的，弹给用户只会造成噪音。
+  ///
+  /// ## 根因说明（如实告诉用户"为什么"）
+  /// 这两类的根因都一样：**自持 libmpv.so 是白名单编译，缺解码器**
+  ///（实测缺 `truehd`/`mlp`/`pgssub`/`mov_text`）。
+  /// ⇒ 文案里要给出**可行动的下一步**（换轨 / 换内核），而不是"出错了"。
+  void _maybeSurfaceDecodeFailure(String? level, String? text) {
+    if (text == null || text.isEmpty) return;
+
+    String? msg;
+    // ① 音频/视频解码器初始化失败
+    final m1 = RegExp(
+            r"Failed to initialize a decoder for codec '([^']+)'")
+        .firstMatch(text);
+    if (m1 != null) {
+      final codec = m1.group(1)!;
+      // ★ 记入**运行时能力表**（供后续换轨时自动跳过同一编码）
+      TrackAligner.markSubtitleCodecUnsupported(codec);
+      msg = '该轨道的编码（$codec）当前播放内核无法解码，已跳过。'
+          '请换一条音轨（或切换到另一个播放内核）。';
+    }
+    // ② 字幕解码器缺失
+    final m2 = RegExp(
+            r"Could not find subtitle decoder for format '([^']+)'")
+        .firstMatch(text);
+    if (m2 != null) {
+      final fmt = m2.group(1)!;
+      // ★★ **记入运行时能力表**（本轮的关键设计修正）
+      //
+      // ## 为什么必须是"运行时记录"而不是"代码里硬编码"
+      // 用户两次指正："mpv 也能解码 PGS"。核实后确认**他是对的**：
+      // · mpv 上游（全量 ffmpeg）**支持 PGS**
+      // · Media3 有 `PgsParser`（已核实 aar 里有该类）⇒ 也能显示
+      // 我们这份 `.so` 缺 `ff_pgssub_decoder` **只是当前这份构建的问题**。
+      //
+      // ⇒ 若把 `pgssub` 硬编码进黑名单，**修好 .so 之后反而是坏的**
+      //   （字幕能显示了却被代码禁用）。
+      // ⇒ 改为：**这次进程里报错了 → 记下来 → 本次会话后续跳过**；
+      //   下次启动（或换了 .so）自然恢复。
+      //
+      // ⚠️ `hdmv_pgs_subtitle` 与 `pgssub` 是同一个解码器的两种叫法
+      //   （前者是 `AVCodecDescriptor` 名、后者是 `AVCodec.name`）
+      //   ⇒ 两个都记，避免"报了 A 却按 B 判断"。
+      TrackAligner.markSubtitleCodecUnsupported(fmt);
+      if (fmt.contains('pgs')) {
+        TrackAligner.markSubtitleCodecUnsupported('pgssub');
+        TrackAligner.markSubtitleCodecUnsupported('pgs');
+      }
+      // 把编码名转成人话（PGS 是图形字幕，用户看到名字也不知道）
+      final human = fmt.contains('pgs')
+          ? 'PGS 图形字幕（蓝光原盘常用）'
+          : fmt;
+      msg = '该字幕是 $human，当前播放内核不支持，无法显示。'
+          '请换一条文本字幕（如 SRT/ASS）。';
+    }
+    if (msg == null) return;
+
+    // 去重：同一条只报一次
+    if (!_reportedDecodeFailures.add(msg)) return;
+    debugPrint('[Kernel] $msg');
+    if (!_errorController.isClosed) _errorController.add(msg);
   }
 
   void _onProperty(String name, Object? data) {
@@ -247,7 +348,29 @@ class NativeKernel implements PlayerKernel {
         );
         if (!_selectionController.isClosed) _selectionController.add(_selection);
       case 'track-list':
-        _tracks = _parseTracks(data);
+        // ★ 诊断（用户报"没识别到音频/字幕"时定位用）
+        //
+        // ## 为什么要打（真机取证的结论）
+        // 实测《复仇者联盟》：服务端给出 **6 音频 / 8 字幕**，
+        // mpv 原生侧日志也确认有 `Audio --aid=1` + 13 条 `Subs --sid=*`，
+        // **但 Dart 侧收到 0 条** ⇒ 问题在事件链路。
+        // 只打"收到几条"不够 —— 还要知道 data 的**类型与形状**
+        // （`null`？空 list？还是 JSON 字符串但字段名不符？）
+        final parsed = _parseTracks(data);
+        debugPrint('[Kernel] track-list 事件：data 类型='
+            '${data.runtimeType}，长度='
+            '${data is List ? data.length : '非List'} '
+            '→ 解析出 音频${parsed.audio.length}/字幕${parsed.subtitle.length}');
+        // ★★ 形状诊断：把**第一条**轨道的原始 JSON 打出来
+        //
+        // ## 为什么必须打原始内容（真机实测踩到）
+        // 长度=16 却解析出 0 条 ⇒ 字段名不符。只有看到**真实 key**
+        // 才能知道是 `type`/`id`/`ff-index` 中的哪个对不上。
+        // （盲猜字段名在本仓库栽过多次。）
+        if (data is List && data.isNotEmpty) {
+          debugPrint('[Kernel] track-list[0] 原始 = ${data.first}');
+        }
+        _tracks = parsed;
         if (!_tracksController.isClosed) _tracksController.add(_tracks);
       // ★ 2026-10-09：`width/height` → `dwidth/dheight`（C 层已同步改观察名）
       //
@@ -529,13 +652,119 @@ class NativeKernel implements PlayerKernel {
   Future<void> setVolume(double volume) =>
       _method.invokeMethod('setVolume', volume);
 
+  /// 切换音轨。
+  ///
+  /// ## ★★ 必须**校验 id**（真机实测的"没声音"事故）
+  /// mpv 的 `aid` 只接受**整数**或 `auto`/`no`。
+  /// 若传 `"1.0"`（曾因 C 层 `%.6f` 把 INT64 序列化成 `1.000000`），
+  /// mpv 视为非法值 ⇒ 直接 `Audio: no audio` ⇒ **播放无声**。
+  ///
+  /// 真机证据（《复仇者联盟》）：
+  /// ```
+  /// 22:10:51.586  Audio --aid=1 ... truehd 8ch   ← 6 条音轨都在
+  /// 22:10:51.672  Audio: no audio                 ← 0.086s 后被关掉
+  /// ```
+  ///
+  /// ⇒ 这里做**最后一道防御**：非法的 id 一律不发给 mpv（宁可保持现状，
+  ///    也不要把音频关掉 —— "没声音"比"音轨没切"严重得多）。
   @override
-  Future<void> setAudioTrack(String id) =>
-      _method.invokeMethod('setAudioTrack', id);
+  Future<void> setAudioTrack(String id) async {
+    final safe = _safeTrackId(id);
+    if (safe == null) {
+      debugPrint('[Kernel] 拒绝非法 aid "$id"（mpv 只接受整数/auto/no）'
+          '—— 保持当前音轨，避免"没声音"');
+      return;
+    }
+    await _method.invokeMethod('setAudioTrack', safe);
+  }
+
+  /// 校验并归一化 mpv 的轨 id。
+  ///
+  /// 允许：纯整数、`auto`、`no`。
+  /// 返回 null = 非法（调用方应跳过，不要发给 mpv）。
+  ///
+  /// ⚠️ `1.0` 这种"浮点形状的整数"要**修好**而不是拒绝 ——
+  /// 那是上游序列化问题，语义上就是 `1`。
+  static String? _safeTrackId(String id) {
+    final s = id.trim();
+    if (s.isEmpty) return null;
+    if (s == 'auto' || s == 'no') return s;
+    // 纯整数
+    if (int.tryParse(s) != null) return s;
+    // 浮点形状但值是整数（"1.0" → "1"）——上游 bug，这里兜住
+    final d = double.tryParse(s);
+    if (d != null && d == d.roundToDouble()) return '${d.toInt()}';
+    return null;
+  }
+
+  /// 加载外挂字幕（mpv 的 `sub-add`）。
+  ///
+  /// ## 为什么用 `sub-add`（mpv 官方手册 `command.rst`）
+  /// ```
+  /// sub-add <url> [<flags> [<title> [<lang>]]]
+  ///   flags: select / auto / cached / remove / ...
+  /// ```
+  /// 外挂字幕不在容器里 ⇒ 必须显式添加。
+  ///
+  /// ## 为什么走通用的 `command` 通道（而不是新增 Kotlin 分支）
+  /// `PlayerChannel.kt` 早有 `"command" -> MPVLib.command(args)` 通用分支
+  /// ⇒ 不需要改原生层、不需要重新协商契约，直接发命令即可。
+  /// （少一处原生改动 = 少一处可能忘记同步双内核的地方。）
+  ///
+  /// ## URL 里的 api_key 不能进日志（安全红线）
+  /// 只打"添加了第几条 + title"，**绝不打 url**。
+  @override
+  Future<bool> addExternalSubtitle({
+    required String url,
+    String? title,
+    String? language,
+    bool select = false,
+  }) async {
+    if (url.isEmpty) return false;
+    try {
+      // ⚠️ `sub-add` 的参数顺序：url, flags, title, lang
+      //    flags 为空时 mpv 会拒绝 → 显式给 `select` 或 `auto`
+      final args = <String>[
+        'sub-add',
+        url,
+        select ? 'select' : 'auto',
+        if (title != null && title.isNotEmpty) title,
+        if (language != null && language.isNotEmpty) language,
+      ];
+      await _method.invokeMethod('command', args);
+      debugPrint('[Kernel] 外挂字幕已添加（title=${title ?? '-'}，'
+          'select=$select）— url 含凭据故不打印');
+      return true;
+    } catch (e) {
+      debugPrint('[Kernel] 外挂字幕添加失败: $e');
+      return false;
+    }
+  }
+
+  /// 移除全部外挂字幕（mpv 的 `sub-remove` 不带参数 = 移除全部）。
+  ///
+  /// ⚠️ **换集/换片必须调** —— 否则上一集的外挂字幕会留在播放器里，
+  /// 用户看到"第 2 集却显示第 1 集的字幕"。
+  @override
+  Future<void> removeExternalSubtitles() async {
+    try {
+      await _method.invokeMethod('command', ['sub-remove']);
+    } catch (e) {
+      debugPrint('[Kernel] 移除外挂字幕失败（非致命）: $e');
+    }
+  }
 
   @override
-  Future<void> setSubtitleTrack(String id) =>
-      _method.invokeMethod('setSubtitleTrack', id);
+  /// 切换字幕轨。与 [setAudioTrack] 同款校验（`sid` 也只接受整数/auto/no）。
+  @override
+  Future<void> setSubtitleTrack(String id) async {
+    final safe = _safeTrackId(id);
+    if (safe == null) {
+      debugPrint('[Kernel] 拒绝非法 sid "$id"（mpv 只接受整数/auto/no）');
+      return;
+    }
+    await _method.invokeMethod('setSubtitleTrack', safe);
+  }
 
   // ---------------- 引擎能力：mpv 全都支持 ----------------
   //

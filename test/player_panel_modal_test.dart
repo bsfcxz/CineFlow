@@ -131,7 +131,14 @@ void main() {
   });
 
   group('事实 2：抽屉打开时盖住底栏（模态语义）', () {
-    testWidgets('★ 400dp 屏上设置抽屉盖住底栏按钮的坐标', (tester) async {
+    testWidgets('★ 400dp 屏上抽屉宽 280dp，不再盖住底栏', (tester) async {
+      // ★ 2026-10-10 现象变化（不是"改测试让它过"，是事实变了）
+      //
+      // 旧断言说"抽屉盖住底栏（360dp 覆盖 x=40..400）"。
+      // 统一 **280dp** 后抽屉是 **x=120..400** ⇒ 底栏按钮 x≈92 **不再被盖住**。
+      //
+      // 这个变化是**期望的**：280dp 让抽屉回归"侧栏"语义
+      //（Material NavigationDrawer 规范宽度），而不是盖满大半屏。
       final c = await pumpPlayer(tester, size: const Size(400, 800));
       c.read(panelStateProvider.notifier).open(PanelType.settings);
       await tester.pump(const Duration(milliseconds: 400));
@@ -139,16 +146,32 @@ void main() {
       final btn = tester.getRect(find.byKey(keys.player.playlistButton));
       final drawer = tester.getRect(find.byKey(keys.player.settingsPanel));
 
+      expect(drawer.width, 280,
+          reason: '★ 统一 280dp（用户要求；400dp 屏上 85% 上限=340 ⇒ 280 生效）');
       expect(
         drawer.left,
-        lessThan(btn.center.dx),
-        reason: '规格 §7.6：抽屉宽 = min(屏宽×0.9, 400) = 360dp（400dp 屏）\n'
-            '→ 覆盖 x=40..400，而底栏按钮在 x≈92 → **被盖住**。\n'
-            '这是模态抽屉的正确行为：面板开着时不能同时点底栏。',
+        greaterThan(btn.center.dx),
+        reason: '★ 抽屉左边界 x=120 > 底栏按钮中心 x≈92\n'
+            '⇒ 底栏**可见可点**（280dp 让抽屉回归"侧栏"而非"盖满"）',
       );
     });
 
-    testWidgets('★ 面板打开时点底栏 → 不会切换面板（点击被抽屉吃掉）', (tester) async {
+    testWidgets('★ 面板打开时点底栏 → 关闭面板（遮罩拦截，标准模态语义）',
+        (tester) async {
+      // ★ 2026-10-10 实测行为（比旧断言更精确）
+      //
+      // 统一 280dp 后抽屉是 x=120..400，底栏按钮（x≈92）**露在抽屉之外**。
+      // 但遮罩是 `Positioned.fill` **铺满整屏**（含底栏所在区域）
+      // ⇒ 点在 x=92 命中的是**遮罩**，不是按钮。
+      //
+      // 结果是 `PanelType.none`（遮罩的 onTap = 关闭面板），
+      // **不是**切到 playlist。
+      //
+      // 这是标准模态语义：「点面板外 = 关闭」，与 iOS/Android 的
+      // bottom sheet / drawer 一致，也与本仓库 `onClose` 契约一致。
+      //
+      // ⚠️ 我第一版把断言写成 `PanelType.playlist`（以为"露出来就能点"）
+      //    —— 测试正确地变红了，说明遮罩会拦截。**测试抓到了我的理解错**。
       final c = await pumpPlayer(tester, size: const Size(400, 800));
       c.read(panelStateProvider.notifier).open(PanelType.settings);
       await tester.pump(const Duration(milliseconds: 400));
@@ -157,9 +180,9 @@ void main() {
           warnIfMissed: false);
       await tester.pump(const Duration(milliseconds: 400));
 
-      expect(c.read(panelStateProvider).open, PanelType.settings,
-          reason: '点击落在抽屉上（不是按钮），所以面板不变。\n'
-              '要切换面板必须先关闭当前面板 —— 与原型行为一致。');
+      expect(c.read(panelStateProvider).open, PanelType.none,
+          reason: '★ 遮罩铺满全屏（含底栏区域）⇒ 点底栏命中遮罩 ⇒ 关闭面板。\n'
+              '这是标准模态语义（"点面板外 = 关闭"）。');
     });
   });
 
@@ -185,24 +208,29 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
 
       final drawer = tester.getRect(find.byKey(keys.player.settingsPanel));
-      expect(drawer.width, 320,
-          reason: '★ 横屏抽屉应被 320dp 上限截住（竖屏仍 400dp）');
-      expect(drawer.left, 1000 - 320);
-      expect(drawer.width / 1000, lessThan(0.4),
-          reason: '★ 横屏侧栏不得超过 40% 屏宽（用户要求"别占半个屏"）');
+      // ★ 2026-10-10 统一 **280dp**（竖屏/横屏同款，用户要求）
+      //
+      // 旧的"横屏按 0.36 比例、上限 320"已删除 —— 280 在横屏 1000dp 上
+      // 只占 28%，本就在主流播放器（28–35%）区间内，不需要再单独收窄。
+      expect(drawer.width, 280,
+          reason: '★ 统一 280dp：横屏 1000dp 上占 28%');
+      expect(drawer.left, 1000 - 280);
+      expect(drawer.width / 1000, lessThan(0.3),
+          reason: '★ 横屏侧栏不超过 30% 屏宽（用户要求"别占半个屏"）');
 
       await tester.tapAt(const Offset(100, 400)); // 抽屉之外
       await tester.pump(const Duration(milliseconds: 400));
       expect(c.read(panelStateProvider).open, PanelType.none);
     });
 
-    testWidgets('竖屏口径不变（规格 §7.6 的 0.9 比例）', (tester) async {
+    testWidgets('竖屏也用统一 280dp（不再按比例）', (tester) async {
       final c = await pumpPlayer(tester, size: const Size(393, 850));
       c.read(panelStateProvider.notifier).open(PanelType.settings);
       await tester.pump(const Duration(milliseconds: 400));
 
       final drawer = tester.getRect(find.byKey(keys.player.settingsPanel));
-      expect(drawer.width, moreOrLessEquals(393 * 0.9, epsilon: 0.5),
+      // ★ 2026-10-10：393dp 屏上 85% 上限 = 334 ⇒ 280 生效（未触上限）
+    expect(drawer.width, 280,
           reason: '★ 竖屏保持规格 §7.6 原样');
     });
   });
@@ -216,18 +244,19 @@ void main() {
       n.open(PanelType.settings);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      expect(tester.getRect(find.byKey(keys.player.settingsPanel)).left, 40,
-          reason: '设置抽屉在屏幕内（left=40，宽度 360）');
+      // ★ 400dp 屏、宽 280dp ⇒ left = 400-280 = 120
+      expect(tester.getRect(find.byKey(keys.player.settingsPanel)).left, 120,
+          reason: '设置抽屉在屏幕内（left=120，宽度 280）');
 
       // 切到播放列表
       n.open(PanelType.playlist);
 
       // ⚠️ 只 pump 一次：AnimatedSlide 刚收到新的目标 offset，
-      //    但动画**还没推进** —— 此时位置仍是旧的（left=40）。
+      //    但动画**还没推进** —— 此时位置仍是旧的（left=120）。
       await tester.pump();
       expect(
         tester.getRect(find.byKey(keys.player.settingsPanel)).left,
-        40,
+        120,
         reason: '第一次 pump 只是启动动画，位置还没变。\n'
             '如果测试在此处断言"已滑出"，会**误判成 bug**（实际是动画没跑）。',
       );

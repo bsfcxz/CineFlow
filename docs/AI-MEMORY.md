@@ -1546,3 +1546,302 @@ check-dev.ps1     21 项全过，退出码 0
 - ① 简体转换的真机字形核对（服务端 `chConvert` 已单测，但未截图核对字形）
 - ② 导入本地文件后弹幕真的渲染（只验证到"选择器弹出"，未真选一个文件走完）
 - ③ 合并相同弹幕的真机条数对比（纯函数已单测）
+
+### 2026-10-10 · 第 16 轮 · **我的回归**：前台服务 5 秒超时导致"回桌面"
+
+用户报（四条）：
+> "播放画面中没有字幕，去掉字幕的后缀 pgssub 等，音轨后缀也去除，
+>  而且我切换音轨（truehd 等）时也没有声音。"
+> "我使用原生内核 media3 播放复仇者联盟时，弹出这个
+>  （`NO_UNSUPPORTED_TYPE`），而且点击退出后直接会回到手机桌面。"
+
+#### 🔴 ① 崩溃"点退出回桌面" —— **我引入的回归**
+
+**真机取证**（`logcat -b crash`）：
+```
+FATAL EXCEPTION: main
+android.app.RemoteServiceException$ForegroundServiceDidNotStartInTimeException
+  at ContextImpl.startForegroundService
+  at ex.p(SourceFile:1)      ← Flutter 插件层
+  at vg.onMethodCall
+```
+
+**根因链（时序，极隐蔽）**：
+1. Android 规定 `startForegroundService()` 后**必须 5 秒内** `startForeground()`
+2. 而 `MediaSessionService` 只在**它认为该贴通知**时才调 —— 它按
+   `player.isPlaying` 判断，而我们的 `isPlaying` 来自 **Dart 推的快照**
+   ⇒ 起播那一刻还是 `false` ⇒ **从不调用**
+3. 平时不炸：`start` 只在起播后调，"起播→isPlaying=true"通常 < 5 秒
+4. **本轮我改了选轨逻辑**（等轨道上报最长 6 秒）⇒ 窗口 > 5 秒 ⇒ **必崩**
+
+**修法**：在 `onStartCommand` 里**自己立刻进前台**（不等 Media3 判断）：
+- `ensureForegroundNow()` 在 `super.onStartCommand` **之前**调
+- 独立渠道 + 独立通知 id（占位通知），起播后由 `onUpdateNotification`
+  `dropPlaceholder()` 撤掉（避免两条通知）
+- 失败 `Log.e` 留证据（5 秒后进程会被杀，无日志就只能猜）
+
+**真机验证**（新包 23:46）：
+```
+23:47:26.736  会话服务已启动
+23:47:26.769  已进前台（5 秒约束满足）    ← 33ms 内完成
+crash 缓冲：无 FATAL / ForegroundService 异常
+点退出后 pid 存活 ✅
+```
+
+#### 🔴 ② 没声音 / 字幕不显示 —— **根因是 libmpv.so 缺解码器**
+
+**真机取证**（`logcat` 里的 mpv 原生日志）：
+```
+[mpv/ad]  Failed to initialize a decoder for codec 'truehd'.
+[mpv/sub] Could not find subtitle decoder for format 'hdmv_pgs_subtitle'.
+```
+
+**静态取证**（`.so` 符号扫描）：
+```
+共 150 个 ff_*_decoder（明显是白名单编译）
+❌ ff_truehd_decoder     ❌ ff_mlp_decoder
+❌ ff_pgssub_decoder     ❌ ff_mov_text_decoder
+✅ ff_dca_decoder（DTS）/ ff_ac3 / ff_eac3 / ff_aac / ff_srt / ff_ass
+```
+
+**对照 mpv-android 官方构建脚本**（`buildscripts/scripts/ffmpeg.sh:39`）：
+```bash
+--disable-{muxers,encoders,devices}    # 只禁这三个
+# 没有 --disable-decoders ⇒ 官方是全量解码器
+```
+
+⚠️ **这条要记住**：蓝光原盘的字幕 **100% 是 PGS 图形字幕** ⇒
+缺 `pgssub` 时"字幕功能看起来完全坏了"，而 UI 里列表是正常的。
+
+**为什么以前"有声音"**：`parseTracks` 的解析 bug 让轨道列表恒为空
+⇒ 选轨逻辑**从不执行** ⇒ mpv 用自己的策略（跳过了 truehd）⇒ 恰好有声。
+**修好解析后忠实选服务端默认轨（TRUEHD）⇒ 反而没声音。**
+
+#### 本轮实际改了什么（代码能修的部分）
+
+| 改动 | 说明 |
+|---|---|
+| **`onStartCommand` 立刻进前台** | 修崩溃（见上） |
+| **`id` 归一化为整数字符串** | `"1.0"` → `"1"`（cpp 的 `%.6f` 把 INT64 变成 `1.000000`）；mpv 的 `aid` 只接受整数 |
+| **cpp `sb_json_int`** | INT64 不再走 double 序列化 |
+| **内核侧 `_safeTrackId` 校验** | 非法 id 不发给 mpv（"没声音"比"没切轨"严重） |
+| **`pickPlayableAudio`** | 服务端默认轨编码不可解时，退到**同语言可解轨**（TRUEHD→DTS） |
+| **`autoPickSubtitle`** | 服务端 `DefaultSubtitleStreamIndex=null` 时**自动选中文轨**（原来完全不选 ⇒ 无字幕） |
+| **`isSubtitleCodecLikelyPlayable`** | PGS 判为不可解（对称于音频） |
+| **去掉编码后缀** | `stripCodecSuffix`：`英语 · TRUEHD · 7.1` → `英语 · 7.1`；`简英特字 · PGSSUB` → `简英特字`（保留声道与"国配"等语言信息） |
+| **中文语言名** | `language_names.dart`（260+ 映射）+ `chineseLabel`（内核中文名优先） |
+| **轨道晚到时补做选轨** | `_pendingDefaultTracks`（时序兜底） |
+| **解码失败对用户可见** | mpv 日志不再全丢；`Failed to initialize a decoder` / `Could not find subtitle decoder` → 转成可行动提示（去重） |
+| **Media3 `trackUnsupported`** | `AnalyticsListener` + Dart 转 errorStream（`log` 类型本是忽略的） |
+| **`tool/check_mpv_decoders.py`** | 解码器自检脚本（**收工/发版前必跑**） |
+
+#### ★★★ 反思（用户要求"要学会反思"）
+
+**反思 1：我修好一处，反而引爆了下游隐藏的 bug —— 而且没做链路回归。**
+`parseTracks` 修好后，选轨逻辑**第一次真正执行**，于是同时暴露出
+① id 格式（`"1.0"`）② 服务端默认轨不可解 ③ 字幕从未被选。
+⇒ **教训**：修"数据为空"类 bug 时，必须检查"下游拿到数据后会做什么"，
+并把那条链路**端到端**跑一遍（我只跑了单测，没跑真机）。
+
+**反思 2：我让起播变慢，却没检查"起播窗口"的系统约束。**
+Android 的前台服务 5 秒硬限制是**已知常识**，而我把等轨道时间从 3s 拉到 6s。
+⇒ **教训**：改动起播时序前，先问"这条路径上有没有基于时间的外部约束"。
+（已在 `_pendingDefaultTracks` 的注释里写下这条。）
+
+**反思 3：我把 mpv 日志全丢了，导致"用户可见"这条通路从未建立。**
+`case 'log': break;` 看起来是"日志不进 UI"的合理设计，
+但**解码器失败只能从日志看到** ⇒ 等于把所有"能力缺失"变成静默失败。
+⇒ **教训**：丢弃日志前必须先确认"关键故障信号是否只能从日志获得"。
+
+**反思 4：我用旧包做了验证，差点误判"已通过"。**
+第一次装机后 build 其实**失败**（我清理 cpp 时删掉了函数签名），
+而 `adb install` 装的是 **30 分钟前的旧 APK** —— 我却据此宣布"验证通过"。
+⇒ **教训（已加入纪律）**：装机前必须核对 **APK 时间戳**，且 `build` 退出码
+非 0 时**不得**继续装机验证。这是 §8.4 第 4 类"假绿"。
+
+#### ★★ 预判未来（用户要求"预知以后可能出现的情况"）
+
+| 风险 | 触发条件 | 现在的防线 |
+|---|---|---|
+| **前台服务 5 秒超时** | 任何"让起播变慢"的改动（更多网络往返、更大 demuxer 分析） | `onStartCommand` 立刻进前台（**不再依赖 isPlaying**） |
+| **解码器缺失** | 换片源（新的音频/字幕编码） | `tool/check_mpv_decoders.py` 静态自检 + 运行时日志转提示 |
+| **`aid/sid` 非法值** | 上游又改了 JSON 序列化 | Dart 解析归一化 + 内核 `_safeTrackId` 双层校验 |
+| **轨 id 变化导致选错轨** | 换集（编号空间不同） | `identical(launch, _launch)` 校验 + 换集清 pending |
+| **双内核行为不一致** | 只修了一个内核 | 守卫测试强制"两个内核都要有同一能力" |
+| **占位通知残留** | Media3 不调 `onUpdateNotification` | 起播后超时兜底（待补，见"未做"） |
+| **真实待补项** | 缺 `truehd/pgssub` 只能重编 `libmpv.so` | 脚本已给出三种修法 |
+
+#### 对照开源项目（子代理调研，已核实源码）
+
+| 项目 | 结论 |
+|---|---|
+| `mpv-android`（MIT，3613★） | `BackgroundPlaybackService.kt:124-143` **无条件** `startForeground` ⇒ **与我的修法一致**（上游做法佐证）；`ffmpeg.sh` 无解码器白名单 |
+| `xyoye/DanDanPlayForAndroid`（Apache-2.0，1705★） | 有 `ffmpegHasDecoder()` 自检（我们参考它做了脚本）；**无** codec 级降级；**不解 PGS**（走 Exo bitmap cue）⇒ 不值得抄 |
+| 两者共同点 | **都没有**"解码失败自动换轨"的参考实现 ⇒ 我们这条是**超出两者**的 |
+
+**明确不做**（避免浪费）：仿三内核（全量 mpv 下是负资产）、按 codec 预判轨道可播性（DanDanPlay 也不做，交给运行时）。
+
+#### 本轮验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1181: All tests passed!（1153 → 1181，+28）
+check-dev.ps1     21 项全过，退出码 0
+反向注入          9 项全部抓到
+解码器自检        3 个 ABI 均报"缺 4 个"（脚本有效）
+真机（新包 23:46）
+                  崩溃：crash 缓冲无 FATAL；点退出后 pid 存活 ✅
+                  前台服务：`已进前台（5 秒约束满足）`（33ms）✅
+                  轨道名：«英语 · stereo» / «简体中文»（无后缀）✅
+```
+
+#### 未验证 / 未做
+- **缺 `truehd/mlp/pgssub/mov_text` 的根治**：需重编 `libmpv.so`
+  （脚本已给三种修法），**未做**
+- **占位通知残留兜底**：若某片源 Media3 始终不调 `onUpdateNotification`，
+  占位通知会留在通知栏（用户可手动滑掉）—— 未加超时兜底
+- **B5 `alang/slang` 默认中文**：上游默认 `eng`，我们靠 `_applyServerDefaultTracks`
+  选轨（已中文化优先），未额外设 alang/slang
+- **双字幕（`secondary-sid`）**：未做
+
+### 2026-10-11 · **PGS 字幕深挖**：Media3 三个真 bug + 我四次方法错误
+
+用户报（本轮聚焦字幕/音轨/侧边栏）：
+> "你直接打开复仇者联盟这部片子测试把 目前是mpv和media3 双内核的字幕显示都有问题。"
+> "字幕还是没有显示出在画面中"
+> "mpv也能解码哇" / "mpv 可以解码并显示 PGS 图形字幕"
+> "弹幕还是繁体的" / "识别出来的音轨的后缀去除"
+> "侧边栏全都改成透明的" / "字幕编码隐藏"
+
+#### 🔴 ① Media3 内核**完全打不开文件**（"双内核都有问题"的真相之一）
+
+**真机取证**：
+```
+E CF-Media3: java.lang.IllegalStateException:
+    java.lang.ClassNotFoundException:
+    androidx.media3.exoplayer.hls.HlsMediaSource$Factory
+  at com.cineflow.app.player.Media3Channel.open(SourceFile:140)
+```
+现象：切到 Media3 ⇒ **黑屏 + 时长 00:00**。
+
+**根因**：`DefaultMediaSourceFactory` 按 MIME/URI **反射**创建
+`HlsMediaSource`/`DashMediaSource`，而这两个类在**独立模块**
+（`media3-exoplayer-hls` / `-dash`）。编译期不报错（走 `Class.forName`），
+**运行期才炸** ⇒ 只引 `media3-exoplayer` 不够。
+
+**修法**：`implementation("androidx.media3:media3-exoplayer-hls:1.4.1")`。
+
+#### 🔴 ② Media3 抢选不可解音轨 ⇒ 整个播放停住（"双内核都有问题"之二）
+
+**真机取证**：
+```
+[PlayerFlow] 音轨：服务端默认«英语 · 7.1»truehd 不可解 ⇒ 自动退到«英语 · 5.1»
+CF-Media3: 播放错误: ERROR_CODE_DECODER_INIT_FAILED
+  MediaCodecAudioRenderer error, index=1,
+  format=Format(5, 国语, null, audio/vnd.dts, ...), format_supported=NO_UNSUPPORTED_TYPE
+```
+Dart 已选 AC3，但 Media3 **自己**选了 `国语 DTS`。
+
+**三个叠加根因**：
+1. **`DefaultTrackSelector` 独立选轨**，覆盖我们的 override
+2. **`applyOverride` 差一位**：`emitTracks` 用 `++audioId`（1-based），
+   而 `applyOverride` 的 `seen` 从 **0** 开始 ⇒ 命中**下一条**
+3. **`format.id` 语义撞车**：那是 matroska **容器轨号**，与"第几条音轨"
+   无关；两条判据"或"在一起时它会**抢先命中错轨**
+
+**修法**：只按位置序（跨 group 连续计数）+ 删 `format.id` 判据 + 加日志；
+建 player 后**先禁用音频**（选择权收归 Dart，宁可短暂无声也不要黑屏）；
+`isAudioCodecLikelyPlayable` **按内核分表** —— `truehd/mlp` 两内核都不可解
+（Android 平台能力），`dts` 系 **mpv 能解**（`ff_dca_decoder` 在）、
+**Media3 不能**（DTS 是授权编码，厂商需付费）。
+
+#### 🔴 ③ Media3 能解析 PGS，但**默认不产出 cue**
+
+选轨成功（`mime=application/x-media3-cues`）但 **`onCues` 从未触发**。
+
+**根因**：Media3 1.4 起字幕处理改为"延迟到 `SubtitleParser`"，
+**内嵌字幕**必须显式设 `DefaultMediaSourceFactory.setSubtitleParserFactory(...)`。
+不设置时它只把字幕轨**列在 `Tracks` 里**（所以面板 8 条字幕都在），
+**但不产出 cue** ⇒ 渲染通路全程静默。
+
+**修法**：`setSubtitleParserFactory(DefaultSubtitleParserFactory())`
+（总厂 → `PgsParser`/`SubripParser`/`SsaParser`…）+ 新增 `onCues` 上报 Dart。
+
+⚠️ **API 名不带 `experimental` 前缀**：我按记忆写成
+`experimentalSetSubtitleParserFactory` ⇒ `Unresolved reference`。
+用 `javap` 从 `media3-exoplayer-1.4.1.aar` 核实真实签名后修正。
+**教训：API 名必须从产物核实。**
+
+#### ★★★ 反思：本轮我犯了**四次同一类方法错误**
+
+> 共同点：**用会被优化/改写的中间表示，去证明最终产物的行为**。
+
+| # | 我的判据 | 为什么失效 | 正确判据 |
+|---|---|---|---|
+| 1 | `.so` 里搜符号名 `ff_pgssub_decoder` | `.symtab` **被 strip** | 运行时日志 + `.dynsym` |
+| 2 | `.so` 里搜解码器名字符串 | `ff_mlp_parser` 在 ⇒ 字符串 `mlp` 会出现，但那是**解析器** | 符号名（拼写从 ffmpeg 源码推） |
+| 3 | **dex 里搜原始类名**判断 `PgsParser` 在不在 | release 开 **R8**，类名被混淆（`HlsMediaSource -> ls`）⇒ **假阴性** | **R8 `mapping.txt`** |
+| 4 | 像素判据报"字幕已显示（亮像素 1182）" | 全黑画面下只有**底部进度条**有方差 ⇒ 把进度条当字幕 | 先验**视频区均值 > 2**，再在视频带内取样 |
+
+**这四次都差点让我得出错误结论**（第 1/3/4 次都已说出错误结论）。
+⇒ 纪律：**报"某能力不存在"前，先问"判据会不会在能力存在时仍报不存在"。**
+
+#### 本轮实际改动
+
+| 改动 | 说明 |
+|---|---|
+| `media3-exoplayer-hls` 依赖 | 修 Media3 打不开文件 |
+| `setSubtitleParserFactory` | 修 Media3 不产出 cue |
+| `onCues` + `emitCues` | cue 上报 Dart（位图 → base64 PNG） |
+| `applyOverride` 位置序 + 删 `format.id` | 修 Media3 选错轨 |
+| 建 player 后先禁用音频 | 防 Media3 抢选不可解轨 |
+| 音频能力表**按内核分** | truehd/mlp 双内核不可解；dts 仅 Media3 不可解 |
+| `kernel_auto_select` **PGS 规则（最高优先级）** | PGS 片源路由 Media3 —— ⚠️ 第一版放在规则 0 之后**永不生效**，真机日志抓到后提到最前 |
+| 音轨后缀去除**规则 ④** | 空格分隔裸编码（`English TRUEHD 7.1` → `English 7.1`）—— 前三条规则覆盖不到"中间+空格" |
+| 同义名一起记 | mpv 报 `hdmv_pgs_subtitle` 而服务端给 `pgssub`/`PGS` ⇒ 只记一个拦不住另一个 |
+| 侧边栏 `Colors.transparent` | 用户要求；配 `panelTextShadows` 保可读 |
+| 隐藏「字幕编码」/「关闭字幕」去重 | 用户要求 |
+| `tool/check_mpv_decoders.py` | 解码器自检（已进门禁） |
+| 弹幕诊断日志 | 打 `chConvert` 实际值 + 首条原文 |
+
+#### 实测确认的客观事实（可复核）
+
+```
+① 服务端 chConvert **有效**（实测公共代理 2026-10-11）：
+   chConvert=0 → 繁体特征 2   / 简体特征 207
+   chConvert=1 → 繁体特征 0   / 简体特征 209   ← 确实转简体
+   chConvert=2 → 繁体特征 209 / 简体特征 0
+② libmpv.so 缺 4 个（符号级）：truehd / mlp / pgssub / mov_text
+   （mov_text 的正确符号是 ff_movtext_decoder —— 它**在**）
+③ Media3 有 PgsParser（R8 mapping 已确认打进 APK）
+④ Media3 能打开复仇者联盟（修 HLS 后），音频选 AC3 后**画面正常**
+   视频区均值 32.12（修前全黑 1.62）
+```
+
+#### 本轮验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1201: All tests passed!
+check-dev.ps1     20 项全过，退出码 0
+真机
+  ✅ Media3 能打开文件（修前 ClassNotFoundException，修后正常）
+  ✅ 音频选轨修正（选轨 1 index=5 → mime=audio/ac3）
+  ✅ 画面正常（视频区均值 32.12）
+  ✅ 音轨名无后缀（«英语 · 7.1» / «英语 · 5.1»）
+  ✅ 侧边栏完全透明（面板开合前后右半屏亮度变化 18.4）
+  ✅ 「关闭字幕」去重 / 「字幕编码」已隐藏
+  ❌ **字幕仍未显示在画面中**
+```
+
+#### 未完成 / 未验证（**如实列出**）
+
+1. **字幕显示仍未完成**：cue 上报通路（Kotlin → Dart）已写，
+   但 **Flutter 侧绘制**（把 base64 PNG 画到视频上）**未实现** ⇒
+   用户仍看不到字幕。**下一轮第一优先项。**
+2. **弹幕繁体**：已加诊断日志，但**未在真机确认**卡在哪一环
+   （服务端已实测有效 ⇒ 客户端某环）。
+3. **设备 token 失效**：验证中 Emby 会话 401（反复强杀导致），
+   凭据在 `flutter_secure_storage` 且**不入库** ⇒ 我无法自行重登，
+   **部分真机验证受阻**。
+4. **`libmpv.so` 缺解码器**：仍需重编，**未做**。
