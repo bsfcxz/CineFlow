@@ -25,10 +25,11 @@ import '../state/providers.dart'
     show
         calendarClientProvider,
         calendarWeekProvider,
-        sessionStoreProvider;
+        sessionStoreProvider,
+        subscribedKeysProvider,
+        toggleCalendarSubscription;
 
 /// 中式的星期名（周一开头）。
-const _weekdayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
 class CalendarPage extends ConsumerStatefulWidget {
   const CalendarPage({super.key});
@@ -38,12 +39,8 @@ class CalendarPage extends ConsumerStatefulWidget {
 }
 
 class _CalendarPageState extends ConsumerState<CalendarPage> {
-  /// 当前选中的星期（1=周一 … 7=周日）。默认**今天**。
-  ///
-  /// ## 为什么默认"今天"而不是"周一"
-  /// 用户打开追剧日历，最关心的是"**今天更新什么**"。
-  /// 周一作为**视觉起点**（列表从周一开始），但**选中项**是今天。
-  late int _selected = DateTime.now().weekday;
+  // ★ 2026-10-11 去掉 `_selected`（用户要求"去除周一-周日"）
+  //   日历改为**整周按类别排列**，不再有"当前选中天"的概念。
 
   /// **填 TMDB API Key**（国产剧集的唯一可用数据源）。
   ///
@@ -136,27 +133,36 @@ class _CalendarPageState extends ConsumerState<CalendarPage> {
   /// 由 UI 按 id 查表显示（避免为"补个平台"重建整周数据）。
   final _platforms = <String, String>{};
 
-  /// 已触发过平台补查的天（防同一轮重复触发）。
-  final _platformFetched = <int>{};
+  /// 是否已触发过平台补查（防同一轮重复触发）。
+  ///
+  /// ## 为什么从 `Set<int>`（按天）改成 `bool`（整轮）
+  /// 去掉周条后没有"当前选中天"⇒ 整周一次补查即可。
+  bool _platformFetched = false;
 
-  /// 给**当前选中日**补查平台（懒加载）。
+  /// **整周**补查平台（懒加载）。
   ///
   /// ## 为什么必须懒加载（真机 bug 驱动）
   /// 原实现把平台补查放在 `_fetchTmdb` 里，`out.take(24)` 里 `out` 是
-  /// **整周 140 条** ⇒ 只覆盖**周一**，用户选周日时永远没有平台
+  /// **整周 140 条** ⇒ 只覆盖**周一**，用户看周日时永远没有平台
   /// （真机截图确认）。
   /// 且全量补会超过每源 7s deadline ⇒ 整个 TMDB 源被砍。
-  Future<void> _ensurePlatforms(WeekCalendar cal, int weekday) async {
-    if (_platformFetched.contains(weekday) || !mounted) return;
-    _platformFetched.add(weekday);
+  /// ⇒ 只补前 [CalendarClient.platformFetchLimit] 条（默认 24）。
+  Future<void> _ensurePlatforms(WeekCalendar cal) async {
+    if (_platformFetched || !mounted) return;
+    _platformFetched = true;
     try {
       final key = await ref.read(sessionStoreProvider).loadTmdbKey();
       if (key == null || key.isEmpty) return;
-      final day = cal.forWeekday(weekday);
-      if (day.isEmpty) return;
+      // 按类别取前几条（用户最可能看到的那些）
+      final picks = <CalendarEntry>[];
+      final grouped = cal.groupedByCategory();
+      for (final list in grouped.values) {
+        picks.addAll(list.take(8));
+      }
+      if (picks.isEmpty) return;
       final got = await ref
           .read(calendarClientProvider)
-          .fetchPlatforms(day, apiKey: key);
+          .fetchPlatforms(picks, apiKey: key);
       if (!mounted || got.isEmpty) return;
       setState(() => _platforms.addAll(got));
     } catch (e) {
@@ -190,22 +196,22 @@ class _CalendarPageState extends ConsumerState<CalendarPage> {
           onRetry: () => ref.invalidate(calendarWeekProvider),
         ),
         data: (cal) {
-          // ★ 数据到达后（或切日时）触发**当天**的平台懒加载
+          // ★ 数据到达后触发**整周**的平台懒加载
           //   —— 用 `addPostFrameCallback` 避免在 build 里 setState
+          //
+          // ## 为什么从"按天补"改成"整周一次"
+          // 去掉周条后没有"当前选中天"了 ⇒ 只能整周补。
+          // 为控制请求量，仍只补**各类别前若干条**（见 fetchPlatforms 的
+          // `limit`）；实测一天 20 条约 2–3s，整周取前 60 条仍可接受。
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            _ensurePlatforms(cal, _selected);
+            _ensurePlatforms(cal);
           });
           return _Body(
             cal: cal,
-            selected: _selected,
             platforms: _platforms,
-            onSelect: (d) {
-              setState(() => _selected = d);
-              // 切到新的一天 ⇒ 立刻补那一天的平台
-              _ensurePlatforms(cal, d);
-            },
             onRefresh: () async {
-              _platformFetched.clear();
+              // 类型已从 Set<int> 变 bool（见 _platformFetched 说明）
+              _platformFetched = false;
               ref.invalidate(calendarWeekProvider);
             },
           );
@@ -218,157 +224,37 @@ class _CalendarPageState extends ConsumerState<CalendarPage> {
 class _Body extends StatelessWidget {
   const _Body({
     required this.cal,
-    required this.selected,
     required this.platforms,
-    required this.onSelect,
     required this.onRefresh,
   });
 
   final WeekCalendar cal;
-  final int selected;
 
   /// 平台缓存（`tmdbId → 中文平台名`，后到）。
   final Map<String, String> platforms;
-  final ValueChanged<int> onSelect;
   final Future<void> Function() onRefresh;
 
   @override
   Widget build(BuildContext context) {
+    // ★ 2026-10-11 用户要求："按类别排列，去除周一-周日"
+    // ⇒ 不再有周条，"整周"的条目直接按 动漫 / 综艺 / 剧集 三段排。
+    final grouped = cal.groupedByCategory();
+    final total = grouped.values.fold<int>(0, (a, l) => a + l.length);
     return Column(
       children: [
-        _WeekBar(
-          cal: cal,
-          selected: selected,
-          onSelect: onSelect,
-        ),
-        // 源状态提示（失败隔离的**可见化** —— 不能让用户以为"今天没更新"）
+        // 源状态提示（失败隔离的**可见化** —— 不能让用户以为"没有更新"）
         if (cal.failedSourceCount > 0) _SourceBanner(cal: cal),
-        const Divider(height: 1),
         Expanded(
           child: RefreshIndicator(
             onRefresh: onRefresh,
-            child: Builder(builder: (context) {
-            // ★ 按类别分组 + 组内按热度降序（用户要求）
-            final grouped = cal.forWeekdayGrouped(selected);
-            final total = grouped.values.fold<int>(0, (a, l) => a + l.length);
-            return _DayList(
+            child: _CategoryList(
               groups: grouped,
               total: total,
-              weekday: selected,
               platforms: platforms,
-            );
-          }),
+            ),
           ),
         ),
       ],
-    );
-  }
-}
-
-/// 周一到周日的**横向选择条**（含每天条目数 + 今天高亮）。
-class _WeekBar extends StatelessWidget {
-  const _WeekBar({
-    required this.cal,
-    required this.selected,
-    required this.onSelect,
-  });
-
-  final WeekCalendar cal;
-  final int selected;
-  final ValueChanged<int> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    final today = DateTime.now().weekday;
-    return SizedBox(
-      height: 84,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: Cf.gap2, vertical: 8),
-        itemCount: 7,
-        separatorBuilder: (_, __) => const SizedBox(width: 6),
-        itemBuilder: (context, i) {
-          final d = i + 1; // 1..7
-          final n = cal.forWeekday(d).length;
-          final isToday = d == today;
-          final isSel = d == selected;
-          return _DayChip(
-            label: _weekdayNames[i],
-            count: n,
-            isToday: isToday,
-            isSelected: isSel,
-            // 今天是周日时显示"今天"角标更醒目
-            showTodayBadge: isToday,
-            onTap: () => onSelect(d),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _DayChip extends StatelessWidget {
-  const _DayChip({
-    required this.label,
-    required this.count,
-    required this.isToday,
-    required this.isSelected,
-    required this.showTodayBadge,
-    required this.onTap,
-  });
-
-  final String label;
-  final int count;
-  final bool isToday;
-  final bool isSelected;
-  final bool showTodayBadge;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final bg = isSelected ? Cf.accent : Cf.surface2;
-    final fg = isSelected ? Colors.white : Cf.text2;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(Cf.radiusMd),
-      // ★ 可点区域 ≥48dp（§6.4.1 硬性要求）
-      child: Container(
-        width: 62,
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(Cf.radiusMd),
-          border: isToday && !isSelected
-              ? Border.all(color: Cf.accent, width: 1.5)
-              : null,
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(label,
-                style: Cf.caption.copyWith(
-                    color: fg, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 2),
-            Text('$count',
-                style: Cf.micro.copyWith(
-                    color: isSelected ? Colors.white70 : Cf.text3)),
-            if (showTodayBadge) ...[
-              const SizedBox(height: 2),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                decoration: BoxDecoration(
-                  color: isSelected ? Colors.white24 : Cf.accent,
-                  borderRadius: BorderRadius.circular(Cf.radiusXs),
-                ),
-                child: Text('今天',
-                    style: Cf.micro.copyWith(
-                        fontSize: 9,
-                        color: isSelected ? Colors.white : Colors.white)),
-              ),
-            ],
-          ],
-        ),
-      ),
     );
   }
 }
@@ -404,11 +290,10 @@ class _SourceBanner extends StatelessWidget {
 }
 
 /// 某一天的更新列表。
-class _DayList extends StatelessWidget {
-  const _DayList({
+class _CategoryList extends StatelessWidget {
+  const _CategoryList({
     required this.groups,
     required this.total,
-    required this.weekday,
     required this.platforms,
   });
 
@@ -418,8 +303,6 @@ class _DayList extends StatelessWidget {
   /// 总条数（判断空态）。
   final int total;
 
-  /// 当前星期（给"分组标题"用，便于将来加"周X 更新"）。
-  final int weekday;
 
   /// 平台缓存（后到；见 `_CalendarPageState._platforms`）。
   final Map<String, String> platforms;
@@ -437,7 +320,7 @@ class _DayList extends StatelessWidget {
               children: [
                 Icon(Icons.event_busy_rounded, size: 44, color: Cf.text3),
                 const SizedBox(height: Cf.gap2),
-                Text('这一天没有更新', style: Cf.caption.copyWith(color: Cf.text3)),
+                Text('本周没有更新', style: Cf.caption.copyWith(color: Cf.text3)),
                 const SizedBox(height: 4),
                 Text('下拉可刷新', style: Cf.micro.copyWith(color: Cf.text3)),
               ],
@@ -543,11 +426,21 @@ class _EntryTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  entry.displayTitle,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Cf.body.copyWith(fontWeight: FontWeight.w600),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        entry.displayTitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Cf.body.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    // ★ 订阅按钮（用户："我的追剧 = 追剧日历中订阅的内容"）
+                    // ⚠️ 必须传**已解析的平台**（真机 bug：不传会落库空串，
+                    //    首页「我的追剧」显示"未标注平台"）
+                    _SubscribeButton(entry: entry, platform: platform),
+                  ],
                 ),
                 const SizedBox(height: 4),
                 // ★ 来源 + 集数 + **播放平台**（用户要求"也显示播放平台"）
@@ -557,6 +450,8 @@ class _EntryTile extends StatelessWidget {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     _SourceTag(source: entry.source),
+                    // ★ 最近更新日（去掉周条后必须标 —— 见文件头说明）
+                    _UpdateDayTag(weekday: entry.weekdayResolved),
                     if (entry.episode case final ep?)
                       Text(ep,
                           maxLines: 1,
@@ -767,6 +662,121 @@ class _ErrorView extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// **最近更新日**标签（"今天" / "明天" / "周三"）。
+///
+/// ## 为什么必须有（去掉周条后的必然要求）
+/// 用户要求"去除周一-周日"，但那样一来**用户就不知道哪部剧哪天更新**了。
+/// 而列表又是按"离今天多近"排的（今天最前）⇒
+/// 必须把排序依据**显式标出来**，否则用户会觉得"顺序莫名其妙"。
+///
+/// ## 颜色分级
+/// · 今天 ⇒ 红色（最需要关注）
+/// · 明天 ⇒ 橙色（即将更新）
+/// · 其余 ⇒ 灰色（普通信息）
+class _UpdateDayTag extends StatelessWidget {
+  const _UpdateDayTag({required this.weekday});
+
+  /// 1=周一 … 7=周日。
+  final int weekday;
+
+  @override
+  Widget build(BuildContext context) {
+    final today = DateTime.now().weekday;
+    // 与 `WeekCalendar._distanceFromToday` 同一算法（今天=0）
+    final delta = (weekday - today + 7) % 7;
+    final (String text, Color color) = switch (delta) {
+      0 => ('今天', Cf.danger),
+      1 => ('明天', Cf.warn),
+      _ => (
+          const ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日']
+              [weekday.clamp(1, 7)],
+          Cf.text3
+        ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(Cf.radiusXs),
+      ),
+      child: Text(text, style: Cf.micro.copyWith(fontSize: 10, color: color)),
+    );
+  }
+}
+
+/// **订阅按钮**（"追剧"）—— 用户：「我的追剧」= 追剧日历里**订阅**的内容。
+///
+/// ## 为什么与 Emby 收藏分开
+/// · Emby 收藏（`IsFavorite`）是**服务端**的概念，实测你只收藏了 2 条
+/// · 追剧订阅是**本地**的（drift），且订阅对象是**日历条目**
+///   （TMDB/B站），**不一定在你 Emby 库里**
+/// ⇒ 两者语义、存储、可用范围都不同，不能混用。
+///
+/// ## 交互
+/// · 已订阅 = 实心金色星标；未订阅 = 空心灰星标
+/// · 点击立即 toggle（不弹确认 —— "追剧"是轻操作，弹窗反而烦）
+/// · 可点区域 40×40（满足最小可点尺寸，见 UI-DESIGN §3.2）
+///
+/// ## 为什么按钮不吃"整行点击"
+/// 它嵌在 `_EntryTile` 的 `InkWell` 里 ⇒ Flutter 内层手势优先，
+/// 点星标不会同时打开详情弹层。
+class _SubscribeButton extends ConsumerWidget {
+  const _SubscribeButton({required this.entry, this.platform});
+
+  final CalendarEntry entry;
+
+  /// **已解析的平台**（懒加载后到；可能比 `entry.platform` 新）。
+  ///
+  /// ## 为什么必须有这个参数
+  /// 真机发现：订阅后首页显示"未标注平台"。根因是
+  /// `entry.platform` 在懒加载完成前为空，而订阅在**点击那一刻**落库。
+  /// ⇒ 必须用当前**已显示**的平台值。
+  final String? platform;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final keys = ref.watch(subscribedKeysProvider);
+    // 与 `toggleCalendarSubscription` 用同一个键算法（见 provider 说明）
+    final key = '${entry.source}:${entry.sourceId ?? entry.displayTitle}:tv';
+    final on = keys.maybeWhen(
+      data: (k) => k.contains(key),
+      orElse: () => false,
+    );
+    return SizedBox(
+      width: 40,
+      height: 40,
+      child: IconButton(
+        // 星标语义：已订阅可取消，未订阅可追
+        tooltip: on ? '取消追剧' : '加入追剧',
+        padding: EdgeInsets.zero,
+        iconSize: Cf.iconMd,
+        icon: Icon(
+          on ? Icons.star_rounded : Icons.star_border_rounded,
+          color: on ? const Color(0xFFF2C94C) : Cf.text3,
+        ),
+        onPressed: () async {
+          final now = await toggleCalendarSubscription(
+            ref,
+              // 用已解析的平台覆盖（见 platform 字段说明的 bug）
+              entry: (platform ?? "").isEmpty
+                  ? entry
+                  : entry.copyWith(platform: platform),
+            // ⚠️ 日历条目的类型：TMDB 源区分 tv/movie；B站/Bangumi 都是剧集
+            mediaType: entry.source == 'tmdb' ? 'tv' : entry.source,
+          );
+          if (!context.mounted) return;
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+            content: Text(now
+                ? '已加入追剧：《${entry.displayTitle}》'
+                : '已取消追剧：《${entry.displayTitle}》'),
+            duration: const Duration(seconds: 2),
+          ));
+        },
       ),
     );
   }

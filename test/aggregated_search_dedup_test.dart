@@ -57,13 +57,45 @@ void main() {
         'tvdb': '292550',
       });
       final keys = crossServerIdentityKeys(it);
-      expect(keys, contains('imdb:tt4205768'));
-      expect(keys, contains('tmdb:477063'));
-      expect(keys, contains('tvdb:292550'));
+      // ★ 键格式带 type：`<provider>:<type>:<id>`
+      //（原因见下条测试：TMDB 的 movie/tv 是两个独立 id 空间）
+      expect(keys, contains('imdb:Movie:tt4205768'));
+      expect(keys, contains('tmdb:Movie:477063'));
+      expect(keys, contains('tvdb:Movie:292550'));
       expect(keys.length, greaterThanOrEqualTo(4),
           reason: '★★ 三外部 ID + 标题兜底 = 至少 4 个键\n'
               '    （多键策略：避免"某台只有 tmdb、另一台只有 imdb"匹配失败）');
     });
+
+    test('★★★ 外部 ID 键**必须带 type**（movie/tv 是两个 id 空间）', () {
+      // ## 实测铁证（扫描真实服务器 16470 个条目）
+      // 发现 **165 组跨类型撞 id**，同一个 tmdb 数字在 movie 与 tv
+      // 两个命名空间**各自有效**：
+      // ```
+      // tmdb/74561  movie -> 《阿姆斯特丹恶棍》(2011)  <- 两条元数据都正确
+      // tmdb/74561  tv    -> 《明星大侦探》(2016)
+      // ```
+      // => 不带 type 会把**电影**与**剧集**判为同一部 => 跨服聚合错合并。
+      //
+      // 这个 bug 单测与真机**都覆盖不到**：
+      //    · 单测样本都是同类型（两部剧 / 两条同 id）
+      //    · 真机只登录 1 台服务器 => 跨服聚合压根没有两条可比
+      //    => 靠全库数据扫描才发现。
+      final movie = item('阿姆斯特丹恶棍',
+          type: 'Movie', providerIds: {'tmdb': '74561'});
+      final series = item('明星大侦探',
+          type: 'Series', providerIds: {'tmdb': '74561'});
+      final km = crossServerIdentityKeys(movie);
+      final ks = crossServerIdentityKeys(series);
+      expect(km.any(ks.contains), isFalse,
+          reason: '★★★ 同为 tmdb/74561 但类型不同 => **绝不能**判为同一部');
+      // 反向确认：同类型同 id 仍必须命中（别修过头）
+      final s2 = item('明星大侦探（另一台）',
+          type: 'Series', providerIds: {'tmdb': '74561'});
+      expect(ks.any(crossServerIdentityKeys(s2).contains), isTrue,
+          reason: '★ 同类型同 id 必须仍能识别');
+    });
+
 
     test('★★ 只有一边有外部 ID ⇒ 靠标题兜底仍能命中', () {
       final a = item('复仇者联盟', id: '1', year: 2012,

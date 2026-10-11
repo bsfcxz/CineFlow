@@ -2238,3 +2238,146 @@ check-dev.ps1     21 项全过，退出码 0
 4. **多账号未真机验证**：设备上只登录了 1 台（用户需自己加第二台）
 5. **Bangumi 在本机/真机不可达**（服务端 WAF 拦 TLS 指纹）
 6. `libmpv.so` 缺解码器仍需重编
+
+### 2026-10-11（续 3）· **追剧订阅 + 日历去周条按类别 + 修外部 ID 键跨类型 bug**
+
+用户两批要求：
+
+> ① "在我的 cineflow 中的我的里面的追剧日历按类别排列去除周一-周日。"
+> ② "我的追剧是从 cineflow 你做出来的追剧日历中订阅的东西"
+
+## 一、日历：去掉周条、按类别排列（真机截图实证）
+
+```
+动漫 37
+  武神主宰    TMDB  今天  腾讯视频↗  ★7.4  🔥96.4
+  仙逆        TMDB  今天  腾讯视频↗  ★8.3  🔥86.4
+  牧神记      TMDB  今天  B站↗       ★7.8  🔥32.0
+  吞噬星空    TMDB  明天  腾讯视频↗  ★8.6  🔥54.8
+```
+
+· 删除 `_WeekBar` / `_DayChip` / `_weekdayNames` / `_selected`
+  （周条、子组件、死代码、选中态全部清掉）
+· 新增 `WeekCalendar.groupedByCategory()` —— **整周**按类别分组
+· **必须去重**：整周 240 条，同一部剧会在多天出现
+  （《你好，星期六》周一+周六）⇒ 按 `(source, sourceId)` 去重，
+  保留**离今天最近**的那次更新
+· 组内排序：先"离今天多近"（今天最前），再热度降序
+
+### ★ 我加了一个用户没要求但必要的东西
+去掉周条后**用户就不晓得哪部剧哪天更新了**。而列表按"离今天多近"排
+⇒ 必须把排序依据**显式标出来**，否则顺序显得莫名其妙。
+⇒ 新增 `_UpdateDayTag`：`今天`（红）/ `明天`（橙）/ `周三`（灰）。
+
+## 二、追剧订阅（「我的追剧」）
+
+### 语义澄清（用户明确）
+「我的追剧」= **追剧日历里订阅的内容**（本地），**不是** Emby 收藏。
+· Emby 收藏（`IsFavorite`）是**服务端**概念，实测你只有 2 条
+· 订阅是**本地** drift 表，订阅对象是**日历条目**（TMDB/B站），
+  **不一定在你 Emby 库里**
+
+### 数据层
+· 新表 `CalendarSubscriptions`，**schemaVersion 1→2** + `createTable` 迁移
+  （AGENTS §8.1 第 6 条：不写迁移则老用户升级启动即崩）
+· 主键 `(source, sourceId, mediaType)` —— 带 `mediaType` 是因为
+  **TMDB 的 movie/tv 是两个独立命名空间**（见下方第三节）
+· **落全字段快照**（剧名/海报/平台/类别/更新日）：
+  订阅条目来自外部源，你库里可能没有 ⇒ 断网也必须能显示
+· `toggleSubscription` / `allSubscriptions`（按最近更新日倒序）/
+  `subscribedKeys`（批量判断，避免逐条查库）
+
+### UI
+· 日历卡片右上角**星标按钮**：已订阅=实心金，未订阅=空心灰
+· 首页「我的追剧」横滑区（对齐参考稿的区块顺序：hero → 我的追剧 → 合集）
+· **没订阅时不占位**（避免首页出现空区块）
+
+真机验证闭环：
+```
+订阅前: 加入追剧
+订阅后: 取消追剧                     ✅
+首页:  「我的追剧 1 部」→ 武神主宰 | 腾讯视频   ✅
+重启后仍是订阅态                      ✅（持久化生效）
+```
+
+### ★ 真机抓到一个时序 bug（已修 + 加守卫）
+订阅后首页显示「**未标注平台**」，但日历卡片上明明有「腾讯视频」。
+
+根因：平台是**懒加载**后到的（存在 State 的 `_platforms`）：
+· 日历卡片：`_EntryTracker(platform: platforms[id] ?? entry.platform)` ✅
+· 订阅按钮：只读 `entry.platform` ❌ 点击那一刻还是空
+
+⇒ 修法：把**已解析的平台**透传给 `_SubscribeButton`，
+订阅时用 `entry.copyWith(platform: platform)`。
+
+## 三、★★★ 修正我的一个**错误判断** + 抓到自己代码的真 bug
+
+### 我错了：「阿姆斯特丹恶棍」不是刮削错误
+上一轮我说该条目 tmdb id 错了、要去 Emby 重新识别元数据。**错了**：
+
+```
+tmdb/74561 (movie 端点) → 《阿姆斯特丹恶棍》(2011)   ✅ 正确
+tmdb/74561 (tv 端点)    → 《明星大侦探》(2016)       ✅ 正确
+```
+
+**TMDB 的电影与电视剧是两个独立 id 空间**，同数字在两边各自有效。
+⇒ 没有刮削错误，**不需要修**（幸好动手前先做了只读取证）。
+
+### 但扫全库抓到我代码里的真 bug
+`crossServerIdentityKeys` 的外部 ID 键写成 `tmdb:74561`（**没带 type**）
+⇒ 会把**电影**《阿姆斯特丹恶棍》与**剧集**《明星大侦探》判为同一部
+⇒ 跨服聚合**错合并**（用户少看到一条，点进去是另一部片）。
+
+**为什么单测和真机都覆盖不到**（两个盲区叠加）：
+· 单测样本都是**同类型**（两部剧 / 两条同 id）
+· 真机只登录 **1 台**服务器 ⇒ 跨服聚合**压根没有两条可比**
+⇒ 靠"扫全库 16470 个条目"才发现。
+
+⇒ 修法：键改成 `<provider>:<type>:<id>`，并加守卫测试。
+（标题兜底键 `t:` **一直**带着 type —— 外部 ID 这条却漏了，是**不一致**疏漏。）
+
+### 顺带核实的 200 组撞 id
+| 类型 | 组数 | 结论 |
+|---|---|---|
+| 跨类型（Movie vs Series） | 165 | **正常**（TMDB 两个命名空间） |
+| 同类型 | 35 | **同一部片的多版本**（`.strm` 多份：1080p/480p、Remux/普通）⇒ 也不是错误 |
+
+## 本轮改动
+
+| 文件 | 改动 |
+|---|---|
+| `lib/data/db/app_database.dart` | 新增 `CalendarSubscriptions` 表；`schemaVersion 1→2` + 迁移；4 个订阅 API |
+| `lib/state/providers.dart` | 新增 `subscribedKeysProvider` / `subscriptionsProvider` / `toggleCalendarSubscription` |
+| `lib/data/calendar_client.dart` | 新增 `groupedByCategory()`（整周按类别 + 去重 + 距离排序） |
+| `lib/data/aggregated_search.dart` | **修外部 ID 键跨类型 bug**（加 type） |
+| `lib/pages/calendar_page.dart` | 删周条；按类别；`_SubscribeButton`；`_UpdateDayTag` |
+| `lib/pages/home_page.dart` | 新增「我的追剧」横滑区 |
+| `test/calendar_category_layout_test.dart` | **新增** 10 例（无周条 / 去重 / 排序） |
+| `test/calendar_subscription_test.dart` | **新增** 12 例（迁移 / 落字段 / 平台时序） |
+| `test/aggregated_search_dedup_test.dart` | 键格式更新 + 新增 movie/tv 空间守卫 |
+
+## 验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1341 All tests passed!（1329 → 1341，+12）
+check-dev.ps1     21 项全过，退出码 0
+```
+
+真机（Redmi K40，截图实证）：
+- ✅ 日历无周条、按类别（动漫 37）、去重零重复、更新日角标
+- ✅ 订阅闭环：加入追剧 → 首页出现「我的追剧 1 部」→ 平台正确（腾讯视频）
+- ✅ 持久化：冷启动后仍是订阅态
+- ✅ 无崩溃
+
+## 未完成 / 已知限制
+
+1. **首页 hero 横滑**（TMDB 热播 ∩ 库里有的）—— 方案已实测确认
+   （预建索引 24 次请求 / 2.5s；命中率 剧 75% 综 80% 动漫 95% 影 60%），
+   **尚未实现**
+2. **订阅的卡片点击**未接详情/播放（订阅条目可能不在 Emby 库里）
+3. **「已看分集」只显示剧名没集号**（真机观察，需带 ParentIndexNumber）
+4. 腾讯/爱奇艺/优酷无公开接口（实测空壳/风控）
+5. 多账号未真机验证（设备上只登录 1 台）
+6. Bangumi 在本机/真机不可达（WAF 拦 TLS 指纹）
+7. `libmpv.so` 缺解码器仍需重编

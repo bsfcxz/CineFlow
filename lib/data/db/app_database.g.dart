@@ -739,11 +739,641 @@ class PlayHistoriesCompanion extends UpdateCompanion<PlayHistory> {
   }
 }
 
+class $CalendarSubscriptionsTable extends CalendarSubscriptions
+    with TableInfo<$CalendarSubscriptionsTable, CalendarSubscription> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $CalendarSubscriptionsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _sourceMeta = const VerificationMeta('source');
+  @override
+  late final GeneratedColumn<String> source = GeneratedColumn<String>(
+    'source',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _sourceIdMeta = const VerificationMeta(
+    'sourceId',
+  );
+  @override
+  late final GeneratedColumn<String> sourceId = GeneratedColumn<String>(
+    'source_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _mediaTypeMeta = const VerificationMeta(
+    'mediaType',
+  );
+  @override
+  late final GeneratedColumn<String> mediaType = GeneratedColumn<String>(
+    'media_type',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('tv'),
+  );
+  static const VerificationMeta _titleMeta = const VerificationMeta('title');
+  @override
+  late final GeneratedColumn<String> title = GeneratedColumn<String>(
+    'title',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _titleCnMeta = const VerificationMeta(
+    'titleCn',
+  );
+  @override
+  late final GeneratedColumn<String> titleCn = GeneratedColumn<String>(
+    'title_cn',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
+  static const VerificationMeta _posterUrlMeta = const VerificationMeta(
+    'posterUrl',
+  );
+  @override
+  late final GeneratedColumn<String> posterUrl = GeneratedColumn<String>(
+    'poster_url',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
+  static const VerificationMeta _platformMeta = const VerificationMeta(
+    'platform',
+  );
+  @override
+  late final GeneratedColumn<String> platform = GeneratedColumn<String>(
+    'platform',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
+  static const VerificationMeta _categoryMeta = const VerificationMeta(
+    'category',
+  );
+  @override
+  late final GeneratedColumn<String> category = GeneratedColumn<String>(
+    'category',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('series'),
+  );
+  static const VerificationMeta _lastAirDateMeta = const VerificationMeta(
+    'lastAirDate',
+  );
+  @override
+  late final GeneratedColumn<String> lastAirDate = GeneratedColumn<String>(
+    'last_air_date',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
+  static const VerificationMeta _subscribedAtMeta = const VerificationMeta(
+    'subscribedAt',
+  );
+  @override
+  late final GeneratedColumn<int> subscribedAt = GeneratedColumn<int>(
+    'subscribed_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    source,
+    sourceId,
+    mediaType,
+    title,
+    titleCn,
+    posterUrl,
+    platform,
+    category,
+    lastAirDate,
+    subscribedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'calendar_subscriptions';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<CalendarSubscription> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('source')) {
+      context.handle(
+        _sourceMeta,
+        source.isAcceptableOrUnknown(data['source']!, _sourceMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_sourceMeta);
+    }
+    if (data.containsKey('source_id')) {
+      context.handle(
+        _sourceIdMeta,
+        sourceId.isAcceptableOrUnknown(data['source_id']!, _sourceIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_sourceIdMeta);
+    }
+    if (data.containsKey('media_type')) {
+      context.handle(
+        _mediaTypeMeta,
+        mediaType.isAcceptableOrUnknown(data['media_type']!, _mediaTypeMeta),
+      );
+    }
+    if (data.containsKey('title')) {
+      context.handle(
+        _titleMeta,
+        title.isAcceptableOrUnknown(data['title']!, _titleMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_titleMeta);
+    }
+    if (data.containsKey('title_cn')) {
+      context.handle(
+        _titleCnMeta,
+        titleCn.isAcceptableOrUnknown(data['title_cn']!, _titleCnMeta),
+      );
+    }
+    if (data.containsKey('poster_url')) {
+      context.handle(
+        _posterUrlMeta,
+        posterUrl.isAcceptableOrUnknown(data['poster_url']!, _posterUrlMeta),
+      );
+    }
+    if (data.containsKey('platform')) {
+      context.handle(
+        _platformMeta,
+        platform.isAcceptableOrUnknown(data['platform']!, _platformMeta),
+      );
+    }
+    if (data.containsKey('category')) {
+      context.handle(
+        _categoryMeta,
+        category.isAcceptableOrUnknown(data['category']!, _categoryMeta),
+      );
+    }
+    if (data.containsKey('last_air_date')) {
+      context.handle(
+        _lastAirDateMeta,
+        lastAirDate.isAcceptableOrUnknown(
+          data['last_air_date']!,
+          _lastAirDateMeta,
+        ),
+      );
+    }
+    if (data.containsKey('subscribed_at')) {
+      context.handle(
+        _subscribedAtMeta,
+        subscribedAt.isAcceptableOrUnknown(
+          data['subscribed_at']!,
+          _subscribedAtMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_subscribedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {source, sourceId, mediaType};
+  @override
+  CalendarSubscription map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return CalendarSubscription(
+      source: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source'],
+      )!,
+      sourceId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source_id'],
+      )!,
+      mediaType: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}media_type'],
+      )!,
+      title: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}title'],
+      )!,
+      titleCn: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}title_cn'],
+      )!,
+      posterUrl: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}poster_url'],
+      )!,
+      platform: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}platform'],
+      )!,
+      category: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}category'],
+      )!,
+      lastAirDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}last_air_date'],
+      )!,
+      subscribedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}subscribed_at'],
+      )!,
+    );
+  }
+
+  @override
+  $CalendarSubscriptionsTable createAlias(String alias) {
+    return $CalendarSubscriptionsTable(attachedDatabase, alias);
+  }
+}
+
+class CalendarSubscription extends DataClass
+    implements Insertable<CalendarSubscription> {
+  /// 来源：`tmdb` / `bilibili` / `bangumi`。
+  final String source;
+
+  /// 该源内的 id。
+  final String sourceId;
+
+  /// 类型：`tv` / `movie`（TMDB 两个命名空间的判别位）。
+  final String mediaType;
+
+  /// 剧名（显示用）。
+  final String title;
+
+  /// 中文名（有则优先显示）。
+  final String titleCn;
+
+  /// 海报 URL（https；TMDB/B站都是 https，Bangumi 需升级）。
+  final String posterUrl;
+
+  /// 播放平台（中文，如"腾讯视频"）。
+  final String platform;
+
+  /// 类别：`anime` / `variety` / `series`。
+  final String category;
+
+  /// 最近一次已知的更新日（`yyyy-MM-dd`），用于排序与"还有几天"。
+  final String lastAirDate;
+
+  /// 订阅时间（Unix 秒）。
+  final int subscribedAt;
+  const CalendarSubscription({
+    required this.source,
+    required this.sourceId,
+    required this.mediaType,
+    required this.title,
+    required this.titleCn,
+    required this.posterUrl,
+    required this.platform,
+    required this.category,
+    required this.lastAirDate,
+    required this.subscribedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['source'] = Variable<String>(source);
+    map['source_id'] = Variable<String>(sourceId);
+    map['media_type'] = Variable<String>(mediaType);
+    map['title'] = Variable<String>(title);
+    map['title_cn'] = Variable<String>(titleCn);
+    map['poster_url'] = Variable<String>(posterUrl);
+    map['platform'] = Variable<String>(platform);
+    map['category'] = Variable<String>(category);
+    map['last_air_date'] = Variable<String>(lastAirDate);
+    map['subscribed_at'] = Variable<int>(subscribedAt);
+    return map;
+  }
+
+  CalendarSubscriptionsCompanion toCompanion(bool nullToAbsent) {
+    return CalendarSubscriptionsCompanion(
+      source: Value(source),
+      sourceId: Value(sourceId),
+      mediaType: Value(mediaType),
+      title: Value(title),
+      titleCn: Value(titleCn),
+      posterUrl: Value(posterUrl),
+      platform: Value(platform),
+      category: Value(category),
+      lastAirDate: Value(lastAirDate),
+      subscribedAt: Value(subscribedAt),
+    );
+  }
+
+  factory CalendarSubscription.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return CalendarSubscription(
+      source: serializer.fromJson<String>(json['source']),
+      sourceId: serializer.fromJson<String>(json['sourceId']),
+      mediaType: serializer.fromJson<String>(json['mediaType']),
+      title: serializer.fromJson<String>(json['title']),
+      titleCn: serializer.fromJson<String>(json['titleCn']),
+      posterUrl: serializer.fromJson<String>(json['posterUrl']),
+      platform: serializer.fromJson<String>(json['platform']),
+      category: serializer.fromJson<String>(json['category']),
+      lastAirDate: serializer.fromJson<String>(json['lastAirDate']),
+      subscribedAt: serializer.fromJson<int>(json['subscribedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'source': serializer.toJson<String>(source),
+      'sourceId': serializer.toJson<String>(sourceId),
+      'mediaType': serializer.toJson<String>(mediaType),
+      'title': serializer.toJson<String>(title),
+      'titleCn': serializer.toJson<String>(titleCn),
+      'posterUrl': serializer.toJson<String>(posterUrl),
+      'platform': serializer.toJson<String>(platform),
+      'category': serializer.toJson<String>(category),
+      'lastAirDate': serializer.toJson<String>(lastAirDate),
+      'subscribedAt': serializer.toJson<int>(subscribedAt),
+    };
+  }
+
+  CalendarSubscription copyWith({
+    String? source,
+    String? sourceId,
+    String? mediaType,
+    String? title,
+    String? titleCn,
+    String? posterUrl,
+    String? platform,
+    String? category,
+    String? lastAirDate,
+    int? subscribedAt,
+  }) => CalendarSubscription(
+    source: source ?? this.source,
+    sourceId: sourceId ?? this.sourceId,
+    mediaType: mediaType ?? this.mediaType,
+    title: title ?? this.title,
+    titleCn: titleCn ?? this.titleCn,
+    posterUrl: posterUrl ?? this.posterUrl,
+    platform: platform ?? this.platform,
+    category: category ?? this.category,
+    lastAirDate: lastAirDate ?? this.lastAirDate,
+    subscribedAt: subscribedAt ?? this.subscribedAt,
+  );
+  CalendarSubscription copyWithCompanion(CalendarSubscriptionsCompanion data) {
+    return CalendarSubscription(
+      source: data.source.present ? data.source.value : this.source,
+      sourceId: data.sourceId.present ? data.sourceId.value : this.sourceId,
+      mediaType: data.mediaType.present ? data.mediaType.value : this.mediaType,
+      title: data.title.present ? data.title.value : this.title,
+      titleCn: data.titleCn.present ? data.titleCn.value : this.titleCn,
+      posterUrl: data.posterUrl.present ? data.posterUrl.value : this.posterUrl,
+      platform: data.platform.present ? data.platform.value : this.platform,
+      category: data.category.present ? data.category.value : this.category,
+      lastAirDate: data.lastAirDate.present
+          ? data.lastAirDate.value
+          : this.lastAirDate,
+      subscribedAt: data.subscribedAt.present
+          ? data.subscribedAt.value
+          : this.subscribedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CalendarSubscription(')
+          ..write('source: $source, ')
+          ..write('sourceId: $sourceId, ')
+          ..write('mediaType: $mediaType, ')
+          ..write('title: $title, ')
+          ..write('titleCn: $titleCn, ')
+          ..write('posterUrl: $posterUrl, ')
+          ..write('platform: $platform, ')
+          ..write('category: $category, ')
+          ..write('lastAirDate: $lastAirDate, ')
+          ..write('subscribedAt: $subscribedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    source,
+    sourceId,
+    mediaType,
+    title,
+    titleCn,
+    posterUrl,
+    platform,
+    category,
+    lastAirDate,
+    subscribedAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is CalendarSubscription &&
+          other.source == this.source &&
+          other.sourceId == this.sourceId &&
+          other.mediaType == this.mediaType &&
+          other.title == this.title &&
+          other.titleCn == this.titleCn &&
+          other.posterUrl == this.posterUrl &&
+          other.platform == this.platform &&
+          other.category == this.category &&
+          other.lastAirDate == this.lastAirDate &&
+          other.subscribedAt == this.subscribedAt);
+}
+
+class CalendarSubscriptionsCompanion
+    extends UpdateCompanion<CalendarSubscription> {
+  final Value<String> source;
+  final Value<String> sourceId;
+  final Value<String> mediaType;
+  final Value<String> title;
+  final Value<String> titleCn;
+  final Value<String> posterUrl;
+  final Value<String> platform;
+  final Value<String> category;
+  final Value<String> lastAirDate;
+  final Value<int> subscribedAt;
+  final Value<int> rowid;
+  const CalendarSubscriptionsCompanion({
+    this.source = const Value.absent(),
+    this.sourceId = const Value.absent(),
+    this.mediaType = const Value.absent(),
+    this.title = const Value.absent(),
+    this.titleCn = const Value.absent(),
+    this.posterUrl = const Value.absent(),
+    this.platform = const Value.absent(),
+    this.category = const Value.absent(),
+    this.lastAirDate = const Value.absent(),
+    this.subscribedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  CalendarSubscriptionsCompanion.insert({
+    required String source,
+    required String sourceId,
+    this.mediaType = const Value.absent(),
+    required String title,
+    this.titleCn = const Value.absent(),
+    this.posterUrl = const Value.absent(),
+    this.platform = const Value.absent(),
+    this.category = const Value.absent(),
+    this.lastAirDate = const Value.absent(),
+    required int subscribedAt,
+    this.rowid = const Value.absent(),
+  }) : source = Value(source),
+       sourceId = Value(sourceId),
+       title = Value(title),
+       subscribedAt = Value(subscribedAt);
+  static Insertable<CalendarSubscription> custom({
+    Expression<String>? source,
+    Expression<String>? sourceId,
+    Expression<String>? mediaType,
+    Expression<String>? title,
+    Expression<String>? titleCn,
+    Expression<String>? posterUrl,
+    Expression<String>? platform,
+    Expression<String>? category,
+    Expression<String>? lastAirDate,
+    Expression<int>? subscribedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (source != null) 'source': source,
+      if (sourceId != null) 'source_id': sourceId,
+      if (mediaType != null) 'media_type': mediaType,
+      if (title != null) 'title': title,
+      if (titleCn != null) 'title_cn': titleCn,
+      if (posterUrl != null) 'poster_url': posterUrl,
+      if (platform != null) 'platform': platform,
+      if (category != null) 'category': category,
+      if (lastAirDate != null) 'last_air_date': lastAirDate,
+      if (subscribedAt != null) 'subscribed_at': subscribedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  CalendarSubscriptionsCompanion copyWith({
+    Value<String>? source,
+    Value<String>? sourceId,
+    Value<String>? mediaType,
+    Value<String>? title,
+    Value<String>? titleCn,
+    Value<String>? posterUrl,
+    Value<String>? platform,
+    Value<String>? category,
+    Value<String>? lastAirDate,
+    Value<int>? subscribedAt,
+    Value<int>? rowid,
+  }) {
+    return CalendarSubscriptionsCompanion(
+      source: source ?? this.source,
+      sourceId: sourceId ?? this.sourceId,
+      mediaType: mediaType ?? this.mediaType,
+      title: title ?? this.title,
+      titleCn: titleCn ?? this.titleCn,
+      posterUrl: posterUrl ?? this.posterUrl,
+      platform: platform ?? this.platform,
+      category: category ?? this.category,
+      lastAirDate: lastAirDate ?? this.lastAirDate,
+      subscribedAt: subscribedAt ?? this.subscribedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (source.present) {
+      map['source'] = Variable<String>(source.value);
+    }
+    if (sourceId.present) {
+      map['source_id'] = Variable<String>(sourceId.value);
+    }
+    if (mediaType.present) {
+      map['media_type'] = Variable<String>(mediaType.value);
+    }
+    if (title.present) {
+      map['title'] = Variable<String>(title.value);
+    }
+    if (titleCn.present) {
+      map['title_cn'] = Variable<String>(titleCn.value);
+    }
+    if (posterUrl.present) {
+      map['poster_url'] = Variable<String>(posterUrl.value);
+    }
+    if (platform.present) {
+      map['platform'] = Variable<String>(platform.value);
+    }
+    if (category.present) {
+      map['category'] = Variable<String>(category.value);
+    }
+    if (lastAirDate.present) {
+      map['last_air_date'] = Variable<String>(lastAirDate.value);
+    }
+    if (subscribedAt.present) {
+      map['subscribed_at'] = Variable<int>(subscribedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CalendarSubscriptionsCompanion(')
+          ..write('source: $source, ')
+          ..write('sourceId: $sourceId, ')
+          ..write('mediaType: $mediaType, ')
+          ..write('title: $title, ')
+          ..write('titleCn: $titleCn, ')
+          ..write('posterUrl: $posterUrl, ')
+          ..write('platform: $platform, ')
+          ..write('category: $category, ')
+          ..write('lastAirDate: $lastAirDate, ')
+          ..write('subscribedAt: $subscribedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
   late final $DoubanCachesTable doubanCaches = $DoubanCachesTable(this);
   late final $PlayHistoriesTable playHistories = $PlayHistoriesTable(this);
+  late final $CalendarSubscriptionsTable calendarSubscriptions =
+      $CalendarSubscriptionsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -751,6 +1381,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   List<DatabaseSchemaEntity> get allSchemaEntities => [
     doubanCaches,
     playHistories,
+    calendarSubscriptions,
   ];
 }
 
@@ -1158,6 +1789,324 @@ typedef $$PlayHistoriesTableProcessedTableManager =
       PlayHistory,
       PrefetchHooks Function()
     >;
+typedef $$CalendarSubscriptionsTableCreateCompanionBuilder =
+    CalendarSubscriptionsCompanion Function({
+      required String source,
+      required String sourceId,
+      Value<String> mediaType,
+      required String title,
+      Value<String> titleCn,
+      Value<String> posterUrl,
+      Value<String> platform,
+      Value<String> category,
+      Value<String> lastAirDate,
+      required int subscribedAt,
+      Value<int> rowid,
+    });
+typedef $$CalendarSubscriptionsTableUpdateCompanionBuilder =
+    CalendarSubscriptionsCompanion Function({
+      Value<String> source,
+      Value<String> sourceId,
+      Value<String> mediaType,
+      Value<String> title,
+      Value<String> titleCn,
+      Value<String> posterUrl,
+      Value<String> platform,
+      Value<String> category,
+      Value<String> lastAirDate,
+      Value<int> subscribedAt,
+      Value<int> rowid,
+    });
+
+class $$CalendarSubscriptionsTableFilterComposer
+    extends Composer<_$AppDatabase, $CalendarSubscriptionsTable> {
+  $$CalendarSubscriptionsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get sourceId => $composableBuilder(
+    column: $table.sourceId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get mediaType => $composableBuilder(
+    column: $table.mediaType,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get title => $composableBuilder(
+    column: $table.title,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get titleCn => $composableBuilder(
+    column: $table.titleCn,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get posterUrl => $composableBuilder(
+    column: $table.posterUrl,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get platform => $composableBuilder(
+    column: $table.platform,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get category => $composableBuilder(
+    column: $table.category,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get lastAirDate => $composableBuilder(
+    column: $table.lastAirDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get subscribedAt => $composableBuilder(
+    column: $table.subscribedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$CalendarSubscriptionsTableOrderingComposer
+    extends Composer<_$AppDatabase, $CalendarSubscriptionsTable> {
+  $$CalendarSubscriptionsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get source => $composableBuilder(
+    column: $table.source,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get sourceId => $composableBuilder(
+    column: $table.sourceId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get mediaType => $composableBuilder(
+    column: $table.mediaType,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get title => $composableBuilder(
+    column: $table.title,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get titleCn => $composableBuilder(
+    column: $table.titleCn,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get posterUrl => $composableBuilder(
+    column: $table.posterUrl,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get platform => $composableBuilder(
+    column: $table.platform,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get category => $composableBuilder(
+    column: $table.category,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get lastAirDate => $composableBuilder(
+    column: $table.lastAirDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get subscribedAt => $composableBuilder(
+    column: $table.subscribedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$CalendarSubscriptionsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $CalendarSubscriptionsTable> {
+  $$CalendarSubscriptionsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get source =>
+      $composableBuilder(column: $table.source, builder: (column) => column);
+
+  GeneratedColumn<String> get sourceId =>
+      $composableBuilder(column: $table.sourceId, builder: (column) => column);
+
+  GeneratedColumn<String> get mediaType =>
+      $composableBuilder(column: $table.mediaType, builder: (column) => column);
+
+  GeneratedColumn<String> get title =>
+      $composableBuilder(column: $table.title, builder: (column) => column);
+
+  GeneratedColumn<String> get titleCn =>
+      $composableBuilder(column: $table.titleCn, builder: (column) => column);
+
+  GeneratedColumn<String> get posterUrl =>
+      $composableBuilder(column: $table.posterUrl, builder: (column) => column);
+
+  GeneratedColumn<String> get platform =>
+      $composableBuilder(column: $table.platform, builder: (column) => column);
+
+  GeneratedColumn<String> get category =>
+      $composableBuilder(column: $table.category, builder: (column) => column);
+
+  GeneratedColumn<String> get lastAirDate => $composableBuilder(
+    column: $table.lastAirDate,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get subscribedAt => $composableBuilder(
+    column: $table.subscribedAt,
+    builder: (column) => column,
+  );
+}
+
+class $$CalendarSubscriptionsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $CalendarSubscriptionsTable,
+          CalendarSubscription,
+          $$CalendarSubscriptionsTableFilterComposer,
+          $$CalendarSubscriptionsTableOrderingComposer,
+          $$CalendarSubscriptionsTableAnnotationComposer,
+          $$CalendarSubscriptionsTableCreateCompanionBuilder,
+          $$CalendarSubscriptionsTableUpdateCompanionBuilder,
+          (
+            CalendarSubscription,
+            BaseReferences<
+              _$AppDatabase,
+              $CalendarSubscriptionsTable,
+              CalendarSubscription
+            >,
+          ),
+          CalendarSubscription,
+          PrefetchHooks Function()
+        > {
+  $$CalendarSubscriptionsTableTableManager(
+    _$AppDatabase db,
+    $CalendarSubscriptionsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$CalendarSubscriptionsTableFilterComposer(
+                $db: db,
+                $table: table,
+              ),
+          createOrderingComposer: () =>
+              $$CalendarSubscriptionsTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$CalendarSubscriptionsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> source = const Value.absent(),
+                Value<String> sourceId = const Value.absent(),
+                Value<String> mediaType = const Value.absent(),
+                Value<String> title = const Value.absent(),
+                Value<String> titleCn = const Value.absent(),
+                Value<String> posterUrl = const Value.absent(),
+                Value<String> platform = const Value.absent(),
+                Value<String> category = const Value.absent(),
+                Value<String> lastAirDate = const Value.absent(),
+                Value<int> subscribedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => CalendarSubscriptionsCompanion(
+                source: source,
+                sourceId: sourceId,
+                mediaType: mediaType,
+                title: title,
+                titleCn: titleCn,
+                posterUrl: posterUrl,
+                platform: platform,
+                category: category,
+                lastAirDate: lastAirDate,
+                subscribedAt: subscribedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String source,
+                required String sourceId,
+                Value<String> mediaType = const Value.absent(),
+                required String title,
+                Value<String> titleCn = const Value.absent(),
+                Value<String> posterUrl = const Value.absent(),
+                Value<String> platform = const Value.absent(),
+                Value<String> category = const Value.absent(),
+                Value<String> lastAirDate = const Value.absent(),
+                required int subscribedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => CalendarSubscriptionsCompanion.insert(
+                source: source,
+                sourceId: sourceId,
+                mediaType: mediaType,
+                title: title,
+                titleCn: titleCn,
+                posterUrl: posterUrl,
+                platform: platform,
+                category: category,
+                lastAirDate: lastAirDate,
+                subscribedAt: subscribedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$CalendarSubscriptionsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $CalendarSubscriptionsTable,
+      CalendarSubscription,
+      $$CalendarSubscriptionsTableFilterComposer,
+      $$CalendarSubscriptionsTableOrderingComposer,
+      $$CalendarSubscriptionsTableAnnotationComposer,
+      $$CalendarSubscriptionsTableCreateCompanionBuilder,
+      $$CalendarSubscriptionsTableUpdateCompanionBuilder,
+      (
+        CalendarSubscription,
+        BaseReferences<
+          _$AppDatabase,
+          $CalendarSubscriptionsTable,
+          CalendarSubscription
+        >,
+      ),
+      CalendarSubscription,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -1166,4 +2115,6 @@ class $AppDatabaseManager {
       $$DoubanCachesTableTableManager(_db, _db.doubanCaches);
   $$PlayHistoriesTableTableManager get playHistories =>
       $$PlayHistoriesTableTableManager(_db, _db.playHistories);
+  $$CalendarSubscriptionsTableTableManager get calendarSubscriptions =>
+      $$CalendarSubscriptionsTableTableManager(_db, _db.calendarSubscriptions);
 }

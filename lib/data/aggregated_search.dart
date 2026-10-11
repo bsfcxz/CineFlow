@@ -76,6 +76,21 @@ class AggregatedHit {
 /// 去重时"任一键相同"就合并。这比只取第一个键更稳
 ///（避免"某台只有 tmdb、另一台只有 imdb"时匹配失败）。
 ///
+/// ## ★★★ 实测：TMDB 的 movie 与 tv 是**两个独立 id 空间**
+///
+/// 扫描真实服务器 16470 个条目，发现 **165 组"跨类型撞 id"**：
+/// ```
+/// tmdb/74561  movie → 《阿姆斯特丹恶棍》(2011)
+/// tmdb/74561  tv    → 《明星大侦探》(2016)      ← 两个都**正确**
+/// tmdb/253    movie → 《007：你死我活》
+/// tmdb/253    tv    → 《星际迷航：原初》
+/// ```
+/// ⇒ **不能**只用 `tmdb:<数字>` 作身份键，**必须带 type**
+///（否则电影与剧集会被错判为同一部，跨服聚合时错合并）。
+///
+/// 另外 35 组"同类型撞 id"经核实是**同一部片的多版本**
+///（`.strm` 多份：1080p/480p、Remux/普通）⇒ **不是数据错误**，不需处理。
+///
 /// ## 为什么标题兜底要**限定 type**
 /// `Movie` 与 `Series` 可能同名（如《切尔诺贝利》既有电影也有剧集）
 /// ⇒ 不带 type 会把它们错合并。
@@ -85,9 +100,26 @@ class AggregatedHit {
 List<String> crossServerIdentityKeys(MediaItem it) {
   final out = <String>[];
   // ① 外部 ID（最可靠）—— key 已在解析时统一小写
+  //
+  // ★★★ **必须带 `type`**（实测发现的真 bug）
+  //
+  // TMDB 的 movie 与 tv 是**两个独立 id 空间**，同数字各自有效：
+  // `tmdb/74561` 同时是《阿姆斯特丹恶棍》(movie) 与《明星大侦探》(tv)，
+  // **两条元数据都正确**。
+  // ⇒ 不带 type 会把电影与剧集判为"同一部" ⇒ 跨服聚合**错合并**。
+  //
+  // ## 为什么之前没抓到（两个盲区叠加）
+  // · 单测样本都是**同类型**（两部剧 / 两条同 id）
+  // · 真机只登录了 1 台服务器 ⇒ **跨服聚合压根没有两条可比**
+  // ⇒ 靠"全库数据扫描"才发现，单测与真机都覆盖不到。
+  //
+  // ⚠️ 下面标题兜底键（`t:`）**一直**带着 type —— 外部 ID 这条却漏了，
+  //    是两处**不一致**造成的疏漏。
   for (final p in const ['imdb', 'tmdb', 'tvdb', 'anidb', 'anilist']) {
     final v = it.providerIds[p];
-    if (v != null && v.isNotEmpty) out.add('$p:${v.toLowerCase()}');
+    if (v != null && v.isNotEmpty) {
+      out.add('$p:${it.type}:${v.toLowerCase()}');
+    }
   }
   // ② 标题 + 年份 + 类型（**兜底**：实测约 0–25% 的条目没有外部 ID）
   final t = it.name.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');

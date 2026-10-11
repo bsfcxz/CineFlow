@@ -436,6 +436,78 @@ class WeekCalendar {
   List<CalendarEntry> forWeekday(int weekday) =>
       entries.where((e) => e.weekdayResolved == weekday).toList();
 
+  /// **整周按类别分组**（用户要求："追剧日历按类别排列，去除周一-周日"）。
+  ///
+  /// ## 与 [forWeekdayGrouped] 的区别
+  /// · `forWeekdayGrouped(d)` —— **某一天**的条目（周条模式下用）
+  /// · `groupedByCategory()` —— **整周**的条目（去周条后用）
+  ///
+  /// ## ★★ 必须去重（否则同一部剧重复出现）
+  /// 整周实测 240 条，而同一部剧会在多天出现
+  ///（如《你好，星期六》周一 + 周六）⇒ 不去重时「综艺」段里
+  /// 同一部剧会重复 3 次，用户看到一堆重复。
+  ///
+  /// 去重键 = `(source, sourceId)`（同一源内的 id 唯一）。
+  /// 保留哪一条？—— **离今天最近的那次更新**：
+  /// · 有"今天"⇒ 保留今天（用户最关心）
+  /// · 都在未来 ⇒ 保留最近的那天
+  /// · 都过去了 ⇒ 保留最近过去的（信息最新）
+  /// 这样每条都带一个"最近更新日"，UI 可显示"今天"/"周三"。
+  ///
+  /// ## 组间/组内顺序
+  /// · 组间：动漫 → 综艺 → 剧集（固定，用户列的次序）
+  /// · 组内：先按"离今天多近"升序（今天最前），再按热度降序
+  Map<CalendarCategory, List<CalendarEntry>> groupedByCategory() {
+    final today = DateTime.now().weekday;
+
+    // ① 按 (source, sourceId) 去重，保留最近更新那次
+    final best = <String, CalendarEntry>{};
+    for (final e in entries) {
+      final k = '${e.source}:${e.sourceId ?? e.displayTitle}';
+      final cur = best[k];
+      if (cur == null) {
+        best[k] = e;
+        continue;
+      }
+      if (_distanceFromToday(e.weekdayResolved, today) <
+          _distanceFromToday(cur.weekdayResolved, today)) {
+        best[k] = e;
+      }
+    }
+
+    // ② 按类别归组 + 组内排序
+    final out = <CalendarCategory, List<CalendarEntry>>{};
+    for (final c in CalendarCategory.values) {
+      final list = best.values.where((e) => e.category == c).toList();
+      final withPop = <CalendarEntry>[];
+      final noPop = <CalendarEntry>[];
+      for (final e in list) {
+        if (e.popularity != null && e.popularity! > 0) {
+          withPop.add(e);
+        } else {
+          noPop.add(e);
+        }
+      }
+      // 先按"离今天多远"（今天=0 最前），再按热度降序
+      withPop.sort((a, b) {
+        final d = _distanceFromToday(a.weekdayResolved, today)
+            .compareTo(_distanceFromToday(b.weekdayResolved, today));
+        if (d != 0) return d;
+        return b.popularity!.compareTo(a.popularity!);
+      });
+      noPop.sort((a, b) => _distanceFromToday(a.weekdayResolved, today)
+          .compareTo(_distanceFromToday(b.weekdayResolved, today)));
+      out[c] = [...withPop, ...noPop];
+    }
+    return out;
+  }
+
+  /// 某个星期几**离今天还有几天**（0 = 今天，1..3 = 未来，4..6 = 已过去）。
+  ///
+  /// 用于"最近的更新排最前"：今天 0，明天 1，…… 前天 6
+  ///（`(day - today + 7) % 7` 正好是这个语义）。
+  static int _distanceFromToday(int day, int today) => (day - today + 7) % 7;
+
   /// 取周几的条目，**按类别分组**、组内**按热度降序**（用户要求）。
   ///
   /// ## 排序规则（用户原话："按热度显示"）

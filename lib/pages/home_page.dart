@@ -11,6 +11,7 @@ import '../core/router.dart';
 import '../core/theme.dart';
 import '../data/emby_provider.dart';
 import '../data/models.dart';
+import '../data/db/app_database.dart' show CalendarSubscription;
 import '../state/providers.dart';
 import '../widgets/media_cards.dart';
 import 'detail_page.dart';
@@ -47,6 +48,18 @@ class HomePage extends ConsumerWidget {
               physics: const AlwaysScrollableScrollPhysics(),
               child: Column(children: [
                 if (d.featured.isNotEmpty) _Carousel(items: d.featured),
+                // ★ 我的追剧（用户："= 追剧日历中订阅的内容"）
+                //
+                // ## 为什么放在"继续观看"之前（对齐参考稿的区块顺序）
+                // 参考稿首页顺序：hero → emby-bar → 我的追剧 → 合集。
+                // 「我的追剧」是用户**主动订阅**的（意图最强），
+                // 排在"系统推荐的继续观看"之前更符合心智。
+                //
+                // ## 为什么它不会因网络失败而消失
+                // 数据来自 `subscriptionsProvider`（drift 本地表），
+                // 且订阅时落了**完整快照**（剧名/海报/平台/更新日）
+                // ⇒ 外部源（TMDB/B站）全挂也照样显示。
+                const _MyTrackingSection(),
                 if (d.resume.isNotEmpty)
                   CfSection(
                     title: '继续观看',
@@ -434,4 +447,102 @@ class _Slide extends ConsumerWidget {
   }
 }
 
+/// **我的追剧**（用户："我的追剧是从 cineflow 你做出来的追剧日历中订阅的东西"）。
+///
+/// ## 与「继续观看」的区别（两者都在首页，容易混淆）
+/// · **继续观看** —— Emby 的 `Resume`：**看过一半**的（被动记录）
+/// · **我的追剧** —— 本地订阅：**关注的日历条目**（主动订阅）
+/// 前者一定在你库里；后者可能只在 TMDB 热播榜上（库里没有）。
+///
+/// ## 为什么是 ConsumerWidget 而不是跟着 HomeData 走
+/// `HomeData` 是**外部源**的聚合（Emby），而订阅是**本地**数据。
+/// 分开 watch 有两个好处：
+/// ① 订阅变化（点星标）只重建这一区，不重拉整个首页
+/// ② Emby 挂了（`fatalError`）时，这一区仍然显示
+class _MyTrackingSection extends ConsumerWidget {
+  const _MyTrackingSection();
 
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final subs = ref.watch(subscriptionsProvider);
+    final list = subs.maybeWhen(data: (l) => l, orElse: () => const []);
+    // 没订阅时不占位（避免首页出现一个空区块）
+    if (list.isEmpty) return const SizedBox.shrink();
+    return CfSection(
+      title: '我的追剧',
+      trailing: '${list.length} 部',
+      child: SizedBox(
+        height: 178,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          itemCount: list.length,
+          separatorBuilder: (_, _) => const SizedBox(width: 10),
+          itemBuilder: (_, i) => _TrackingCard(sub: list[i]),
+        ),
+      ),
+    );
+  }
+}
+
+/// 追剧卡（海报 + 更新日角标 + 剧名 + 平台）。
+///
+/// ## 为什么不用 `PosterCard`
+/// `PosterCard` 吃 `MediaItem`（Emby 的中立模型），而订阅是
+/// `CalendarSubscription`（本地表行，含 TMDB 条目）⇒ 类型不兼容。
+/// 强行转换会造出一个"假的 MediaItem"（id 是 tmdb id，点进去播不了）。
+class _TrackingCard extends StatelessWidget {
+  const _TrackingCard({required this.sub});
+
+  final CalendarSubscription sub;
+
+  @override
+  Widget build(BuildContext context) {
+    final poster = sub.posterUrl;
+    return SizedBox(
+      width: 112,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(Cf.radiusSm),
+            child: SizedBox(
+              width: 112,
+              height: 134,
+              child: poster.isEmpty
+                  ? _fallback()
+                  : Image.network(
+                      poster,
+                      fit: BoxFit.cover,
+                      // 失败降级为占位（§6.4.1：不留破图）
+                      errorBuilder: (_, __, ___) => _fallback(),
+                      loadingBuilder: (context, child, p) =>
+                          p == null ? child : _fallback(),
+                    ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            sub.title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Cf.caption.copyWith(color: Cf.text),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            sub.platform.isEmpty ? '未标注平台' : sub.platform,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Cf.micro,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _fallback() => Container(
+        color: Cf.surface2,
+        alignment: Alignment.center,
+        child: Icon(Icons.movie_outlined, color: Cf.text3),
+      );
+}

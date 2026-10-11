@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../data/calendar_client.dart';
+import '../data/db/app_database.dart' show CalendarSubscription;
 import '../data/db/db_provider.dart' show appDbProvider;
 import '../data/emby_provider.dart';
 import '../data/home_repository.dart';
@@ -239,3 +240,77 @@ final calendarWeekProvider = FutureProvider.autoDispose<WeekCalendar>((
   final key = await ref.watch(sessionStoreProvider).loadTmdbKey();
   return client.fetchWeek(tmdbKey: key);
 });
+
+
+// ══════════════════════════════════════════════════════════
+// 追剧订阅（用户：「我的追剧」= 追剧日历里**订阅**的内容）
+// ══════════════════════════════════════════════════════════
+//
+// ## 为什么是独立的一组 provider（不复用 calendarWeekProvider）
+// · `calendarWeekProvider` 是**外部源**的数据（TMDB/B站），6h 缓存、可能失败
+// · 订阅是**本地数据**（drift），永远可读、不会失败
+// 两者生命周期与失败语义完全不同 ⇒ 混在一起会让"源挂了"连带订阅也空。
+
+/// 订阅键集合（形如 `tmdb:12345:tv`）。
+///
+/// ## 为什么单独一个 provider（而不是从列表推导）
+/// 日历一天 30 条、整周 240 条 ⇒ 每条都查一次库是 240 次查询。
+/// 一次查出 Set 后本地判断是 O(1)。
+final subscribedKeysProvider = FutureProvider<Set<String>>((ref) async {
+  final db = ref.watch(appDbProvider);
+  return db.subscribedKeys();
+});
+
+/// 全部订阅（按"最近更新日"倒序）。
+///
+/// ⚠️ **不 autoDispose**：首页「我的追剧」与日历页都要用；
+///    autoDispose 会让每次切页都重查库。
+final subscriptionsProvider = FutureProvider<List<CalendarSubscription>>((
+  ref,
+) async {
+  final db = ref.watch(appDbProvider);
+  return db.allSubscriptions();
+});
+
+/// **订阅/取消订阅**（唯一写入口）。
+///
+/// ## 为什么写成一个顶层函数而不是 Notifier 方法
+/// 调用点有 2 处（日历卡片、详情弹层），都只需要"toggle + 刷新"。
+/// 用函数可以保证**两处刷新逻辑一致**（不会有一处漏 invalidate）。
+///
+/// ## 返回
+/// `true` = 现在已订阅；`false` = 现在未订阅。
+/// ## 为什么收 \WidgetRef\ 而不是 \Ref\（riverpod 3 的类型约束）
+///
+/// riverpod 3 把两者分开了：
+/// · \Ref\ —— provider 内部用
+/// · \WidgetRef\ —— widget 里用
+/// 它们**没有公共父类**，但 \invalidate\ 语义一样。
+/// ⇒ 收 \Ref\ 会让 widget 调用处编译不过（实测报
+///   "The argument type 'WidgetRef' can't be assigned to 'Ref'"）。
+///
+/// 唯一调用方是 UI（日历星标按钮）⇒ 收 \WidgetRef\。
+/// 若将来 provider 内部也要 toggle，再抽只收 db 的底层函数。
+Future<bool> toggleCalendarSubscription(
+  WidgetRef ref, {
+  required CalendarEntry entry,
+  required String mediaType,
+}) async {
+  final db = ref.read(appDbProvider);
+  final now = await db.toggleSubscription(
+    source: entry.source,
+    sourceId: entry.sourceId ?? entry.displayTitle,
+    mediaType: mediaType,
+    title: entry.displayTitle,
+    titleCn: entry.titleCn ?? '',
+    posterUrl: entry.posterUrl ?? '',
+    platform: entry.platform ?? '',
+    category: entry.category.name,
+    lastAirDate: entry.airDate ?? '',
+  );
+  // 两个 provider 都要刷（一个给"是否已订阅"的按钮状态，
+  // 一个给首页/日历的订阅列表）
+  ref.invalidate(subscribedKeysProvider);
+  ref.invalidate(subscriptionsProvider);
+  return now;
+}
