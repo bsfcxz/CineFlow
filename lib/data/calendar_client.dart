@@ -199,6 +199,25 @@ class CalendarClient {
   /// 本周数据的短 TTL（见 [cacheTtl] 说明）。
   static const todayTtl = Duration(minutes: 30);
 
+  /// **每个源的独立 deadline**（`fetchWeek` 用它包住每个源）。
+  ///
+  /// ## 为什么必须"每源独立"（真机验证抓到：整页转圈 12 秒）
+  /// `Future.wait` 会等**所有** future 完成 ⇒ **最慢的源决定整页时间**。
+  /// 真机实测：Bangumi 的退避 + 慢响应让日历页 **转圈 12 秒**，
+  /// 用户体感是"页面坏了"（截图确认卡在 loading）。
+  ///
+  /// ⇒ 每个源单独 `timeout(perSourceDeadline)`：
+  ///   超时的源按"失败"处理（UI 显示"暂不可用"），**其余源照常展示**。
+  ///
+  /// ## 为什么是 7 秒（实测取舍）
+  /// · Bangumi：退避 3s + 两次请求 ≈ 4–6s ⇒ 能容纳
+  /// · TVmaze：7 个请求并发（实测单请求 7.8s，**这个值会撞线**）
+  ///   ⇒ 见 `_fetchTvmaze` 的说明：已砍到 7 请求 + 只算星期
+  /// · B站：1 个请求 ⇒ 秒级
+  ///
+  /// 超过 7 秒的源已属"明显异常"，此时**先给用户看结果**比等它更重要。
+  static const perSourceDeadline = Duration(seconds: 7);
+
   // ══════════════════════════════════════════════════════════
   // 公开入口
   // ══════════════════════════════════════════════════════════
@@ -223,7 +242,7 @@ class CalendarClient {
     // · Bangumi 退避 3s + 两次请求 ≈ 4–6s ⇒ 能容纳
     // · TVmaze 18 个请求分批（见 `_fetchTvmaze`）≈ 3–5s ⇒ 能容纳
     // · 超过 7s 的源已"明显异常"，此时**先给用户看结果**更重要
-    const perSource = Duration(seconds: 7);
+    // ⚠️ 必须是**每源**独立 deadline（`Future.wait` 的语义是"等最慢的"）
 
     Future<CalendarSourceResult> guard(
       Future<CalendarSourceResult> f,
@@ -231,9 +250,10 @@ class CalendarClient {
       String label,
     ) async {
       try {
-        return await f.timeout(perSource);
+        return await f.timeout(perSourceDeadline);
       } on TimeoutException {
-        debugPrint('[Calendar] $label 超时（>${perSource.inSeconds}s）⇒ 跳过');
+        debugPrint('[Calendar] $label 超时'
+            '（>${perSourceDeadline.inSeconds}s）⇒ 跳过');
         return CalendarSourceResult(
             source: source, label: label, error: '超时（已跳过）');
       } catch (e) {
@@ -376,7 +396,7 @@ class CalendarClient {
             //
             // ⇒ 统一 `http://` → `https://`（lain.bgm.tv 支持 https，
             //   本项目既有 `DoubanImage` 也走同一思路）。
-            posterUrl: _https(poster),
+            posterUrl: httpsPosterUrl(poster),
             rating: (rating as num?)?.toDouble(),
             summary: it['summary'] as String?,
             source: src,
@@ -495,7 +515,7 @@ class CalendarClient {
             episode: (season != null && number != null)
                 ? 'S${_pad(season)}E${_pad(number)}'
                 : null,
-            posterUrl: _https(img is Map ? (img['medium'] as String?) : null),
+            posterUrl: httpsPosterUrl(img is Map ? (img['medium'] as String?) : null),
             rating: (rating as num?)?.toDouble(),
             summary:
                 _stripHtml((show['summary'] ?? it['summary']) as String?),
@@ -607,7 +627,7 @@ class CalendarClient {
             episode: (ep['pub_index'] as String?)?.isNotEmpty == true
                 ? ep['pub_index'] as String?
                 : (ep['pub_time'] as String?),
-            posterUrl: _https(ep['cover'] as String?),
+            posterUrl: httpsPosterUrl(ep['cover'] as String?),
             source: src,
             sourceId: ep['episode_id']?.toString(),
             bangumiId: (ep['season_id'] as num?)?.toInt(),
@@ -813,14 +833,6 @@ class CalendarClient {
     return s.length >= 2 ? s : '0$s';
   }
 
-  /// `http://` → `https://`（**Bangumi 海报必须处理**，否则 Android 明文
-  /// HTTP 被禁 ⇒ 海报全裂）。非 http 的原样返回。
-  static String? _https(String? url) {
-    if (url == null || url.isEmpty) return null;
-    if (url.startsWith('http://')) return 'https://${url.substring(7)}';
-    return url;
-  }
-
   /// 把 `airstamp`（ISO8601 带时区）换算到 **UTC+8** 后取**星期几**。
   ///
   /// ## 为什么按 UTC+8 算星期（而不改归属日）
@@ -957,6 +969,33 @@ List<CalendarEntry> mergeCalendarEntries(List<CalendarEntry> all) {
     out.add(e);
   }
   return out;
+}
+
+/// `http://` → `https://`（**Bangumi 海报必须处理**，否则海报全裂）。
+///
+/// ## 为什么必须有（实测 + 调研双重取证）
+/// Bangumi 的 `images.large` **全是** `http://lain.bgm.tv/...`：
+/// ```json
+/// "images": {"large": "http://lain.bgm.tv/pic/cover/l/1c/b4/…jpg"}
+/// ```
+/// 而 **Android 9+ 默认禁止明文 HTTP**（cleartext）⇒ 不升级就
+/// **海报全部裂掉**（图片加载失败，显示占位）。
+///
+/// ## 为什么是**顶层公开函数**（而不是类内私有 static）
+/// 反向注入自查发现：它原本是私有的 ⇒ **无法单测**；
+/// 而依赖它的真网测试在 Bangumi 不可达时会**跳过**（本机/真机就是）
+/// ⇒ 这个 bug **逃得掉**（实测：禁掉它测试仍全绿）。
+/// ⇒ 提到顶层并公开，直接单测（§8.1"纯逻辑提为 public"）。
+///
+/// ## 语义
+/// · `http://…` → `https://…`
+/// · 已是 `https://` ⇒ 原样（**幂等**）
+/// · null / 空串 / 非 http（ftp、相对路径）⇒ 原样
+String? httpsPosterUrl(String? url) {
+  if (url == null) return null;
+  if (url.isEmpty) return url;
+  if (url.startsWith('http://')) return 'https://${url.substring(7)}';
+  return url;
 }
 
 /// 标题归一化（用于跨源去重）：去标点/空白、统一大小写与全半角。

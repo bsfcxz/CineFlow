@@ -7,6 +7,8 @@
 // 这两种错误都不会"报错"，只会让界面变得难以理解。
 library;
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:cineflow/data/calendar_client.dart';
@@ -70,6 +72,102 @@ void main() {
       expect(normalizeTitle('进击的巨人'),
           isNot(normalizeTitle('进击的巨人 最终季')),
           reason: '★ 误合并会让用户看不到某部剧（比重复更糟）');
+    });
+  });
+
+  group('★★ 同源同 id 去重（抓取层重复）', () {
+    test('★★★ 同源同 id 必须合并 —— **即使标题不同**', () {
+      // ## 为什么这条要"标题不同"（反向注入自查发现的薄弱守卫）
+      // 若两条标题相同，那么"同源+标题"那条键**也会**合并它们
+      // ⇒ 测试无法隔离出"同源同 id"这条判据
+      //（实测：把 `src:` 判据禁掉后测试仍全绿 ⇒ 守卫无效）。
+      // ⇒ 必须让**只有 id 能救**：标题故意不同。
+      final out = mergeCalendarEntries([
+        e('某剧 第 1 集', source: 'tvmaze', sourceId: '999', airDate: '2026-10-10'),
+        e('某剧 第 1 集（重发）',
+            source: 'tvmaze', sourceId: '999', airDate: '2026-10-10'),
+      ]);
+      expect(out.length, 1,
+          reason: '★★★ 同源同 id ⇒ 一定是同一条（分页/重发会带回重复）\n'
+              '    标题可能被服务端改写，但 id 不会');
+    });
+
+    test('★★ 不同 id + 不同标题 ⇒ 不合并', () {
+      final out = mergeCalendarEntries([
+        e('A 剧', source: 'tvmaze', sourceId: '1', airDate: '2026-10-10'),
+        e('B 剧', source: 'tvmaze', sourceId: '2', airDate: '2026-10-10'),
+      ]);
+      expect(out.length, 2);
+    });
+  });
+
+  group('★★★ 海报 URL 必须升 https（Android 明文被禁）', () {
+    test('★★★ http:// 必须变成 https://', () {
+      // ## 实测依据
+      // Bangumi 的 `images.large` **全是** `http://lain.bgm.tv/...`：
+      // ```json
+      // "images": {"large": "http://lain.bgm.tv/pic/cover/l/1c/...jpg"}
+      // ```
+      // Android 9+ 默认禁明文 HTTP ⇒ 不处理会**海报全裂**。
+      //
+      // ⚠️ 这条必须是**纯函数单测**（不能只靠真网测试）：
+      //    Bangumi 在本机/真机**都不可达**（WAF 拦 TLS 指纹）
+      //    ⇒ 真网测试会跳过 ⇒ 这个 bug 逃得掉
+      //    （反向注入自查正是这样发现的）。
+      expect(httpsPosterUrl('http://lain.bgm.tv/pic/cover/l/1c/b4/x.jpg'),
+          'https://lain.bgm.tv/pic/cover/l/1c/b4/x.jpg');
+      expect(httpsPosterUrl('http://image.tmdb.org/t/p/w300/x.jpg'),
+          'https://image.tmdb.org/t/p/w300/x.jpg');
+    });
+
+    test('★ 已是 https 的原样返回（幂等）', () {
+      const u = 'https://lain.bgm.tv/x.jpg';
+      expect(httpsPosterUrl(u), u);
+      expect(httpsPosterUrl(httpsPosterUrl('http://a.com/x.jpg')),
+          httpsPosterUrl('http://a.com/x.jpg'),
+          reason: '★ 幂等：重复处理不变');
+    });
+
+    test('★ null / 空串 / 非 http 原样返回', () {
+      expect(httpsPosterUrl(null), isNull);
+      expect(httpsPosterUrl(''), '');
+      expect(httpsPosterUrl('ftp://a/x.jpg'), 'ftp://a/x.jpg');
+      expect(httpsPosterUrl('/relative/x.jpg'), '/relative/x.jpg');
+    });
+  });
+
+  group('★★★ 每源独立 deadline（慢源不能拖垮整页）', () {
+    test('★★★ perSourceDeadline 必须存在且合理', () {
+      // ## 真机验证抓到的现象
+      // Bangumi 退避 + 慢响应 ⇒ 日历页**转圈 12 秒**
+      //（截图确认卡在 loading）。根因：`Future.wait` 等**所有** future
+      // ⇒ **最慢的源决定整页时间**。
+      //
+      // ⇒ 必须每源独立 `timeout(perSourceDeadline)`。
+      expect(CalendarClient.perSourceDeadline.inSeconds,
+          inInclusiveRange(3, 15),
+          reason: '★★★ 太短 ⇒ 正常源被误杀（TVmaze 单请求实测 7.8s）；\n'
+              '    太长 ⇒ 用户白等（真机 12s 已属"页面坏了"）');
+    });
+
+    test('★★ fetchWeek 必须逐个源包 deadline', () {
+      final src = File('lib/data/calendar_client.dart').readAsStringSync();
+      // 剥注释（§8.4：断言不得被注释满足）
+      final code = src
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      expect(code.contains('.timeout(perSourceDeadline)'), isTrue,
+          reason: '★★★ 少了它 ⇒ 一个慢源（如 Bangumi 退避 3s + 慢响应）\n'
+              '    就能让整页卡住 —— 真机实测 12 秒');
+      expect(code.contains('guard(_fetchBangumi()'), isTrue,
+          reason: '★ 每个源都要走 guard 包装');
+      expect(code.contains('guard(_fetchTvmaze()'), isTrue);
+      expect(code.contains('guard(_fetchBilibili()'), isTrue);
     });
   });
 
@@ -219,6 +317,99 @@ void main() {
       ]);
       expect(out.first.source, 'bangumi',
           reason: '★ 调用方按源优先级传入 ⇒ 首次出现的应保留');
+    });
+
+    test('★★★ 同源同 id 必须合并 —— **即使标题不同**', () {
+      // ## 为什么这条要"标题不同"（反向注入自查发现的薄弱守卫）
+      // 若两条标题相同，那么"同源+标题"那条键**也会**合并它们
+      // ⇒ 测试无法隔离出"同源同 id"这条判据
+      //（实测：把 `src:` 判据禁掉后测试仍全绿 ⇒ 守卫无效）。
+      // ⇒ 必须让**只有 id 能救**：标题故意不同。
+      final out = mergeCalendarEntries([
+        e('某剧 第 1 集',
+            source: 'tvmaze', sourceId: '999', airDate: '2026-10-10'),
+        e('某剧 第 1 集（重发）',
+            source: 'tvmaze', sourceId: '999', airDate: '2026-10-10'),
+      ]);
+      expect(out.length, 1,
+          reason: '★★★ 同源同 id ⇒ 一定是同一条（分页/重发会带回重复）\n'
+              '    标题可能被服务端改写，但 id 不会');
+    });
+
+    test('★★ 不同 id + 不同标题 ⇒ 不合并', () {
+      final out = mergeCalendarEntries([
+        e('A 剧', source: 'tvmaze', sourceId: '1', airDate: '2026-10-10'),
+        e('B 剧', source: 'tvmaze', sourceId: '2', airDate: '2026-10-10'),
+      ]);
+      expect(out.length, 2);
+    });
+  });
+
+  group('★★★ 海报 URL 必须升 https（Android 明文被禁）', () {
+    test('★★★ http:// 必须变成 https://', () {
+      // ## 实测依据
+      // Bangumi 的 `images.large` **全是** `http://lain.bgm.tv/...`：
+      // ```json
+      // "images": {"large": "http://lain.bgm.tv/pic/cover/l/1c/...jpg"}
+      // ```
+      // Android 9+ 默认禁明文 HTTP ⇒ 不处理会**海报全裂**。
+      //
+      // ⚠️ 这条必须是**纯函数单测**（不能只靠真网测试）：
+      //    Bangumi 在本机/真机**都不可达**（WAF 拦 TLS 指纹）
+      //    ⇒ 真网测试会跳过 ⇒ 这个 bug 逃得掉
+      //    （反向注入自查正是这样发现的）。
+      expect(httpsPosterUrl('http://lain.bgm.tv/pic/cover/l/1c/b4/x.jpg'),
+          'https://lain.bgm.tv/pic/cover/l/1c/b4/x.jpg');
+      expect(httpsPosterUrl('http://image.tmdb.org/t/p/w300/x.jpg'),
+          'https://image.tmdb.org/t/p/w300/x.jpg');
+    });
+
+    test('★ 已是 https 的原样返回（幂等）', () {
+      const u = 'https://lain.bgm.tv/x.jpg';
+      expect(httpsPosterUrl(u), u);
+      expect(httpsPosterUrl(httpsPosterUrl('http://a.com/x.jpg')),
+          httpsPosterUrl('http://a.com/x.jpg'),
+          reason: '★ 幂等：重复处理不变');
+    });
+
+    test('★ null / 空串 / 非 http 原样返回', () {
+      expect(httpsPosterUrl(null), isNull);
+      expect(httpsPosterUrl(''), '');
+      expect(httpsPosterUrl('ftp://a/x.jpg'), 'ftp://a/x.jpg');
+      expect(httpsPosterUrl('/relative/x.jpg'), '/relative/x.jpg');
+    });
+  });
+
+  group('★★★ 每源独立 deadline（慢源不能拖垮整页）', () {
+    test('★★★ perSourceDeadline 必须存在且合理', () {
+      // ## 真机验证抓到的现象
+      // Bangumi 退避 + 慢响应 ⇒ 日历页**转圈 12 秒**
+      //（截图确认卡在 loading）。根因：`Future.wait` 等**所有** future
+      // ⇒ **最慢的源决定整页时间**。
+      expect(CalendarClient.perSourceDeadline.inSeconds,
+          inInclusiveRange(3, 15),
+          reason: '★★★ 太短 ⇒ 正常源被误杀（TVmaze 单请求实测 7.8s）；\n'
+              '    太长 ⇒ 用户白等（真机 12s 已属"页面坏了"）');
+    });
+
+    test('★★ fetchWeek 必须逐个源包 deadline', () {
+      final src = File('lib/data/calendar_client.dart').readAsStringSync();
+      // 剥注释（§8.4：断言不得被注释满足）
+      final code = src
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      expect(code.contains('.timeout(perSourceDeadline)'), isTrue,
+          reason: '★★★ 少了它 ⇒ 一个慢源（如 Bangumi 退避 3s + 慢响应）\n'
+              '    就能让整页卡住 —— 真机实测 12 秒');
+      expect(code.contains('guard(_fetchBangumi()'), isTrue,
+          reason: '★ 每个源都要走 guard 包装');
+      expect(code.contains('guard(_fetchTvmaze()'), isTrue);
+      expect(code.contains('guard(_fetchBilibili()'), isTrue);
     });
   });
 

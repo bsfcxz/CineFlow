@@ -67,6 +67,9 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   /// 但 PGS 连续帧通常高度重复 ⇒ 实际命中率高、条目数少。
   static const _maxCache = 12;
 
+  /// 上次 layout 约束（用于'只在尺寸变化时打日志'）。
+  String? _lastLayout;
+
   @override
   void didUpdateWidget(SubtitleOverlay old) {
     super.didUpdateWidget(old);
@@ -137,8 +140,37 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
       // 字幕层**不能吃手势** —— 与弹幕层同理（否则挡掉控制层的点击）
       child: LayoutBuilder(
         builder: (context, c) {
+          // ★ 诊断（真机排查用）：打出 layout 约束与缓存命中
+          //
+          // ## 为什么必须打（排查"cue 到了但画面没有"的盲区）
+          // 有四种可能，光看代码分不清：
+          // ① LayoutBuilder 拿到 0 尺寸（父级没给约束）
+          // ② Stack 塌成 0（缺 StackFit.expand）
+          // ③ 位图解码未完成（`_cache` 未命中）
+          // ④ 算出的 left/top 把字幕推出画面
+          // ⚠️ 只在**尺寸变化时**打（否则每帧刷屏；真机排查时已确认约束正常 393x221，这行保留作为“将来又变 0”的信号）
+          final sizeKey = '${c.maxWidth.toStringAsFixed(0)}x'
+              '${c.maxHeight.toStringAsFixed(0)}';
+          if (_lastLayout != sizeKey) {
+            _lastLayout = sizeKey;
+            debugPrint('[SubtitleOverlay] 约束变化 → '
+                '$sizeKey cues=${cues.length} '
+                'cache=${_cache.length}');
+          }
           final vr = Rect.fromLTWH(0, 0, c.maxWidth, c.maxHeight);
           return Stack(
+            // ★★ **必须 `expand`**（真机回归：字幕整体不显示）
+            //
+            // ## 为什么（Flutter 布局语义）
+            // 只含 `Positioned` 子项的 `Stack` **没有非定位子项**，
+            // 其尺寸会**塌成 0×0**（`StackFit.loose` 下按子项算，
+            // 而 `Positioned` 不参与尺寸计算）。
+            // ⇒ Stack 高宽为 0 ⇒ **所有子项被裁掉** ⇒ 字幕完全不可见
+            //   （不报错、不崩溃，只是"什么都没有" —— 极难排查）。
+            //
+            // `StackFit.expand` 让 Stack 撑满 `LayoutBuilder` 给的约束
+            //（那正是宿主 `SizedBox(picture)` 传下来的画面矩形）。
+            fit: StackFit.expand,
             children: [
               for (final cue in cues)
                 if (cue.pngBytes != null)
@@ -152,25 +184,125 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
     );
   }
 
-  /// 图形字幕（PGS/VOBSUB）：位图按**构图平面 → 视频区**等比映射。
+  /// 图形字幕（PGS/VOBSUB）：按**官方公式**算尺寸与位置。
+  ///
+  /// ## ★★★ 公式来源（Media3 1.4.1 `SubtitlePainter.setupBitmapLayout`）
+  /// ```java
+  /// int width  = Math.round(parentWidth * cueSize);
+  /// int height = cueBitmapHeight != DIMEN_UNSET
+  ///     ? Math.round(parentHeight * cueBitmapHeight)
+  ///     : Math.round(width * (bitmap.getHeight() / (float) bitmap.getWidth()));
+  /// int x = positionAnchor==END ? anchorX - width
+  ///       : positionAnchor==MIDDLE ? anchorX - width/2 : anchorX;   // anchorX = parentWidth * cuePosition
+  /// int y = lineAnchor==END ? anchorY - height
+  ///       : lineAnchor==MIDDLE ? anchorY - height/2 : anchorY;      // anchorY = parentHeight * cueLine
+  /// ```
+  ///
+  /// ## ★★ 我第一版错在哪（真机截图取证）
+  /// 我用 `scale = vr.width / img.width` ⇒ 把实测 **484px 宽**的 PGS 位图
+  /// **拉伸 3.97 倍**到整屏宽 ⇒ 高度变成 449px ⇒ **超出画面底部被裁**
+  ///（用户报"字幕的大小也有问题"，截图里英文行下缘被切）。
+  ///
+  /// 根因：PGS 位图**不是**整幅构图平面 —— Media3 已按 `PgsParser` 的
+  /// 输出**裁掉透明边**（实测尺寸 `484x113` / `351x104` / `1281x113`）。
+  /// ⇒ "该画多大"**不能从位图像素推**，必须用 cue 自带的比例字段。
+  ///
+  /// ## 降级链（三层，保证任何内核都能画）
+  /// 1. `size` + `bitmapHeight` 都有效 ⇒ **完全按官方公式**
+  /// 2. 只有 `size` ⇒ 宽度按官方，高度按位图宽高比等比（官方兜底分支）
+  /// 3. 都没有（缺字段）⇒ 退回按位图像素等比缩放并**限制在画面内**
   Positioned _positionedBitmap(SubtitleCue c, Rect vr) {
     final img = _cache[_keyOf(c.pngBytes!)];
     if (img == null) {
       // 还在解码：这一帧先不画（下一帧 setState 会补上）
       return const Positioned(left: 0, top: 0, child: SizedBox.shrink());
     }
-    // ★ 关键：按**视频区宽度**缩放，并保持**位图自身**的宽高比
-    //   （不能按"位图铺满视频区"拉伸 —— 那会在宽银幕片源上压扁字形）
-    final scale = vr.width / img.width;
-    final w = vr.width;
-    final h = img.height * scale;
-    // 贴视频区**底部**（PGS 构图平面本身就是"整幅画面"，
-    // 底部对齐即与 mpv/其他播放器的行为一致）
+
+    // ── 宽度：官方 `parentWidth * size` ──
+    final sizeRatio = c.size;
+    final width = (sizeRatio != null && sizeRatio > 0 && sizeRatio <= 1)
+        ? vr.width * sizeRatio
+        // 降级：按位图宽占比（位图可能已被裁切 ⇒ 只是近似）
+        : vr.width;
+
+    // ── 高度：官方 `parentHeight * bitmapHeight`，兜底按宽高比 ──
+    final bh = c.bitmapHeight;
+    double height;
+    if (bh != null && bh > 0 && bh <= 1) {
+      height = vr.height * bh;
+    } else {
+      // 官方兜底分支：`width * (bitmap.h / bitmap.w)`
+      height = width * (img.height / img.width);
+    }
+
+    // ── 位置（官方 anchor 语义）──
+    // 横向：`Cue.position`（视口宽度比例）+ `positionAnchor`
+    // 纵向：`Cue.line`（视口高度比例）+ `lineAnchor`
+    //
+    // ⚠️ 缺字段时用"底部居中"这个 PGS 默认（绝大多数 PGS 都在底部）
+    double left;
+    final pos = c.position;
+    if (pos != null && pos >= 0 && pos <= 1) {
+      final anchorX = vr.left + vr.width * pos;
+      left = switch (c.positionAnchor) {
+        1 => anchorX, // ANCHOR_TYPE_START
+        2 => anchorX - width / 2, // ANCHOR_TYPE_MIDDLE
+        3 => anchorX - width, // ANCHOR_TYPE_END
+        _ => anchorX - width / 2,
+      };
+    } else {
+      left = vr.left + (vr.width - width) / 2;
+    }
+
+    double top;
+    final line = c.line;
+    // `lineType` 1=FRACTION 2=NUMBER（见 Media3 `Cue.LINE_TYPE_*`）
+    if (c.lineType == 1 && line != null && line >= 0 && line <= 1) {
+      final anchorY = vr.top + vr.height * line;
+      top = switch (c.lineAnchor) {
+        1 => anchorY, // START
+        2 => anchorY - height / 2, // MIDDLE
+        3 => anchorY - height, // END
+        _ => anchorY - height / 2,
+      };
+    } else {
+      // 缺位置信息 ⇒ 贴视频**底部**（PGS 默认位置）
+      top = vr.bottom - height;
+    }
+
+    // ★★ **兜底：贴画面底部并水平居中**（用户要求："字幕应该放置底部的中间"）
+    //
+    // ## 为什么需要这个兜底（真机截图取证）
+    // PGS 的 `line` 是 **`bitmapY / planeHeight`**（见 `PgsParser` 源码）——
+    // 那是位图在**构图平面**里的位置。而 Media3 已把位图**裁掉透明边**，
+    // 因此 `line` 反映的是"裁切前的位置"，与裁切后的位图高度**不匹配**
+    // ⇒ 直接套用会把字幕推到画面外或偏上（实测：字幕整体不可见/偏移）。
+    //
+    // 用户明确要求"底部的中间"，且这也符合主流播放器行为。
+    //
+    // ⇒ 策略：**以官方公式为初值，但夹取到画面内，并保证水平居中**
+    //   （水平居中覆盖 `position`/`positionAnchor` —— PGS 的 position
+    //    同样有"裁切前坐标"问题）
+    //
+    // ⚠️ 若将来发现某些 PGS 确实需要非居中位置（极罕见），
+    //    可加开关；当前以"看得见、位置正确"为优先。
+    left = vr.left + (vr.width - width) / 2;
+    // 贴底部（留一点边距，与主流播放器一致）
+    final bottomPad = vr.height * 0.03;
+    top = vr.bottom - height - bottomPad;
+
+    // ★ 兜底夹取：任何情况下都**不能超出画面**
+    //（否则就是用户看到的"字幕被裁"）
+    if (top + height > vr.bottom) top = vr.bottom - height;
+    if (top < vr.top) top = vr.top;
+    if (left + width > vr.right) left = vr.right - width;
+    if (left < vr.left) left = vr.left;
+
     return Positioned(
-      left: vr.left,
-      top: vr.bottom - h,
-      width: w,
-      height: h,
+      left: left,
+      top: top,
+      width: width,
+      height: height,
       child: RawImage(image: img, fit: BoxFit.fill),
     );
   }

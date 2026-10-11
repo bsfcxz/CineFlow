@@ -117,6 +117,15 @@ class Media3Kernel implements PlayerKernel {
         pngBytes: bytes,
         width: (m['w'] as num?)?.toInt(),
         height: (m['h'] as num?)?.toInt(),
+        // ★ 官方渲染用的比例/位置字段（见 `SubtitleCue` 的说明）
+        //   —— 缺了它们只能靠位图像素猜尺寸，真机上会把字幕放大到被裁
+        size: (m['size'] as num?)?.toDouble(),
+        bitmapHeight: (m['bitmapHeight'] as num?)?.toDouble(),
+        line: (m['line'] as num?)?.toDouble(),
+        lineType: (m['lineType'] as num?)?.toInt(),
+        lineAnchor: (m['lineAnchor'] as num?)?.toInt(),
+        position: (m['position'] as num?)?.toDouble(),
+        positionAnchor: (m['positionAnchor'] as num?)?.toInt(),
       );
       // 空 cue（既无文本也无位图）跳过 —— 那是"清屏"用的
       if (!cue.isEmpty) out.add(cue);

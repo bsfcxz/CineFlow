@@ -517,9 +517,43 @@ abstract class PlayerKernel {
 ///
 /// ## 为什么位图用 PNG 字节而不是原始 RGBA
 /// 跨 MethodChannel 传输需要可序列化；PNG 无损、体积小（PGS 一帧几 KB），
-/// 且 Flutter 侧 `Image.memory` 直接可用（无需自己解 RGBA）。
+/// 且 Flutter 侧用 `Image.memory` 直接可用（无需自己解 RGBA）。
+///
+/// ## ★★ 尺寸必须带 `size` / `bitmapHeight`（**不能只靠位图像素**）
+///
+/// ### 真机取证（2026-10-11，用户报"字幕的大小也有问题"）
+/// 实测 cue 位图尺寸：`484x113`、`351x104`、`1281x113` ——
+/// **不是**整幅构图平面（1920×1080），而是 **PGS 按需裁切后的小图**。
+/// 我第一版用 `scale = 视频宽 / 位图宽` ⇒ 把 484 宽的图**拉伸 3.97 倍**
+/// 到整屏宽 ⇒ 高度变 449px ⇒ **超出画面底部被裁**（截图确认）。
+///
+/// ### 官方正确公式（Media3 1.4.1 `SubtitlePainter.setupBitmapLayout`）
+/// ```java
+/// int width  = Math.round(parentWidth * cueSize);
+/// int height = cueBitmapHeight != DIMEN_UNSET
+///     ? Math.round(parentHeight * cueBitmapHeight)      // 视口高度比例
+///     : Math.round(width * (bitmap.getHeight() / (float) bitmap.getWidth()));
+/// ```
+/// 关键：`Cue.size` 与 `Cue.bitmapHeight` 都是**视口比例**（0–1），
+/// 不是像素值。官方文档原文（`Cue.Builder.setBitmapHeight`）：
+/// > "Sets the bitmap height as a **fraction of the viewport size**"
+///
+/// ⇒ 本类必须把这几个字段一起带过来，否则无法还原官方尺寸
+///（只给位图像素时，"该画多大"是**不可知**的）。
 class SubtitleCue {
-  const SubtitleCue({this.text, this.pngBytes, this.width, this.height});
+  const SubtitleCue({
+    this.text,
+    this.pngBytes,
+    this.width,
+    this.height,
+    this.size,
+    this.bitmapHeight,
+    this.line,
+    this.lineType,
+    this.lineAnchor,
+    this.position,
+    this.positionAnchor,
+  });
 
   /// 文本字幕的内容（图形字幕为 null）。
   final String? text;
@@ -527,13 +561,40 @@ class SubtitleCue {
   /// 图形字幕的 PNG 字节（文本字幕为 null）。
   final Uint8List? pngBytes;
 
-  /// 位图原始尺寸（PGS 通常是 1920×1080 的整幅构图平面）。
+  /// 位图的**像素**尺寸（`Bitmap.width/height`）。
   ///
-  /// ⚠️ **必须保留**：PGS 的位图是**整幅字幕平面**（含大量透明区），
-  /// 直接按"位图尺寸"等比拉伸会**压扁字形** —— 必须按
-  /// "平面尺寸 → 视频显示区"映射（与 mpv 的行为一致）。
+  /// ⚠️ **只用于兜底**（当 [size] / [bitmapHeight] 缺失时按它等比缩放）。
+  /// 它**不是**"该画多大" —— 那是 [size] 的职责。
   final int? width;
   final int? height;
+
+  /// 该 cue 的**宽度占视口的比例**（0–1）。对应 `Cue.size`。
+  ///
+  /// 官方公式用它直接算宽：`width = parentWidth * size`。
+  final double? size;
+
+  /// 该 cue 的**高度占视口的比例**（0–1）。对应 `Cue.bitmapHeight`。
+  ///
+  /// 官方公式用它直接算高：`height = parentHeight * bitmapHeight`。
+  ///
+  /// ⚠️ 为 `DIMEN_UNSET`（未设）时应为 null ⇒ 退回按位图宽高比等比缩放。
+  final double? bitmapHeight;
+
+  /// 垂直位置（`Cue.line`）—— **视口高度比例**（当 [lineType] 为
+  /// `LINE_TYPE_FRACTION` 时）或行号（`LINE_TYPE_NUMBER`）。
+  final double? line;
+
+  /// `line` 的语义（1=FRACTION, 2=NUMBER，对应 Media3 常量）。
+  final int? lineType;
+
+  /// 垂直锚点（1=START 2=MIDDLE 3=END，对应 `Cue.lineAnchor`）。
+  final int? lineAnchor;
+
+  /// 水平位置（`Cue.position`）—— 视口宽度比例。
+  final double? position;
+
+  /// 水平锚点（同上三类）。
+  final int? positionAnchor;
 
   /// 是否为空 cue（无文本也无位图）。
   bool get isEmpty => (text == null || text!.isEmpty) && pngBytes == null;

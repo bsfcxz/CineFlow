@@ -186,6 +186,28 @@ class Media3Channel(
          * ⚠️ 位图**必须转 PNG 再传**：`Cue.bitmap` 是 `Bitmap`，
          *    跨 MethodChannel 只能传字节。PNG 无损且体积可接受
          *    （PGS 一帧通常几 KB ~ 几十 KB）。
+         *
+         * ## ★★ 尺寸字段必须一起传（真机取证：字幕被放大裁切）
+         * 真机实测 cue 位图尺寸是 `484x113` / `351x104` / `1281x113` ——
+         * **不是**整幅构图平面，而是 **PGS 按需裁切后的小图**。
+         * 若只传位图像素、Dart 侧按"铺满视频宽"缩放 ⇒ 484 宽的图被
+         * **拉伸 3.97 倍** ⇒ 高度 449px ⇒ **超出画面底部被裁**
+         *（用户报"字幕的大小也有问题"）。
+         *
+         * ⇒ 必须带官方渲染用的三个比例字段（都是**视口比例**，非像素）：
+         * · `size`         → 宽 = parentWidth  * size
+         * · `bitmapHeight` → 高 = parentHeight * bitmapHeight
+         * · `line`/`lineAnchor`/`position`/`positionAnchor` → 位置
+         *
+         * 依据：Media3 1.4.1 `SubtitlePainter.setupBitmapLayout()` 原文
+         * ```java
+         * int width  = Math.round(parentWidth * cueSize);
+         * int height = cueBitmapHeight != Cue.DIMEN_UNSET
+         *     ? Math.round(parentHeight * cueBitmapHeight)
+         *     : Math.round(width * (bitmap.getHeight() / (float) bitmap.getWidth()));
+         * ```
+         * 以及 `Cue.Builder.setBitmapHeight` 的文档：
+         * "Sets the bitmap height as a **fraction of the viewport size**"。
          */
         private fun emitCues(group: androidx.media3.common.text.CueGroup) {
             val arr = JSONArray()
@@ -197,17 +219,60 @@ class Media3Channel(
                     try {
                         val bos = java.io.ByteArrayOutputStream()
                         bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bos)
+                        val png = bos.toByteArray()
                         o.put("png", android.util.Base64.encodeToString(
-                            bos.toByteArray(), android.util.Base64.NO_WRAP))
+                            png, android.util.Base64.NO_WRAP))
                         o.put("w", bmp.width)
                         o.put("h", bmp.height)
+                        // ★ 诊断：位图的**不透明像素占比**（排查"画了但看不见"）
+                        //
+                        // ## 为什么要打（真机排查的盲区）
+                        // 真机诊断显示"布局正常 + 位图解码成功 + 尺寸正确"
+                        // 但画面上**看不到字幕**。剩下唯一可能：
+                        // **位图本身全是透明像素**（PGS 的调色板若未被
+                        // 正确应用，argbBitmapData 会是全 0x00000000）。
+                        // ⇒ 打一行统计即可判定，不必再猜。
+                        var opaque = 0
+                        val step = 4
+                        var y = 0
+                        while (y < bmp.height) {
+                            var x = 0
+                            while (x < bmp.width) {
+                                if (android.graphics.Color.alpha(bmp.getPixel(x, y)) > 16) opaque++
+                                x += step
+                            }
+                            y += step
+                        }
+                        val sampled = ((bmp.width + step - 1) / step) *
+                            ((bmp.height + step - 1) / step)
+                        Log.i(TAG, "cue 位图 ${bmp.width}x${bmp.height} " +
+                            "png=${png.size}B 不透明采样 $opaque/$sampled " +
+                            "(${if (sampled > 0) opaque * 100 / sampled else 0}%)")
                     } catch (e: Exception) {
                         Log.w(TAG, "cue 位图编码失败: ${e.message}")
                         continue
                     }
                 }
-                o.put("line", cue.line.toDouble())
-                o.put("lineType", cue.lineType)
+                // ★ 官方渲染用的比例/位置字段（视口比例，非像素）
+                //
+                // ⚠️ `DIMEN_UNSET` 必须转成 null 而不是原样传 ——
+                //    它是 Float.MIN_VALUE（≈1.4e-45），直接传给 Dart
+                //    会被当成"极小比例"⇒ 尺寸算成 0（字幕消失）。
+                if (cue.size != androidx.media3.common.text.Cue.DIMEN_UNSET) {
+                    o.put("size", cue.size.toDouble())
+                }
+                if (cue.bitmapHeight != androidx.media3.common.text.Cue.DIMEN_UNSET) {
+                    o.put("bitmapHeight", cue.bitmapHeight.toDouble())
+                }
+                if (cue.line != androidx.media3.common.text.Cue.DIMEN_UNSET) {
+                    o.put("line", cue.line.toDouble())
+                    o.put("lineType", cue.lineType)
+                    o.put("lineAnchor", cue.lineAnchor)
+                }
+                if (cue.position != androidx.media3.common.text.Cue.DIMEN_UNSET) {
+                    o.put("position", cue.position.toDouble())
+                    o.put("positionAnchor", cue.positionAnchor)
+                }
                 arr.put(o)
             }
             eventSink?.success(JSONObject().apply {

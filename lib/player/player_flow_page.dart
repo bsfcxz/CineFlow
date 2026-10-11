@@ -1131,12 +1131,20 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       _cuesFingerprint = fp;
       if (!mounted) return;
       setState(() => _cues = cues);
-      // 诊断：能一眼看出"cue 到了没 / 是图形还是文本"
+      // 诊断：能一眼看出"cue 到了没 / 是图形还是文本 / 比例字段有没有到"
+      //
+      // ⚠️ 必须打 `size`/`bitmapHeight` —— 只打宽高像素**证明不了**
+      //    "比例字段到达 Dart"（真机排查时正是这个盲区：字幕不显示，
+      //    无法判断是"字段没到"还是"公式算错"）。
       if (cues.isNotEmpty) {
         final graphic = cues.where((c) => c.pngBytes != null).length;
+        final f = cues.first;
         debugPrint('[PlayerFlow] 字幕 cue：${cues.length} 条'
             '（图形 $graphic / 文本 ${cues.length - graphic}）'
-            '${cues.first.pngBytes != null ? " ${cues.first.width}x${cues.first.height}" : " «${cues.first.text}»"}');
+            '${f.pngBytes != null ? "px=${f.width}x${f.height}"
+                " size=${f.size} bh=${f.bitmapHeight}"
+                " line=${f.line} lt=${f.lineType} la=${f.lineAnchor}"
+                " pos=${f.position} pa=${f.positionAnchor}" : " «${f.text}»"}');
       } else {
         debugPrint('[PlayerFlow] 字幕 cue：清屏');
       }

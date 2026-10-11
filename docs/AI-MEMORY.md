@@ -1958,3 +1958,109 @@ check-dev.ps1     20 项全过，退出码 0
    支持）—— 缺的只是我们这份窄构建。故代码里**没有硬编码**
    "PGS 不可播"，改为**运行时侦测**（换 .so 后自然恢复）。
 3. **`libmpv.so` 重编**：未做（`tool/check_mpv_decoders.py` 已给三种修法）。
+
+### 2026-10-11（续）· **字幕尺寸与位置修对**（用户："字幕显示还是有问题"、"字幕应该放置底部的中间"）
+
+用户先给了两张截图（一张字幕**被裁**、一张字幕**完全消失**），
+再明确要求"字幕应该放置底部的中间"。
+
+#### ✅ 最终结果（真机截图实证）
+
+```
+都闹够了吗
+Are we done, here?
+```
+底部居中、中英文双行完整、**无裁切**。实测字幕中心 x=533（画面宽 1080，中心 540）。
+
+#### 🔴 三个叠加的真 bug
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 字幕**被放大裁切** | 我用 `scale = 视频宽 / 位图宽` ⇒ 实测 **484px 宽**的 PGS 位图被拉伸 **3.97 倍** 到整屏宽 ⇒ 高度 449px ⇒ 超出画面 | 改用官方公式：`宽 = 视口宽 × Cue.size`、`高 = 视口高 × Cue.bitmapHeight` |
+| 2 | 字幕**完全消失** | 我把渲染层从 `SizedBox.expand` 改成 `LayoutBuilder + Stack`，而**只含 `Positioned` 子项的 Stack 会塌成 0×0**（无定位子项参与尺寸计算，默认 `StackFit.loose`）⇒ 所有子项被裁 | `fit: StackFit.expand` |
+| 3 | 位置不对 | 用户要求"底部中间" | 显式 `left = 画面左 + (画面宽 - 字幕宽)/2`、`top = 画面底 - 字幕高 - 3%边距` |
+
+#### ★★★ 关键：PGS 位图**不是**整幅构图平面
+
+真机实测 cue 位图尺寸：`484x113` / `293x104` / `817x113` / `190x101` ——
+**Media3 的 `PgsParser` 已按需裁掉透明边**。所以：
+
+> **"该画多大"不能从位图像素推**，必须用 cue 自带的**视口比例**字段。
+
+官方依据（我从源码取，不是猜）：
+· `Cue.Builder.setBitmapHeight` 文档原文：
+  > "Sets the bitmap height as a **fraction of the viewport size**"
+· `SubtitlePainter.setupBitmapLayout()`（media3 1.4.1）：
+  ```java
+  int width  = Math.round(parentWidth * cueSize);
+  int height = cueBitmapHeight != DIMEN_UNSET
+      ? Math.round(parentHeight * cueBitmapHeight)
+      : Math.round(width * (bitmap.getHeight() / (float) bitmap.getWidth()));
+  ```
+· `PgsParser`（设字段的地方）：
+  ```java
+  .setPosition((float) bitmapX / planeWidth)
+  .setLine((float) bitmapY / planeHeight, Cue.LINE_TYPE_FRACTION)
+  .setSize((float) bitmapWidth / planeWidth)
+  .setBitmapHeight((float) bitmapHeight / planeHeight)
+  ```
+
+⇒ 新增 7 个字段到 `SubtitleCue`（`size`/`bitmapHeight`/`line`/`lineType`/
+`lineAnchor`/`position`/`positionAnchor`），Kotlin 侧一起上报。
+
+⚠️ **`DIMEN_UNSET` 必须转成"不发送"**：它是 `Float.MIN_VALUE`（≈1.4e-45），
+   原样传给 Dart 会被当成"极小比例" ⇒ 尺寸算成 0 ⇒ 字幕消失。
+
+#### ★★ 反思：这一轮我犯了两次**同类**错误
+
+**① 拿"看起来对"的公式当权威。**
+我第一版写 `scale = vr.width / img.width` 并配了长注释论证它"保持位图宽高比" ——
+但**没去核对官方怎么算的**。错在：PGS 位图已被裁切，
+"位图宽高比"与"显示宽高比"**不是一回事**。
+⇒ 教训：**涉及"别人已经定义好语义"的字段（如 `Cue.size`），
+先读它的源码/文档，不要自己推公式。**
+
+**② 改渲染结构后没有真机验证。**
+`SizedBox.expand` → `LayoutBuilder + Stack` 是我为了拿"画面矩形"做的重构，
+**跑完单测就继续了**（单测全绿），结果字幕整体消失。
+⇒ 教训：**渲染层结构改动必须真机看一眼**（单测测不到"Stack 塌成 0"）。
+
+**③ 更深的教训：我加了三轮诊断才定位。**
+时间花在"猜"上（猜 padding、猜 alpha、猜解码失败）。
+真正确认靠的是**打了 4 个关键量**：
+```
+layout max=393x221   ← 约束正常（排除父级没给尺寸）
+cues=1 cache=1       ← cue 到了、位图解码成功
+size=0.36 bh=0.105   ← 比例字段正确
+不透明采样 57-73%     ← 位图有内容（排除全透明）
+```
+⇒ 教训：**"看不到"这类问题，先把"数据到了哪一步"全打出来，
+   再逐环排除** —— 比反复改代码试快得多。
+
+#### 本轮改动
+
+| 文件 | 改动 |
+|---|---|
+| `lib/player/kernel.dart` | `SubtitleCue` 加 7 个视口比例/位置字段 |
+| `android/.../Media3Channel.kt` | 上报这些字段 + `DIMEN_UNSET` 判断 + 位图不透明占比诊断 |
+| `lib/player/media3/media3_kernel.dart` | 解析新字段 |
+| `lib/player/presentation/subtitle_overlay.dart` | 按官方公式算尺寸；`StackFit.expand`；底部居中；夹取兜底；约束变化日志 |
+| `lib/player/player_flow_page.dart` | cue 诊断日志打全比例字段 |
+| `test/player_subtitle_render_test.dart` | +9 例（官方公式/夹取/降级链/`expand`/底部居中/DIMEN_UNSET） |
+| `test/calendar_live_test.dart` | 缓存测试改为**逐源比对**（总条数受网络时序影响，不稳定） |
+
+#### 验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1287: All tests passed!（1262 → 1287，+25）
+check-dev.ps1     21 项全过，退出码 0
+凭据泄漏复查       6 项全无（账号/密码/TMDB key/两个服务器地址/内网地址）
+真机              ✅ 字幕底部居中显示、无裁切（截图实证）
+```
+
+#### 未完成
+
+1. **多服务器聚合的真机验证**：设备上只登录了 1 个账号
+2. **`libmpv.so` 缺解码器**：仍需重编（`tool/check_mpv_decoders.py` 有修法）
+3. **Bangumi 源在本机/真机不可达**（服务端 WAF 拦 TLS 指纹，已留证据）

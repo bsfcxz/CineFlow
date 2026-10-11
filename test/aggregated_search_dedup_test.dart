@@ -11,6 +11,8 @@
 // · ProviderIds 填充率：Tmdb 87–100% / Imdb 75–95% / Tvdb 67–76%
 library;
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:cineflow/data/aggregated_search.dart';
@@ -178,6 +180,61 @@ void main() {
       expect(
           groupAcrossServers([ServerSearchResult(session: _sess('http://a'))]),
           isEmpty);
+    });
+  });
+
+  group('★★★ 搜索必须请求 ProviderIds（否则去重失效）', () {
+    test('★★★ emby_provider 的搜索请求必须带 Fields=ProviderIds', () {
+      // ## 为什么必须有这条守卫（反向注入自查发现）
+      // 把 `'ProviderIds'` 从 Fields 里去掉后，**所有测试仍全绿** ——
+      // 因为单测用的是自己构造的 `MediaItem`（providerIds 手动填），
+      // 走不到真实请求。
+      //
+      // 但真机上后果严重：Emby **默认不返回** `ProviderIds`
+      // ⇒ `MediaItem.providerIds` 恒空 ⇒ 跨服去重只剩"标题+年份"兜底
+      // ⇒ 中英文混排的片名匹配不上 ⇒ **跨服去重失效**（用户看到重复）。
+      //
+      // ## 实测依据（2026-10-11，两台真实 Emby）
+      // 带 `Fields=ProviderIds` 时填充率：
+      // ```
+      // iLoveHD: Tmdb 87% / Tvdb 76% / Imdb 75.5%
+      // HK-Emby: Tmdb 100% / Imdb 95% / Tvdb 67%
+      // ```
+      final src = File('lib/data/emby_provider.dart').readAsStringSync();
+      // 剥注释（§8.4：这里的 `ProviderIds` 在注释里也出现，
+      // 裸 contains 会被注释满足 ⇒ 假绿）
+      final code = src
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      expect(code.contains("'ProviderIds',"), isTrue,
+          reason: '★★★ Emby **默认不返回** ProviderIds ⇒ 不显式请求\n'
+              '    则 `MediaItem.providerIds` 恒空 ⇒ 跨服去重退回标题匹配\n'
+              '    ⇒ 实测「海贼王 / 海贼王真人版 / 海贼王(真人版)」\n'
+              '       三个不同片名会被当成三部不同的剧');
+    });
+
+    test('★★ MediaItem 必须解析 ProviderIds 且 key 归一化小写', () {
+      // 实测：**同一台服务器**的数据里同时有 `Imdb` 与 `IMDB`
+      // ⇒ 不归一化会漏一部分。
+      final src = File('lib/data/models.dart').readAsStringSync();
+      final code = src
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      expect(code.contains('_parseProviderIds'), isTrue,
+          reason: '★★ 必须解析 ProviderIds');
+      expect(code.contains('.toLowerCase()'), isTrue,
+          reason: '★★ key 必须归一化为小写 —— 实测同台服务器\n'
+              '    同时存在 `Imdb` 与 `IMDB`');
     });
   });
 }

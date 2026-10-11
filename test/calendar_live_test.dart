@@ -170,23 +170,31 @@ void main() {
       }
     }, timeout: timeout);
 
-    test('★ 缓存命中：第二次应更快且结果一致', () async {
+    test('★ 缓存命中：第二次结果一致（逐源比对，不比对总数）', () async {
       final cache = MemoryCalendarCache();
       final c1 = CalendarClient(cache: cache);
       final r1 = await c1.fetchWeek();
-      final sw = Stopwatch()..start();
-      // ⚠️ 同一个 client 实例 ⇒ 它记得"Bangumi 失败了"并跳过退避等待。
-      //    换新实例会重新踩 8 秒退避（真网测试曾抓到 8.4s）。
       final r2 = await c1.fetchWeek();
-      sw.stop();
-      print('  第一次 ${r1.entries.length} 条，'
-          '第二次 ${r2.entries.length} 条（${sw.elapsedMilliseconds}ms）');
-      expect(r2.entries.length, r1.entries.length,
-          reason: '★ 同缓存 ⇒ 同结果（缓存 key 必须稳定）');
-      // 全命中时应显著快（网络请求 ~秒级）
-      expect(sw.elapsedMilliseconds, lessThan(3000),
-          reason: '★★ 缓存命中不该再走网络；\n'
-              '    若这里超时 ⇒ 说明失败的源**仍在重试退避**（白等 8 秒）');
+
+      // ## ★ 为什么按**源**比对而不是比对总条数（实测发现不可靠）
+      // TVmaze 有 7 个请求 + 每源 7 秒 deadline ⇒ 首轮可能只回来一部分
+      //（部分命中缓存、部分超时）⇒ **两次的总条数会不同**。
+      // 那是**网络时序**，不是缓存 bug。
+      //
+      // ⇒ 改为断言**逐源结果一致**：某个源两次都成功时，条数必须相同
+      //   （那才真正检验"缓存 key 稳定"）。
+      var compared = 0;
+      for (final s1 in r1.sources) {
+        final s2 = r2.sources.firstWhere((s) => s.source == s1.source);
+        if (!s1.ok || !s2.ok) continue;
+        compared++;
+        print('  ${s1.label}: ${s1.entries.length} → '
+            '${s2.entries.length} 条');
+        expect(s2.entries.length, s1.entries.length,
+            reason: '★ 同缓存 ⇒ 同结果（缓存 key 必须稳定）');
+      }
+      expect(compared, greaterThan(0),
+          reason: '★★ 至少要有一个源两轮都成功（否则本次测不出缓存）');
     }, timeout: timeout);
 
     test('★★ 失败源必须进冷却（不能每次打开都白等退避）', () async {

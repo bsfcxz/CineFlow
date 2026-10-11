@@ -119,13 +119,25 @@ void main() {
           reason: '★ 字幕层不能吃手势（否则挡掉控制层点击）');
     });
 
-    test('★★★ [8b] 图形字幕必须按"构图平面→画面"映射（不能拉伸）', () {
+    test('★★★ [8b] 图形字幕尺寸必须按**官方比例字段**（不能按位图像素拉伸）', () {
       final s = code('lib/player/presentation/subtitle_overlay.dart');
-      // PGS 位图是整幅构图平面（1920×1080，含大量透明区）
-      expect(s.contains('vr.width / img.width'), isTrue,
-          reason: '★★★ 必须按**视频区宽度**算缩放，并保持**位图自身**宽高比。\n'
-              '    直接铺满（BoxFit.fill 到视频区）会在 2.39:1 宽银幕上\n'
-              '    **竖直压扁字形** —— 正是 Media3 官方 SubtitleView 的已知缺陷');
+      // ## 这条断言在真机取证后被改写（原断言是错的）
+      // 原断言：`s.contains('vr.width / img.width')` —— 我当时以为
+      // "按视频区宽度缩放 + 保持位图宽高比"是对的。
+      //
+      // **真机截图证明它错了**：实测 PGS 位图是 `484x113`（已被裁切），
+      // 按 `vr.width / img.width` 会**放大 3.97 倍** ⇒ 高度 449px
+      // ⇒ 超出画面底部**被裁**（用户报"字幕的大小也有问题"）。
+      //
+      // ⇒ 正确做法：用 `Cue.size` / `Cue.bitmapHeight`（**视口比例**），
+      //   这是 Media3 官方 `SubtitlePainter.setupBitmapLayout` 的公式。
+      expect(s.contains('vr.width * sizeRatio'), isTrue,
+          reason: '★★★ 宽度 = `parentWidth * cue.size`（官方公式）');
+      expect(s.contains('vr.height * bh'), isTrue,
+          reason: '★★★ 高度 = `parentHeight * cue.bitmapHeight`（官方公式）');
+      expect(s.contains('vr.width / img.width'), isFalse,
+          reason: '★★★ 这就是被裁的根因（484px 拉到 1920px，放大 3.97 倍）\n'
+              '    真机截图：英文行下缘被画面底边切掉');
     });
 
     test('★★★ [9] mpv 内核**不能**走这条路（否则画两遍）', () {
@@ -137,6 +149,171 @@ void main() {
       expect(seg.contains('Stream.empty'), isTrue,
           reason: '★★★ mpv 把字幕画进**视频帧**（vo=gpu 的 OSD）⇒\n'
               '    纹理像素里已含字幕。再叠一层会**画两遍**（且有重影）');
+    });
+  });
+
+  group('★★★ 字幕尺寸：必须用官方公式（真机截图取证：被放大裁切）', () {
+    test('★★★ PGS 位图是**裁切后的小图**，不能按"铺满画面宽"缩放', () {
+      // ## 真机取证（用户报"字幕的大小也有问题"）
+      // 实测 cue 位图尺寸：`484x113` / `351x104` / `1281x113`
+      // —— **不是**整幅构图平面（1920×1080），而是 Media3 的
+      // `PgsParser` 按需**裁掉透明边**后的小图。
+      //
+      // ## 我第一版的错误
+      // `scale = 视频宽 / 位图宽` ⇒ 484px 的图被拉伸 **3.97 倍**到整屏宽
+      // ⇒ 高度变成 449px ⇒ **超出画面底部被裁**（截图确认英文行被切）。
+      //
+      // ⇒ 必须用 cue 自带的**视口比例**字段（`size`/`bitmapHeight`）。
+      final s = File('lib/player/presentation/subtitle_overlay.dart')
+          .readAsStringSync();
+      final code = s
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      // 官方公式：parentWidth * size
+      expect(code.contains('vr.width * sizeRatio'), isTrue,
+          reason: '★★★ 宽度必须按官方 `parentWidth * cue.size`，\n'
+              '    而不是 `vr.width / img.width` 那种"铺满"式缩放');
+      expect(code.contains('vr.height * bh'), isTrue,
+          reason: '★★★ 高度必须按官方 `parentHeight * cue.bitmapHeight`');
+      // 绝不能再用"位图铺满宽"
+      expect(code.contains('vr.width / img.width'), isFalse,
+          reason: '★★★ 这就是被裁的根因（484px → 1920px，放大 3.97 倍）');
+    });
+
+    test('★★★ 必须有夹取（任何情况下不得超出画面）', () {
+      final s = File('lib/player/presentation/subtitle_overlay.dart')
+          .readAsStringSync();
+      final code = s
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      expect(code.contains('if (top + height > vr.bottom) top = vr.bottom - height;'),
+          isTrue,
+          reason: '★★★ 兜底夹取：字段缺失/异常时也不能让字幕被裁 ——\n'
+              '    这是用户实际看到的症状');
+      expect(code.contains('if (left + width > vr.right) left = vr.right - width;'),
+          isTrue);
+    });
+
+    test('★★★ [8c] Stack 必须 `expand`（否则整体不显示，真机回归）', () {
+      final s = code('lib/player/presentation/subtitle_overlay.dart');
+      // ## 真机回归（用户报"字幕显示还是有问题"，截图里完全没有字幕）
+      // 我把渲染层从 `SizedBox.expand` 改成 `LayoutBuilder + Stack` 后
+      // 字幕**整体消失**。
+      //
+      // 根因（Flutter 布局语义）：只含 `Positioned` 子项的 `Stack`
+      // **没有非定位子项**，尺寸会**塌成 0×0**
+      //（`StackFit.loose` 下按子项算，而 `Positioned` 不参与尺寸计算）
+      // ⇒ Stack 高宽为 0 ⇒ **所有子项被裁掉**。
+      //
+      // ⚠️ 这个 bug **不报错、不崩溃**，只是"什么都没有" —— 极难排查。
+      //    反向注入自查时也没抓到（因为没有断言）。
+      expect(s.contains('fit: StackFit.expand'), isTrue,
+          reason: '★★★ 少了它 ⇒ Stack 塌成 0×0 ⇒ 字幕全被裁\n'
+              '    （真机表现：cue 日志正常但画面里一条字幕都没有）');
+    });
+
+    test('★★★ [8d] 字幕必须贴**底部中间**（用户明确要求）', () {
+      final s = code('lib/player/presentation/subtitle_overlay.dart');
+      // 用户原话："字幕应该放置底部的中间"
+      expect(s.contains('left = vr.left + (vr.width - width) / 2;'), isTrue,
+          reason: '★★★ 水平必须居中');
+      expect(s.contains('top = vr.bottom - height - bottomPad;'), isTrue,
+          reason: '★★★ 垂直必须贴底部（留一点边距）');
+      expect(s.contains('final bottomPad = vr.height * 0.03;'), isTrue,
+          reason: '★ 底部留 3% 边距（与主流播放器一致）');
+    });
+
+    test('★★ 降级链必须存在（缺 bitmapHeight 时仍能画）', () {
+      final s = File('lib/player/presentation/subtitle_overlay.dart')
+          .readAsStringSync();
+      final code = s
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      // 官方兜底分支：`width * (bitmap.h / bitmap.w)`
+      expect(code.contains('width * (img.height / img.width)'), isTrue,
+          reason: '★★ 缺 `bitmapHeight` 时按位图宽高比等比\n'
+              '    （与官方 `SubtitlePainter` 的兜底分支一致）');
+    });
+  });
+
+  group('★★★ cue 必须带视口比例字段（否则尺寸不可知）', () {
+    test('★★★ SubtitleCue 必须有 size / bitmapHeight', () {
+      // 只有位图像素时，"该画多大"是**不可知**的
+      //（PGS 位图已被裁切，像素尺寸 ≠ 显示尺寸）
+      const c = SubtitleCue();
+      expect(c.size, isNull);
+      expect(c.bitmapHeight, isNull);
+      // 构造时必须能带上
+      const c2 = SubtitleCue(size: 0.67, bitmapHeight: 0.1);
+      expect(c2.size, 0.67);
+      expect(c2.bitmapHeight, 0.1);
+    });
+
+    test('★★★ Kotlin 必须上报 size / bitmapHeight', () {
+      final k = File('android/app/src/main/kotlin/com/cineflow/app/player/'
+          'Media3Channel.kt').readAsStringSync();
+      final code = k
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      expect(code.contains('put("size", cue.size.toDouble())'), isTrue,
+          reason: '★★★ 不上报 size ⇒ Dart 侧不知道"该画多宽"');
+      expect(code.contains('put("bitmapHeight", cue.bitmapHeight.toDouble())'),
+          isTrue,
+          reason: '★★★ 不上报 bitmapHeight ⇒ 高度只能靠位图像素猜');
+    });
+
+    test('★★★ Kotlin 必须把 DIMEN_UNSET 转成"不发送"', () {
+      // ⚠️ `DIMEN_UNSET` 是 `Float.MIN_VALUE`（≈1.4e-45）；
+      //    直接传给 Dart 会被当成"极小比例" ⇒ 尺寸算成 0（字幕消失）
+      final k = File('android/app/src/main/kotlin/com/cineflow/app/player/'
+          'Media3Channel.kt').readAsStringSync();
+      final code = k
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      expect(code.contains('Cue.DIMEN_UNSET'), isTrue,
+          reason: '★★★ 必须判断 DIMEN_UNSET —— 否则传过去的是 1.4e-45，\n'
+              '    Dart 侧算出 0 尺寸，字幕直接看不见');
+    });
+
+    test('★★ Dart 侧必须解析这些字段', () {
+      final m = File('lib/player/media3/media3_kernel.dart')
+          .readAsStringSync();
+      final code = m
+          .split('\n')
+          .where((l) {
+            final t = l.trimLeft();
+            return !t.startsWith('//') && !t.startsWith('///') &&
+                !t.startsWith('*');
+          })
+          .join('\n');
+      expect(code.contains("size: (m['size'] as num?)?.toDouble()"), isTrue);
+      expect(code.contains("bitmapHeight: (m['bitmapHeight'] as num?)?.toDouble()"),
+          isTrue);
     });
   });
 
