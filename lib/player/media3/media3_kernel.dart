@@ -28,6 +28,8 @@
 library;
 
 import 'dart:async';
+import 'dart:convert' show base64Decode;
+import 'dart:typed_data' show Uint8List;
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
@@ -86,6 +88,42 @@ class Media3Kernel implements PlayerKernel {
   final _errorController = StreamController<String>.broadcast();
   final _completedController = StreamController<bool>.broadcast();
 
+  /// 字幕 cue（见 `kernel.dart` 的 `cuesStream` 说明）。
+  final _cuesController = StreamController<List<SubtitleCue>>.broadcast();
+  List<SubtitleCue> _cues = const [];
+
+  /// 解析原生上报的 cue JSON（位图是 base64 PNG）。
+  ///
+  /// ## 为什么位图走 base64（而不是共享内存/文件）
+  /// MethodChannel 只传可序列化值；PNG 无损、体积可接受
+  ///（PGS 一帧通常几 KB ~ 几十 KB），且 Flutter 侧 `Image.memory` 直接可用。
+  static List<SubtitleCue> _parseCues(Object? raw) {
+    if (raw is! List) return const [];
+    final out = <SubtitleCue>[];
+    for (final e in raw) {
+      if (e is! Map) continue;
+      final m = e.cast<String, dynamic>();
+      final b64 = m['png'] as String?;
+      Uint8List? bytes;
+      if (b64 != null && b64.isNotEmpty) {
+        try {
+          bytes = base64Decode(b64);
+        } catch (ex) {
+          debugPrint('[Media3] cue 位图 base64 解码失败: $ex');
+        }
+      }
+      final cue = SubtitleCue(
+        text: m['text'] as String?,
+        pngBytes: bytes,
+        width: (m['w'] as num?)?.toInt(),
+        height: (m['h'] as num?)?.toInt(),
+      );
+      // 空 cue（既无文本也无位图）跳过 —— 那是"清屏"用的
+      if (!cue.isEmpty) out.add(cue);
+    }
+    return out;
+  }
+
   void _pushState(KernelState s) {
     _state = s;
     if (!_stateController.isClosed) _stateController.add(s);
@@ -122,6 +160,22 @@ class Media3Kernel implements PlayerKernel {
           final msg = m['message'] as String? ?? '该轨道编码不受支持';
           if (!_errorController.isClosed) _errorController.add(msg);
           debugPrint('[Media3] 轨道不受支持：$msg');
+        case 'cues':
+          // ★★ **字幕 cue 到达**（Media3 侧字幕显示的关键一环）
+          //
+          // ## 为什么必须由 Dart 画（而不是靠 Media3 自己画）
+          // Media3 把字幕解析成 cue 后，官方渲染靠 `media3-ui` 的
+          // `SubtitleView`；而本项目**不引 media3-ui**（视频走
+          // `setVideoSurface(Flutter Texture)`，没有 View 层）
+          // ⇒ cue 解析出来了却**无人绘制**（真机：选轨成功但画面空白）。
+          //
+          // ⇒ 由原生把 cue 上报到 Dart，Flutter 侧自绘（见
+          //   `kernel.dart` 的 `cuesStream` 说明与 `subtitle_overlay.dart`）。
+          //
+          // ⚠️ **空数组也必须发送**：那是"当前无字幕"的信号，
+          //    不发的话上一条字幕会**一直挂在画面上**。
+          _cues = _parseCues(m['data']);
+          if (!_cuesController.isClosed) _cuesController.add(_cues);
         case 'property':
           if (m['name'] == 'video-size') {
             final d = m['data'];
@@ -444,6 +498,10 @@ class Media3Kernel implements PlayerKernel {
 
   @override
   Stream<bool> get completedStream => _completedController.stream;
+
+  /// ★ 字幕 cue 流（Media3 的**唯一**字幕显示通路，见 `kernel.dart` 说明）。
+  @override
+  Stream<List<SubtitleCue>> get cuesStream => _cuesController.stream;
 
   @override
   Future<void> dispose() async {

@@ -876,6 +876,19 @@ class NativeKernel implements PlayerKernel {
   @override
   Stream<bool> get completedStream => _completedController.stream;
 
+  /// ★ **mpv 内核不需要 cue 流**（显式覆写以明确语义）。
+  ///
+  /// ## 为什么 mpv 不走这条路
+  /// mpv 把字幕**画进视频帧**（`vo=gpu` 的 OSD 层）——
+  /// 字幕与画面是同一张纹理，Flutter 侧拿到的像素里**已经含字幕**。
+  /// ⇒ 无需（也不该）再叠一层 Flutter 自绘，否则会**画两遍**。
+  ///
+  /// 对比 Media3：它把字幕解析成 cue **等我方绘制**（本项目不引
+  /// `media3-ui` 的 `SubtitleView`）⇒ 必须由 Flutter 补这一层。
+  /// 这是"两个内核能力不同"的又一实例（与音轨可播性同理）。
+  @override
+  Stream<List<SubtitleCue>> get cuesStream => const Stream.empty();
+
   @override
   Future<void> dispose() async {
     await _eventSub?.cancel();

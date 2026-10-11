@@ -60,6 +60,7 @@ import 'native/native_kernel.dart';
 import 'player_facade.dart' show FacadeAudioTrack, FacadeSubtitleTrack;
 import 'presentation/player_ui_page.dart';
 import 'presentation/player_ui_tokens.dart';
+import 'presentation/subtitle_overlay.dart';
 import 'presentation/widgets/aspect_video.dart';
 import 'track_aligner.dart';
 import 'infrastructure/system/system_services.dart';
@@ -1113,6 +1114,33 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
       }
     }));
     _subs.add(kernel.completedStream.listen((_) => _onCompleted()));
+    // ★★ 字幕 cue（Media3 内核的**唯一**字幕显示通路）
+    //
+    // ## 为什么必须接这条流（真机取证）
+    // Media3 把 PGS 等内嵌字幕解析成 cue 后，官方渲染靠 `media3-ui`
+    // 的 `SubtitleView`；本项目不引它（视频走 Flutter 纹理，
+    // 没有 View 层）⇒ cue 解析出来了却**无人绘制**
+    //（真机：`选轨成功` + `mime=application/x-media3-cues` 但画面空白）。
+    //
+    // ## 为什么做指纹去重（性能）
+    // PGS 是逐帧位图，Media3 会在每次 cue 变化时重发；
+    // 连续帧**常完全相同** ⇒ 不去重会每帧 setState 整页（控制层/面板全重算）。
+    _subs.add(kernel.cuesStream.listen((cues) {
+      final fp = _fingerprintOf(cues);
+      if (fp == _cuesFingerprint) return; // 内容未变 → 不重建
+      _cuesFingerprint = fp;
+      if (!mounted) return;
+      setState(() => _cues = cues);
+      // 诊断：能一眼看出"cue 到了没 / 是图形还是文本"
+      if (cues.isNotEmpty) {
+        final graphic = cues.where((c) => c.pngBytes != null).length;
+        debugPrint('[PlayerFlow] 字幕 cue：${cues.length} 条'
+            '（图形 $graphic / 文本 ${cues.length - graphic}）'
+            '${cues.first.pngBytes != null ? " ${cues.first.width}x${cues.first.height}" : " «${cues.first.text}»"}');
+      } else {
+        debugPrint('[PlayerFlow] 字幕 cue：清屏');
+      }
+    }));
     // 视频分辨率解析完成 → 重算宽高比（首帧时触发一次）
     _subs.add(kernel.videoSizeStream.listen((_) {
       // ★★ 同步把**渲染画布**设成视频尺寸（真机实测抓到的"画面被压扁两次"）
@@ -2231,6 +2259,28 @@ _stage('open');
   /// 不限次会导致"切轨→失败→再切轨"死循环（用户看到画面不断重载）。
   bool _autoRecoveredAudio = false;
 
+  /// ★ 当前要显示的字幕 cue（Media3 内核专用，见 `cuesStream` 说明）。
+  ///
+  /// ## 为什么用 setState 而不是 provider
+  /// cue 的更新频率**很高**（PGS 常每几百毫秒一帧），而它只影响
+  /// **画面上的这一层**。走全局 provider 会让整页重建（控制层/面板
+  /// 全部重算）—— 与弹幕层"用 ValueNotifier 局部刷新"是同一考虑。
+  /// ⚠️ 但也不能每帧 setState 到整页：下面做了**内容比对**，
+  ///    只有 cue 真的变了才 setState（PGS 连续帧常完全相同）。
+  List<SubtitleCue> _cues = const [];
+
+  /// cue 的轻量指纹（避免"相同内容重复 setState"）。
+  int _cuesFingerprint = 0;
+
+  static int _fingerprintOf(List<SubtitleCue> cues) {
+    var h = cues.length;
+    for (final c in cues) {
+      h = h * 31 + (c.text?.length ?? 0);
+      h = h * 31 + (c.pngBytes?.length ?? 0);
+    }
+    return h;
+  }
+
   /// 这条错误是否像"**音频解码器起不来**"。
   ///
   /// ## 判据来自两个内核的**真实报错原文**
@@ -2832,6 +2882,20 @@ _stage('open');
             ),
             subtitle: PlayerFlowPage.subtitleFor(_current),
             danmakuLayer: const _DanmakuLayer(),
+            // ★★ **字幕层**（只对 Media3 内核传；mpv 传 null）
+            //
+            // ## 为什么两个内核处理不同（真机取证）
+            // · **mpv**：字幕由 `vo=gpu` 的 OSD 画进**视频帧** ⇒
+            //   纹理像素里已含字幕 ⇒ 再叠一层会**画两遍**
+            // · **Media3**：cue 解析出来后**等外部绘制**（本项目不引
+            //   `media3-ui` 的 `SubtitleView`）⇒ 必须 Flutter 补这一层，
+            //   否则真机现象是"选轨成功但画面里什么都没有"
+            //
+            // `_cues` 为空时层内返回 `SizedBox.shrink()`（零开销），
+            // 故 mpv 下即便传了也无副作用；但**显式判空更清晰**。
+            subtitleLayer: _cues.isEmpty
+                ? null
+                : SubtitleOverlay(cues: _cues),
             // 章节刻度：服务端已在 `PlaybackInfo` 里给好章节，
             // 这里只把起点（秒）透传给进度条（换算在进度条内做）。
             chapters: [for (final c in _chapters) c.seconds],

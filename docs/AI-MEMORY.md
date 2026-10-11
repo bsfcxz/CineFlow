@@ -1845,3 +1845,116 @@ check-dev.ps1     20 项全过，退出码 0
    凭据在 `flutter_secure_storage` 且**不入库** ⇒ 我无法自行重登，
    **部分真机验证受阻**。
 4. **`libmpv.so` 缺解码器**：仍需重编，**未做**。
+
+### 2026-10-11（续）· **字幕渲染通路接通** + 弹幕简繁兜底 + 四次方法错误
+
+用户报：
+> "继续"（承接上一条）
+> "弹幕还是繁体的，都和你说过了，将繁体转换成简体。"
+> "字幕我用别的播放器能够识别并显示在播放画面中。"
+
+#### ★ 字幕：从"能解析"到"能显示"（新增第九环）
+
+上一条已修 Media3 的三个 bug，但**字幕仍不显示**。根因是**缺渲染层**：
+
+Media3 把内嵌字幕（含 **PGS**）解析成 cue 后，官方渲染靠 `media3-ui`
+的 `SubtitleView`；而本项目**刻意不引 media3-ui**
+（`build.gradle.kts` 注释原文："我们用 `setVideoSurface(Flutter Texture)` 输出"）
+⇒ **cue 解析出来了却无人绘制**（真机：选轨成功 + `mime=application/x-media3-cues`
+但画面空白）。而 mpv 不需要这层（它把字幕画进 `vo=gpu` 的 OSD，
+纹理像素里已含字幕）⇒ **两个内核处理不同**。
+
+**本轮补的完整通路**（九环，每环都有守卫测试）：
+```
+[1] media3-exoplayer-hls 依赖（否则 Media3 打不开文件）
+[2] setSubtitleParserFactory（否则不产出 cue）
+[3] onCues + emitCues 上报（位图 → base64 PNG）
+[4] Dart cuesStream + base64Decode
+[5] 宿主订阅 + 指纹去重（PGS 逐帧发，不去重会每帧重建整页）
+[6] subtitleLayer 传进 PlayerPageSlots
+[7] PlayerUiPage 真的叠进 Stack（且在弹幕**之下**）
+[8] SubtitleOverlay 限制在画面矩形内 + 按构图平面映射（不拉伸）
+[9] mpv 的 cuesStream 返回空流（否则画两遍）
+```
+
+**PGS 的长宽比陷阱**（专门处理）：PGS 位图是**整幅构图平面**
+（1920×1080，含大量透明区）。若按"位图铺满视频区"拉伸，
+在 2.39:1 宽银幕上会**竖直压扁字形** —— 正是 Media3 官方
+`SubtitleView` 的已知缺陷（官方明确不修）。我们的做法：
+按**视频区宽度**缩放并保持**位图自身**宽高比。
+
+#### ★ 弹幕繁体：服务端**有效**，但覆盖不到两条路径
+
+**实测（不是推断）**——弹弹play 公共代理，剧场版 `决战原始星`：
+```
+cv=0 vs cv=1 不同 119 条
+cv=0 vs cv=2 不同 22575 条   ⇒ 服务端转换器工作正常
+```
+**而我的第一次判断方法有缺陷**：先只测了「斗罗大陆」，那片 **97% 本就
+是简体**（cv=0 里仅 23/4913 含繁体）⇒ **测不出问题**。
+⇒ 换用户截图里的那部片（吞噬星空剧场版）才看到全貌。
+
+**真正的缺口**（两条都要客户端兜底）：
+| 路径 | 为何服务端管不到 |
+|---|---|
+| **本地导入的弹幕文件** | 用户自己的 `.xml/.ass/.json`，**不经过服务端** |
+| 服务端转换不彻底的条目 | 源数据繁体并非 100% 可判（实测仍修 119 条） |
+
+**修法**：新增 `lib/danmaku/chinese_convert.dart`
+（**421 条**高频字表，**幂等** ⇒ 对已转过的内容无害），
+接进 `parseDanmakuFile`（所有格式的**唯一入口**）。
+
+⚠️ **我生成字表时又犯了一个错**：用 `"錢钱 頂顶".split()` 再取
+`[0]/[1]` —— 长度 ≠ 2 的条目被**静默跳过**，结果丢了
+戰/習/寫/講/得/給/帶/幫/選/換 等常见字。**是我自己写的测试抓到的**
+（`'學習' → '学習'`）。⇒ 改用显式 `(繁, 简)` 对 + 长度断言。
+
+#### ★★★ 反思：本轮又是**四次同一类方法错误**
+
+> 共同点仍是：**用会被优化/改写的中间表示，去证明最终产物的行为**。
+
+| # | 我的判据 | 失效原因 | 正确判据 |
+|---|---|---|---|
+| 1 | dex 里搜**原始类名**判 `PgsParser` 在不在 | release 开 **R8**，类名被混淆（`HlsMediaSource -> ls`） | **R8 `mapping.txt`** |
+| 2 | 像素判据报"字幕已显示（亮像素 1182）" | 全黑画面下只有**底部进度条**有方差 ⇒ 把进度条当字幕 | 先验**视频区均值 > 2** |
+| 3 | 用「斗罗大陆」测简繁 | 那片 97% 本就是简体 ⇒ **测不出问题** | 用**用户报障的那部片** |
+| 4 | 用 `split()` 生成字表 | 长度 ≠ 2 的条目**静默跳过** | 显式 pair 列表 + 断言 |
+
+**已加入纪律**：报"某能力不存在/某修复无效"之前，先问
+**"这个判据会不会在能力存在时仍然报不存在？"**
+
+#### 本轮改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `lib/player/kernel.dart` | 新增 `cuesStream` + 中立模型 `SubtitleCue` |
+| `lib/player/media3/media3_kernel.dart` | 解析 `cues` 事件 + `base64Decode` |
+| `lib/player/native/native_kernel.dart` | `cuesStream` 显式返回空流（mpv 不叠） |
+| `lib/player/presentation/subtitle_overlay.dart` | **新增**：Flutter 侧字幕渲染层 |
+| `lib/player/presentation/player_ui_page.dart` | `subtitleLayer` 插槽 + 叠进 Stack |
+| `lib/player/player_flow_page.dart` | 订阅 cue + 指纹去重 + 传层 |
+| `lib/danmaku/chinese_convert.dart` | **新增**：421 条简繁字表 + `toSimplified` |
+| `lib/danmaku/danmaku_import.dart` | 导入路径统一做简繁转换 |
+| `lib/danmaku/danmaku_settings_page.dart` | 修正文案（服务端+客户端双层） |
+| `test/player_subtitle_render_test.dart` | **新增** 11 例（九环守卫） |
+| `test/danmaku_chinese_convert_test.dart` | **新增** 9 例（含报障原文逐条） |
+
+#### 验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1221: All tests passed!（1201 → 1221，+20）
+check-dev.ps1     20 项全过，退出码 0
+```
+
+#### 未验证 / 未完成（**如实列出**）
+
+1. **设备 Emby token 失效（401）**：反复强杀导致会话过期，
+   凭据在 `flutter_secure_storage` 且**不入库** ⇒ 我无法自行重登
+   ⇒ **本轮字幕渲染与简繁转换都未做真机验证**（只有静态 + 单测证据）。
+   **下一轮第一件事**：恢复登录后实测两者。
+2. **mpv 侧 PGS**：仍缺 `ff_pgssub_decoder`（需重编 `libmpv.so`）。
+   ⚠️ 注意：**用户指正"mpv 也能解码 PGS"是对的**（上游全量 ffmpeg
+   支持）—— 缺的只是我们这份窄构建。故代码里**没有硬编码**
+   "PGS 不可播"，改为**运行时侦测**（换 .so 后自然恢复）。
+3. **`libmpv.so` 重编**：未做（`tool/check_mpv_decoders.py` 已给三种修法）。

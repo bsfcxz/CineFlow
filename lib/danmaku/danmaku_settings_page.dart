@@ -250,14 +250,22 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
 
                 // ---- 简繁转换（对照 dd-danmaku / RyoLee）----
                 //
-                // ★ 复用**服务端**转换（弹弹play 的 chConvert 参数），
-                //   不做本地映射表 —— 实测服务端转换完全正确，而本地表
-                //   对"干/乾/幹"这类一对多必然出错。
+                // ★ **服务端 + 客户端双层**（2026-10-11 修正说明）
+                //
+                // ## 原注释说的"不做本地映射表"**只对了一半**
+                // 服务端的 `chConvert` **实测有效**（剧场版 119 条被修正为
+                // 简体；`chConvert=2` 会转 22575 条 ⇒ 转换器工作正常）。
+                // 但它**覆盖不到本地导入的弹幕文件**（那不经服务端）
+                // ⇒ 用户报"弹幕还是繁体的"。
+                //
+                // ## 现在的分工
+                // · **在线弹幕**：服务端 `chConvert` 为主（有完整词库）
+                // · **本地导入**：`toSimplified` 客户端兜底（高频字表）
                 SizedBox(height: 16),
                 Text('简繁转换', style: Cf.body),
                 Padding(
                   padding: const EdgeInsets.only(top: 2, bottom: 8),
-                  child: Text('由服务器转换（不用本地映射表，一对多字更准）',
+                  child: Text('在线弹幕由服务器转换；本地导入的字幕由本机兜底转换',
                       style: Cf.micro),
                 ),
                 Wrap(spacing: Cf.gap2, runSpacing: Cf.gap2, children: [

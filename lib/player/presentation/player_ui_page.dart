@@ -109,6 +109,7 @@ class PlayerPageSlots {
     required this.video,
     this.subtitle,
     this.danmakuLayer,
+    this.subtitleLayer,
     this.buffered,
     this.chapters = const [],
   });
@@ -121,6 +122,21 @@ class PlayerPageSlots {
 
   /// 弹幕渲染层（复用既有 `lib/danmaku/` 的 overlay）。
   final Widget? danmakuLayer;
+
+  /// ★★ **字幕渲染层**（Media3 内核专用）。
+  ///
+  /// ## 为什么字幕要单独一层（不能靠内核自己画）
+  /// · **mpv 内核**：字幕画进视频帧（`vo=gpu` 的 OSD），纹理像素里已含
+  ///   ⇒ 传 null，**不叠**（否则画两遍）
+  /// · **Media3 内核**：字幕解析成 cue 后要**等外部绘制**（本项目不引
+  ///   `media3-ui` 的 `SubtitleView`）⇒ 必须由 Flutter 补这层，
+  ///   否则真机现象就是"选轨成功但画面空白"
+  ///
+  /// ## 叠放次序（必须与弹幕**分层**）
+  /// 视频 → **字幕** → 弹幕 → 控制层。
+  /// 弹幕在字幕**之上**：弹幕是用户主动开启的社交内容，
+  /// 压在字幕上符合 B 站等主流观感（且弹幕层已留 `safeArea` 避开字幕行）。
+  final Widget? subtitleLayer;
 
   /// 缓冲进度 0.0–1.0。
   final double? buffered;
@@ -333,6 +349,34 @@ class _PlayerUiPageState extends ConsumerState<PlayerUiPage> {
                   child: widget.slots.video,
                 ),
               ),
+
+              // ---- 1.5 字幕层（视频之上、弹幕之下；不吃手势）----
+              //
+              // ## 为什么次序是"视频 → 字幕 → 弹幕 → 控制层"
+              // · 字幕**必须**在视频之上（否则被画面盖住）
+              // · 弹幕在字幕**之上**：弹幕是用户主动开启的社交内容，
+              //   压住字幕符合 B 站等主流观感；且弹幕层已按 `safeArea`
+              //   避让字幕行（见 `danmaku_layout.dart`），实际很少遮挡
+              //
+              // ## 为什么只给 Media3 内核传（mpv 传 null）
+              // mpv 的字幕是 `vo=gpu` 的 OSD，**已画进视频帧**；
+              // 再叠一层会**画两遍**（且有重影/位置偏差）。
+              // 只有 Media3 因为"不引 media3-ui"而需要 Flutter 补这一层。
+              //
+              // ⚠️ 与弹幕层同样**限制在画面矩形内** —— 上下黑边时
+              //    字幕该贴在**画面**底部，而不是屏幕底部（否则飘在黑边上）。
+              if (widget.slots.subtitleLayer case final s?)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Center(
+                      child: SizedBox(
+                        width: picture.width,
+                        height: picture.height,
+                        child: s,
+                      ),
+                    ),
+                  ),
+                ),
 
               // ---- 2. 弹幕层（视频之上、控制层之下；不吃手势）----
               //

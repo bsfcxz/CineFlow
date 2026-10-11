@@ -17,6 +17,7 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data' show Uint8List;
 
 import 'domain/player_constants.dart' show DecodeMode;
 
@@ -479,5 +480,61 @@ abstract class PlayerKernel {
   /// 播放完成（end-file reason=eof）
   Stream<bool> get completedStream;
 
+  /// ★★ **当前要显示的字幕 cue**（用于在 Flutter 侧自绘字幕）。
+  ///
+  /// ## 为什么需要这个流（真机取证：Media3 的字幕"配好了但不显示"）
+  /// Media3 的内嵌字幕（尤其 **PGS 图形字幕**）解析成 cue 后，
+  /// 官方渲染通路是 `media3-ui` 的 `SubtitleView`。
+  /// 而本项目**刻意不引 `media3-ui`** —— 视频走
+  /// `setVideoSurface(Flutter Texture)`，**没有任何 View 层**：
+  /// ```
+  /// // build.gradle.kts 注释原文：
+  /// //   不引 media3-ui：我们用 setVideoSurface(Flutter Texture) 输出
+  /// ```
+  /// ⇒ 真机现象：`选轨成功` + `mime=application/x-media3-cues`，
+  ///   但**画面里什么都没有**（cue 解析出来了，却无人绘制）。
+  ///
+  /// ## 为什么用 Flutter 侧自绘（而不是引 media3-ui）
+  /// 1. 引 `media3-ui` 会带进 `PlayerView`/`SubtitleView` —— 那与
+  ///    "Flutter 纹理输出"的架构冲突（多一层 View，且无法与弹幕层同叠）
+  /// 2. 我们的**弹幕层已是成熟的"在视频上叠加自绘内容"通路**
+  ///    （`danmaku_overlay.dart`）⇒ 字幕复用同一套坐标系与画布
+  /// 3. 图形字幕（PGS）在 Flutter 里画 `Image` 即可
+  ///
+  /// ## 数据形态
+  /// · 图形字幕（PGS/VOBSUB）⇒ [SubtitleCue.pngBytes] 非空
+  /// · 文本字幕（SRT/ASS）⇒ [SubtitleCue.text] 非空
+  ///
+  /// ⚠️ **空列表 = 当前无字幕**（必须清屏，否则上一条会一直挂着）。
+  /// ⚠️ mpv 内核**不需要**这个流（mpv 自己把字幕画进视频帧，
+  ///    是它 `vo=gpu` 的一部分）⇒ 默认空流，由 Media3 覆写。
+  Stream<List<SubtitleCue>> get cuesStream => const Stream.empty();
+
   Future<void> dispose();
+}
+
+/// 一条要绘制的字幕（内核无关的中立形态）。
+///
+/// ## 为什么位图用 PNG 字节而不是原始 RGBA
+/// 跨 MethodChannel 传输需要可序列化；PNG 无损、体积小（PGS 一帧几 KB），
+/// 且 Flutter 侧 `Image.memory` 直接可用（无需自己解 RGBA）。
+class SubtitleCue {
+  const SubtitleCue({this.text, this.pngBytes, this.width, this.height});
+
+  /// 文本字幕的内容（图形字幕为 null）。
+  final String? text;
+
+  /// 图形字幕的 PNG 字节（文本字幕为 null）。
+  final Uint8List? pngBytes;
+
+  /// 位图原始尺寸（PGS 通常是 1920×1080 的整幅构图平面）。
+  ///
+  /// ⚠️ **必须保留**：PGS 的位图是**整幅字幕平面**（含大量透明区），
+  /// 直接按"位图尺寸"等比拉伸会**压扁字形** —— 必须按
+  /// "平面尺寸 → 视频显示区"映射（与 mpv 的行为一致）。
+  final int? width;
+  final int? height;
+
+  /// 是否为空 cue（无文本也无位图）。
+  bool get isEmpty => (text == null || text!.isEmpty) && pngBytes == null;
 }

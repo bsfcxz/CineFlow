@@ -109,8 +109,11 @@ void main() {
       // 而 ASS **以 `[Script Info]` 开头** ⇒ 被当成 JSON 解析，
       // 用户看到"JSON 格式有误"。真机表现是"选 .ass 文件说格式错误"。
       final imp = code('lib/danmaku/danmaku_import.dart');
-      final iAss = imp.indexOf("text.contains('[Script Info]')");
-      final iJson = imp.indexOf("text.startsWith('{')");
+      // ⚠️ 不绑定变量名（`text.` 后来改成了 `converted.` —— 因为要加
+      //    简繁转换；旧断言因此变红，但**语义没变**）
+      // ⇒ 断言落在**判定顺序**上，而不是某个局部变量名。
+      final iAss = imp.indexOf("contains('[Script Info]')");
+      final iJson = imp.indexOf("startsWith('{')");
       expect(iAss, greaterThanOrEqualTo(0));
       expect(iJson, greaterThanOrEqualTo(0));
       expect(iAss, lessThan(iJson),

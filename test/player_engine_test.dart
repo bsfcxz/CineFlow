@@ -31,6 +31,9 @@ class MinimalKernel implements PlayerKernel {
   double? get aspectRatio => 16 / 9;
   @override
   Stream<void> get videoSizeStream => const Stream.empty();
+  // 最小能力内核：无字幕 cue（它不显示内嵌字幕）
+  @override
+  Stream<List<SubtitleCue>> get cuesStream => const Stream.empty();
   @override
   Future<void> ensureTexture({int width = 1920, int height = 1080}) async {}
   @override

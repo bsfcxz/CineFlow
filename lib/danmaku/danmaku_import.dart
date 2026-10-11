@@ -18,6 +18,7 @@ library;
 import 'dart:convert';
 
 import 'danmaku_models.dart';
+import 'chinese_convert.dart';
 
 /// 一次导入的结果。
 class DanmakuImportResult {
@@ -55,6 +56,23 @@ DanmakuImportResult parseDanmakuFile(String content, {String fileName = ''}) {
         fileName: fileName, error: '文件是空的');
   }
 
+  // ★★ **统一做简繁转换**（用户报障："弹幕还是繁体的"）
+  //
+  // ## 为什么在**这里**做（而不是各解析器内）
+  // 本函数是所有格式的**唯一入口**（XML / JSON / ASS 都经此分发）
+  // ⇒ 放这里一次性覆盖全部格式，将来加新格式也自动生效。
+  //
+  // ## 为什么导入路径**必须**自己转（服务端 `chConvert` 管不到）
+  // 导入的是**用户本地的弹幕文件**，根本不经过弹弹play 服务端
+  // ⇒ 服务端 `chConvert` 完全无效。实测：本文件此前**没有任何**
+  // 简繁处理 ⇒ 导入繁体文件就一直显示繁体。
+  //
+  // ## 为什么可以无条件转（不会破坏数据）
+  // `toSimplified` 是**幂等**的：简体字不在映射表里 ⇒ 原样保留。
+  // 对"本来就是简体"的文件（绝大多数）零影响，
+  // 代价只是一次快速的"含繁体字吗"扫描。
+  final converted = toSimplified(text);
+
   // ---- 判定格式（按内容特征，不只看扩展名）----
   //
   // ★★ 顺序有讲究（真实 bug 抓出来的）
@@ -63,19 +81,19 @@ DanmakuImportResult parseDanmakuFile(String content, {String fileName = ''}) {
   // "JSON 格式有误"。真机上的表现是"选 .ass 文件说格式错误"。
   // ⇒ **必须先判 ASS**（特征是 `[Script Info]` / `Dialogue:`），
   //    再判 JSON（以 `{` 开头，或**以 `[` 开头且不是 ASS 段头**）。
-  if (text.contains('[Script Info]') || text.contains('Dialogue:')) {
+  if (converted.contains('[Script Info]') || converted.contains('Dialogue:')) {
     return _parseAss(text, fileName);
   }
-  if (text.startsWith('{')) {
+  if (converted.startsWith('{')) {
     return _parseJson(text, fileName);
   }
   // `[` 开头还要排除 ASS 的段头（`[Events]` / `[V4+ Styles]` 等）——
   // 有的 ASS 没有 `[Script Info]` 段，只有 `[Events]`
-  if (text.startsWith('[')) {
+  if (converted.startsWith('[')) {
     final isAssSection = RegExp(r'^\[[A-Za-z0-9+ ]+\]').hasMatch(text);
     if (!isAssSection) return _parseJson(text, fileName);
   }
-  if (text.contains('<i>') || text.contains('<d ') || text.contains('<?xml')) {
+  if (converted.contains('<i>') || converted.contains('<d ') || converted.contains('<?xml')) {
     return _parseXml(text, fileName);
   }
   // 兜底：按 XML 再试一次（可能是不带声明的 `<i>` 片段）
