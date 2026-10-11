@@ -35,6 +35,213 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
+/// 日历条目的**完整详情**（供"点击查看简介"弹层用）。
+///
+/// ## 字段来源与实测（TMDB `/tv/{id}?append_to_response=credits`）
+/// **一次请求**同时拿到基本信息与演员/导演（`append_to_response` 的价值）。
+/// 实测《仙逆》返回：
+/// ```
+/// name=仙逆  overview=改编自耳根同名小说…  vote_average=8.3 (45 人)
+/// genres=[动画, 剧情, 动作冒险]  networks=[Tencent Video]
+/// origin_country=[CN]  1 季 / 200 集  status=Returning Series
+/// cast=7 人（含角色名）  crew[Director]=[石头熊, 冯毅]  created_by=[耳根]
+/// homepage=https://v.qq.com/x/cover/mzc00200aaogpgh.html
+/// ```
+///
+/// ## 为什么单独建模型（不复用 `CalendarEntry`）
+/// 列表只画"标题+海报+评分+热度+平台"，详情要多 8 个字段。
+/// 混在一起会让**列表页也去请求详情**（7 天 × 20 条 = 140 次请求）——
+/// 那正是"平台补查"踩过的坑。
+class CalendarDetail {
+  const CalendarDetail({
+    required this.title,
+    this.originalTitle,
+    this.overview,
+    this.tagline,
+    this.posterUrl,
+    this.backdropUrl,
+    this.rating,
+    this.voteCount,
+    this.firstAirDate,
+    this.lastAirDate,
+    this.genres = const [],
+    this.countries = const [],
+    this.platforms = const [],
+    this.directors = const [],
+    this.actors = const [],
+    this.seasonCount,
+    this.episodeCount,
+    this.status,
+    this.homepage,
+    this.tmdbId,
+  });
+
+  final String title;
+  final String? originalTitle;
+
+  /// 简介（豆瓣弹层的"简介"块）。
+  final String? overview;
+
+  /// 一句话标语（豆瓣副标题的等价物，可能为空）。
+  final String? tagline;
+
+  final String? posterUrl;
+  final String? backdropUrl;
+
+  /// ★评分（0–10）。
+  final double? rating;
+
+  /// 评分人数 —— 豆瓣弹层会显示"17401 人评过"。
+  final int? voteCount;
+
+  final String? firstAirDate;
+  final String? lastAirDate;
+
+  /// 类型（如 `动画` / `剧情` / `真人秀`）。
+  final List<String> genres;
+
+  /// 制片国家/地区（**已从 ISO 码转成中文**，见 [countryName]）。
+  final List<String> countries;
+
+  /// 播放平台（**已转中文**）。
+  final List<String> platforms;
+
+  /// 导演 / 创作者（剧集的 `created_by` + `crew[job=Director]`）。
+  final List<String> directors;
+
+  /// 主演（形如 `史泽鲲 饰 王林`，**带角色名** —— 比豆瓣更细）。
+  final List<String> actors;
+
+  final int? seasonCount;
+  final int? episodeCount;
+
+  /// 连载状态（TMDB 原文，如 `Returning Series` ⇒ [statusCn] 转中文）。
+  final String? status;
+
+  /// 官方播放页（实测《仙逆》给了 `v.qq.com/x/cover/...`）⇒ **点进去就能看**。
+  final String? homepage;
+
+  final String? tmdbId;
+
+  /// 状态的中文（`Returning Series` → `连载中`）。
+  String? get statusCn => switch (status) {
+        'Returning Series' => '连载中',
+        'Ended' => '已完结',
+        'Canceled' => '已砍',
+        'In Production' => '制作中',
+        'Planned' => '已预定',
+        'Pilot' => '试播集',
+        _ => status,
+      };
+
+  /// 副标题行（对齐豆瓣的 `"2026 / 美国 / 剧情 动作"`）。
+  ///
+  /// 形如：`2023 / 中国大陆 / 动画 剧情 动作冒险`。
+  /// 空的部分自动跳过（不产生 `//` 这种难看的残留）。
+  String get subtitleLine {
+    final parts = <String>[];
+    final y = firstAirDate;
+    if (y != null && y.length >= 4) parts.add(y.substring(0, 4));
+    if (countries.isNotEmpty) parts.add(countries.join(' '));
+    if (genres.isNotEmpty) parts.add(genres.join(' '));
+    return parts.join(' / ');
+  }
+
+  /// 集数文案（`1 季 / 200 集`）。
+  String? get episodeText {
+    final parts = <String>[];
+    if (seasonCount != null && seasonCount! > 0) parts.add('$seasonCount 季');
+    if (episodeCount != null && episodeCount! > 0) {
+      parts.add('$episodeCount 集');
+    }
+    return parts.isEmpty ? null : parts.join(' / ');
+  }
+}
+
+/// TMDB 的 `origin_country` 是 **ISO 3166-1 两字母码** ⇒ 转中文。
+///
+/// ## 为什么要转（实测）
+/// TMDB 返回 `["CN"]`，直接显示给用户是 "CN"，而豆瓣显示"中国大陆"。
+/// 只收录常见值 + 兜底返回原码（不做完整 ISO 表 —— 那会让文件膨胀且
+/// 与本项目无关）。
+String countryName(String code) => switch (code.toUpperCase()) {
+      'CN' => '中国大陆',
+      'HK' => '中国香港',
+      'TW' => '中国台湾',
+      'MO' => '中国澳门',
+      'JP' => '日本',
+      'KR' => '韩国',
+      'US' => '美国',
+      'GB' => '英国',
+      'FR' => '法国',
+      'DE' => '德国',
+      'TH' => '泰国',
+      'IN' => '印度',
+      'SG' => '新加坡',
+      'MY' => '马来西亚',
+      'CA' => '加拿大',
+      'AU' => '澳大利亚',
+      'RU' => '俄罗斯',
+      'ES' => '西班牙',
+      'IT' => '意大利',
+      _ => code,
+    };
+
+/// 日历条目的**类别**（用户要求"日期下面按类别区分、综艺、动漫、剧集等"）。
+enum CalendarCategory {
+  /// 动漫（TMDB genre 16 = Animation）。
+  anime('动漫'),
+
+  /// 综艺（TMDB 10764 真人秀 / 10767 脱口秀 / 10763 新闻 / 10768）。
+  variety('综艺'),
+
+  /// 剧集（TMDB 没有"剧集"这个 genre ⇒ 用**排除法**得到）。
+  series('剧集');
+
+  const CalendarCategory(this.label);
+
+  final String label;
+
+  /// 从 TMDB 的 `genre_ids` 判断类别。
+  ///
+  /// ## ★★ 实测语义（TMDB 官方文档没写清，我实测确认）
+  /// | 筛选参数 | 实测结果 |
+  /// |---|---|
+  /// | `with_genres=10764` | 8 条 |
+  /// | `with_genres=10764,10767`（逗号） | **1 条**（要有**全部**类别） |
+  /// | `with_genres=10764\|10767`（竖线） | 8 条（任一即可） |
+  /// ⇒ **逗号 = AND、竖线 = OR**。多类别筛选必须用竖线，
+  ///   用逗号会**静默漏数据**（不报错，只是结果变少）。
+  ///
+  /// 这段逻辑是本文件里唯一的"类别判定"，UI 只读 [CalendarCategory]。
+  static CalendarCategory fromTmdbGenres(List<int> genreIds) {
+    // 优先判动漫：一部片同时是"动画+冒险"时，用户期望归到"动漫"
+    if (genreIds.contains(16)) return CalendarCategory.anime;
+    // 综艺：真人秀 / 脱口秀 / 新闻 / 其它纪实
+    if (genreIds.any(const {10764, 10767, 10763, 10768}.contains)) {
+      return CalendarCategory.variety;
+    }
+    return CalendarCategory.series;
+  }
+
+  /// 该类别的 **TMDB `with_genres` 参数值**（**竖线分隔**，见上表）。
+  ///
+  /// ⚠️ **不能用逗号** —— 逗号是 AND。
+  /// ⚠️ 剧集没有正向筛选值 ⇒ 用空串表示"靠排除"（见 [withoutGenres]）。
+  String get withGenres => switch (this) {
+        CalendarCategory.anime => '16',
+        CalendarCategory.variety => '10764|10767|10763|10768',
+        CalendarCategory.series => '',
+      };
+
+  /// 剧集用**排除法**：`without_genres`（同样**竖线**分隔）。
+  String get withoutGenres => switch (this) {
+        CalendarCategory.anime => '',
+        CalendarCategory.variety => '',
+        CalendarCategory.series => '16|10764|10767|10763',
+      };
+}
+
 /// 一条日历条目（**中立模型**：不绑任何源的特有字段）。
 class CalendarEntry {
   const CalendarEntry({
@@ -47,6 +254,9 @@ class CalendarEntry {
     this.posterUrl,
     this.rating,
     this.summary,
+    this.popularity,
+    this.platform,
+    this.category = CalendarCategory.series,
     this.sourceId,
     this.bangumiId,
   });
@@ -74,6 +284,32 @@ class CalendarEntry {
 
   final String? summary;
 
+  /// **热度**（TMDB `popularity`；B站/Bangumi 无此字段时为 null）。
+  ///
+  /// ## 用途：用户在日历里最关心"**今天有什么值得看的**"
+  /// 实测 TMDB 的 `discover` **默认就按热度排**
+  ///（与显式 `sort_by=popularity.desc` 结果完全一致），
+  /// 但仍显式传参（语义明确），并在合并后**再按热度排一次**
+  /// —— 因为多源合并会打乱顺序。
+  final double? popularity;
+
+  /// **播放平台**（如 `腾讯视频` / `爱奇艺` / `芒果TV` / `bilibili`）。
+  ///
+  /// ## ⚠️ 为什么常常为 null（实测）
+  /// TMDB 的 `discover` 结果**不含** `networks`，
+  /// 且 `append_to_response` 对它无效 ⇒ 必须**逐条查 `/tv/{id}` 详情**。
+  /// 成本：一天 20 条 × 7 天 = **140 次请求**
+  /// ⇒ 只在"需要显示平台"时按需补查，并控并发。
+  final String? platform;
+
+  /// 类别（用于"日期下面按类别区分"）。
+  ///
+  /// 取值来自 TMDB `genre_ids` 的归并（见 [CalendarCategory]）：
+  /// · **动漫** = 16（Animation）
+  /// · **综艺** = 10764（真人秀）/ 10767（脱口秀）/ 10763（新闻）/ 10768
+  /// · **剧集** = 其余（TMDB 没有"剧集"这个 genre，只能靠排除）
+  final CalendarCategory category;
+
   /// 来源标识（`bangumi` / `tvmaze` / `tmdb` / `bilibili`）。
   final String source;
 
@@ -98,8 +334,73 @@ class CalendarEntry {
     return dt.weekday;
   }
 
+  /// 复制并覆盖若干字段（`CalendarEntry` 是 immutable）。
+  ///
+  /// ## 为什么需要（实测场景）
+  /// TMDB 的**平台**要逐条查详情才能拿到 ⇒ 先构造条目、再补 `platform`
+  /// ⇒ 必须有 `copyWith`（`out[idx] = e.copyWith(platform: ...)`）。
+  CalendarEntry copyWith({
+    String? platform,
+    double? popularity,
+    CalendarCategory? category,
+  }) =>
+      CalendarEntry(
+        title: title,
+        titleCn: titleCn,
+        airDate: airDate,
+        weekday: weekday,
+        episode: episode,
+        posterUrl: posterUrl,
+        rating: rating,
+        summary: summary,
+        popularity: popularity ?? this.popularity,
+        platform: platform ?? this.platform,
+        category: category ?? this.category,
+        source: source,
+        sourceId: sourceId,
+        bangumiId: bangumiId,
+      );
+
   @override
   String toString() => 'CalendarEntry($source,$displayTitle,w$weekdayResolved)';
+}
+
+/// **平台搜索页 URL**（用户要求"点击能跳转到播放平台"）。
+///
+/// ## 为什么用"搜索页"而不是"详情页"
+/// TMDB 给的是平台**名**（如 `Tencent Video`），不是该平台的剧集 id
+/// ⇒ 无法直接拼详情页。而搜索页只要剧名就能定位（用户点一下就到）。
+///
+/// ## 各平台 URL 规律（全部实测 HTTP 200）
+/// | 平台 | URL 模板 |
+/// |---|---|
+/// | 腾讯视频 | `v.qq.com/x/search/?q={q}` |
+/// | 爱奇艺 | `so.iqiyi.com/so/q_{q}` |
+/// | 优酷 | `so.youku.com/search_video/q_{q}` |
+/// | 芒果TV | `mgtv.com/search/?q={q}` |
+/// | B站 | `search.bilibili.com/all?keyword={q}` |
+/// | 豆瓣（兜底） | `search.douban.com/movie/subject_search?search_text={q}` |
+///
+/// ## 返回 null 的语义
+/// 平台为空或未识别 ⇒ 返回 null ⇒ UI **不显示可点样式**
+///（比点进去 404 好）。
+String? platformSearchUrl(String? platform, String title) {
+  if (platform == null || platform.isEmpty || title.isEmpty) return null;
+  final q = Uri.encodeComponent(title);
+  if (platform.contains('腾讯')) return 'https://v.qq.com/x/search/?q=$q';
+  if (platform.contains('爱奇艺')) return 'https://so.iqiyi.com/so/q_$q';
+  if (platform.contains('优酷')) {
+    return 'https://so.youku.com/search_video/q_$q';
+  }
+  if (platform.contains('芒果')) return 'https://www.mgtv.com/search/?q=$q';
+  if (platform.contains('B站') || platform.toLowerCase().contains('bilibili')) {
+    return 'https://search.bilibili.com/all?keyword=$q';
+  }
+  if (platform.contains('CCTV')) {
+    return 'https://search.cctv.com/search.php?qtext=$q';
+  }
+  // 卫视/未识别 ⇒ 用豆瓣搜索（一定能定位到该剧）
+  return 'https://search.douban.com/movie/subject_search?search_text=$q';
 }
 
 /// 一个源的抓取结果（**失败隔离**：一个源挂了不影响其余）。
@@ -134,6 +435,39 @@ class WeekCalendar {
   /// 取周几的条目（1=周一 … 7=周日）。
   List<CalendarEntry> forWeekday(int weekday) =>
       entries.where((e) => e.weekdayResolved == weekday).toList();
+
+  /// 取周几的条目，**按类别分组**、组内**按热度降序**（用户要求）。
+  ///
+  /// ## 排序规则（用户原话："按热度显示"）
+  /// · **组间**：动漫 → 综艺 → 剧集（固定顺序，用户列的次序）
+  /// · **组内**：`popularity` 降序
+  ///   —— 热度缺失（B站/Bangumi 没有该字段）时排到最后，
+  ///      但**同源内保持原顺序**（B站本身按时间排，不该打乱）
+  ///
+  /// ## 为什么缺失热度排最后
+  /// 把"未知热度"当 0 会与"热度真的很低"混在一起；
+  /// 排最后 + 保持原序，既不打乱 B站的时间序，也不抢占 TMDB 的热度序。
+  Map<CalendarCategory, List<CalendarEntry>> forWeekdayGrouped(int weekday) {
+    final day = forWeekday(weekday);
+    final out = <CalendarCategory, List<CalendarEntry>>{};
+    for (final c in CalendarCategory.values) {
+      final list = day.where((e) => e.category == c).toList();
+      // 稳定排序：先按"有无热度"分两段，段内按热度降序
+      // （Dart 的 sort 不保证稳定 ⇒ 自己保证：先算序号再排）
+      final withPop = <CalendarEntry>[];
+      final noPop = <CalendarEntry>[];
+      for (final e in list) {
+        if (e.popularity != null && e.popularity! > 0) {
+          withPop.add(e);
+        } else {
+          noPop.add(e);
+        }
+      }
+      withPop.sort((a, b) => b.popularity!.compareTo(a.popularity!));
+      out[c] = [...withPop, ...noPop];
+    }
+    return out;
+  }
 
   /// 有内容的源数量（用于 UI 显示"来自 N 个源"）。
   int get okSourceCount => sources.where((s) => s.ok).length;
@@ -261,12 +595,33 @@ class CalendarClient {
       }
     }
 
+    // ★★ 源清单（2026-10-11 按用户要求重构：删 TVmaze，聚焦国内）
+    //
+    // ## 用户要求
+    // > "删除 TVmaze …… 我在中国，主要聚焦国内的 腾讯、爱奇艺、b站、优酷等
+    // >  国产剧集" / "国内的可以调用 tmdb 获取"
+    //
+    // ## 实测依据（本轮，全部真实请求）
+    // | 源 | 结论 |
+    // |---|---|
+    // | **TMDB** `discover/tv` + `air_date.gte/lte` | ✅ 换 5 个日期结果**全不同** ⇒ 过滤真生效；<br>每天 20 条**全是国产剧**（`lang=zh`） ⇒ **主力** |
+    // | **B站时间线** | ✅ 可用，但 `types=1`（番剧）/`types=4`（国创）**只有动漫**；<br>实测 2/3/5/6 全空 ⇒ **B站没有国产真人剧** |
+    // | Bangumi | ❌ WAF 拦 TLS 指纹（本机/真机都不可达，已留证据） |
+    // | ~~TVmaze~~ | 用户明确不要 ⇒ **已删** |
+    // | 腾讯 pbaccess | ❌ `ret=0` 但 **`data` 为 None**（空壳） |
+    // | 爱奇艺 videolib | ❌ `risk_level:2` + **`data` 为 None**（风控） |
+    // | 优酷 | ❌ mtop 200 但无可用剧集列表 |
+    //
+    // ⚠️ 腾讯/爱奇艺/优酷**不是"懒得做"** —— 是实测拿不到数据
+    //    （三家都返回 HTTP 200 但内容为空/风控标记）。
+    //    这是**它们的反爬策略**，客户端无法绕过。
     final tasks = <Future<CalendarSourceResult>>[
-      guard(_fetchBangumi(), 'bangumi', 'Bangumi 番剧'),
-      guard(_fetchTvmaze(), 'tvmaze', 'TVmaze 欧美/国漫'),
-      guard(_fetchBilibili(), 'bilibili', 'B站番剧时间线'),
+      // ★ TMDB 是国产剧集的主力源（用户要求 + 实测有效）
       if (tmdbKey != null && tmdbKey.isNotEmpty)
-        guard(_fetchTmdb(tmdbKey), 'tmdb', 'TMDB 在播'),
+        guard(_fetchTmdb(tmdbKey), 'tmdb', 'TMDB 国产剧集'),
+      // ★ B站补动漫（番剧 + 国创）—— 它**没有国产真人剧**，故只是补充
+      guard(_fetchBilibili(), 'bilibili', 'B站番剧/国创'),
+      guard(_fetchBangumi(), 'bangumi', 'Bangumi 番剧'),
     ];
     final results = await Future.wait(tasks);
     // ★★ 记住"哪个源这次彻底失败" ⇒ 短时间内**不再重试它**
@@ -296,6 +651,27 @@ class CalendarClient {
     for (final r in results.where((r) => !r.ok)) {
       debugPrint('[Calendar]   ✗ ${r.label}：${r.error}');
     }
+    // ★★ 按源 × 按星期 的分布（真机排查"某天的列表里全是某个源"用）
+    //
+    // ## 为什么必须打这个（真机现象驱动）
+    // 真机实测：合并后 173 条（TMDB 贡献了 74 条），但**周日那一栏
+    // 列出的全是 B站**。光看总数「TMDB 成功了」无法判断
+    // "它到底落在哪几天" ⇒ 逐源逐天打出来，一眼看出是
+    // ① TMDB 没返回某天 ② 还是归星期算错了 ③ 还是 UI 排序问题
+    for (final r in results.where((r) => r.ok)) {
+      final byDay = <int, int>{};
+      for (final e in r.entries) {
+        byDay[e.weekdayResolved] = (byDay[e.weekdayResolved] ?? 0) + 1;
+      }
+      final dist = [for (var d = 1; d <= 7; d++) '${byDay[d] ?? 0}'];
+      debugPrint('[Calendar]   ${r.label} 按天(一~日)=${dist.join("/")}');
+    }
+    final mergedByDay = <int, int>{};
+    for (final e in merged) {
+      mergedByDay[e.weekdayResolved] = (mergedByDay[e.weekdayResolved] ?? 0) + 1;
+    }
+    debugPrint('[Calendar]   合并后按天(一~日)='
+        '${[for (var d = 1; d <= 7; d++) mergedByDay[d] ?? 0].join("/")}');
     return WeekCalendar(sources: results, entries: merged);
   }
 
@@ -415,125 +791,6 @@ class CalendarClient {
   // ══════════════════════════════════════════════════════════
   // ② TVmaze —— 按日期（含国漫；实测有国漫条目）
   // ══════════════════════════════════════════════════════════
-
-  /// 抓**本周 7 天**（周一到周日）。
-  ///
-  /// ## ★★★ 性能实测（2026-10-11，真机验证驱动 —— 必须记录）
-  /// ```
-  /// 单个 /schedule/web 请求：7,832 ms  154 KB
-  /// 18 个并发请求：       22,853 ms  4.4 MB（OK=18，无 429）
-  /// ```
-  /// ⇒ **每源 7 秒的 deadline 必然把 TVmaze 砍掉**（实测"超时（已跳过）"，
-  ///   整源丢失、日历只剩 B站）。这不是调 deadline 能解决的 ——
-  ///   4.4 MB 在真实移动网络下只会更慢。
-  ///
-  /// ## ★ 修法：**少请求 + 缩小响应**（而不是加长超时）
-  /// 1. **只请求 7 天**（去掉 ±1 天的 2 天）⇒ 14 个请求
-  /// 2. **只用 `schedule/web`**（含网络平台/国漫，是我们要的那份）
-  ///    ⇒ 7 个请求（**从 18 降到 7**，响应从 4.4 MB 降到约 1.1 MB）
-  /// 3. **超时后保留已拿到的部分**（见下：先解析再判超时）
-  ///
-  /// ## ⚠️ 牺牲了什么（如实记录）
-  /// 去掉 ±1 天 ⇒ 无法做"按 UTC+8 重新分桶"（那需要相邻日的数据）。
-  /// 改为**信任 TVmaze 的当地日过滤** + 用 `airstamp` 只算**星期几**
-  ///（不改变归属日）⇒ 对"周视图"这个用途足够：
-  /// 用户关心"**这周哪一天有什么**"，而不是"北京时间精确到哪一天"。
-  ///
-  /// 若将来要精确到 UTC+8 日界，正确做法是**服务端缓存**
-  ///（一次抓 9 天，所有用户共用），而不是让每个客户端抓 4.4 MB。
-  Future<CalendarSourceResult> _fetchTvmaze() async {
-    const src = 'tvmaze';
-    const label = 'TVmaze 欧美/国漫';
-    final out = <CalendarEntry>[];
-    final failures = <String>[];
-    final monday = _mondayOfThisWeek();
-    final bodies = <String, String>{}; // 'date' → body
-
-    // ★ 只 7 天 × 1 端点 = 7 个请求（原 18 个）
-    final days = [for (var i = 0; i < 7; i++) monday.add(Duration(days: i))];
-    final fetched = await Future.wait(days.map((d) async {
-      final date = _ymd(d);
-      try {
-        final cached = await cache?.get('calendar:$src:$date');
-        if (cached != null && cached.isNotEmpty) return MapEntry(date, cached);
-        final r = await _dio.get<String>(
-          'https://api.tvmaze.com/schedule/web',
-          queryParameters: {'date': date},
-          options: Options(responseType: ResponseType.plain,
-              headers: {'User-Agent': _ua}),
-        );
-        if (r.statusCode == 429) {
-          failures.add('限流(429)');
-          return MapEntry(date, '');
-        }
-        if (r.statusCode != 200 || r.data == null) return MapEntry(date, '');
-        await cache?.put('calendar:$src:$date', r.data!, ttl: cacheTtl);
-        return MapEntry(date, r.data!);
-      } catch (e) {
-        failures.add('$date: ${_friendly(e)}');
-        return MapEntry(date, '');
-      }
-    }));
-    for (final e in fetched) {
-      if (e.value.isNotEmpty) bodies[e.key] = e.value;
-    }
-
-    // ── 解析（按 `airstamp` 的**星期**归类；见方法头说明）──
-    final seenIds = <String>{};
-    for (final entry in bodies.entries) {
-      final body = entry.value;
-      if (body.isEmpty) continue;
-      try {
-        final j = jsonDecode(body);
-        if (j is! List) continue;
-        for (final it in j) {
-          if (it is! Map) continue;
-          // ★★ show 的两处位置都要读（实测两个端点结构不同）
-          final show = (it['show'] as Map?) ??
-              ((it['_embedded'] as Map?)?['show'] as Map?) ??
-              const {};
-          final title = (show['name'] as String?) ??
-              (it['name'] as String?) ??
-              '';
-          if (title.isEmpty) continue;
-          final id = it['id']?.toString();
-          if (id != null && !seenIds.add(id)) continue;
-
-          // ★ 用 `airstamp` 算**星期**（UTC+8 视角），但**不改变归属日**
-          final stamp = it['airstamp'] as String?;
-          final weekday = _utc8Weekday(stamp) ??
-              _weekdayOf(it['airdate'] as String?);
-          final season = it['season'];
-          final number = it['number'];
-          final img = show['image'];
-          final rating = (show['rating'] as Map?)?['average'];
-          out.add(CalendarEntry(
-            title: title,
-            // airDate 仍用服务端给的当地日（周视图按 weekday 分桶）
-            airDate: it['airdate'] as String?,
-            weekday: weekday,
-            episode: (season != null && number != null)
-                ? 'S${_pad(season)}E${_pad(number)}'
-                : null,
-            posterUrl: httpsPosterUrl(img is Map ? (img['medium'] as String?) : null),
-            rating: (rating as num?)?.toDouble(),
-            summary:
-                _stripHtml((show['summary'] ?? it['summary']) as String?),
-            source: src,
-            sourceId: id,
-          ));
-        }
-      } catch (_) {
-        // 单天解析失败不影响其余
-      }
-    }
-
-    if (out.isEmpty && failures.isNotEmpty) {
-      return CalendarSourceResult(
-          source: src, label: label, error: failures.first);
-    }
-    return CalendarSourceResult(source: src, label: label, entries: out);
-  }
 
   // ══════════════════════════════════════════════════════════
   // ③ B站番剧时间线
@@ -655,56 +912,385 @@ class CalendarClient {
   ///   ⇒ 我们用 `first_air_date` 的星期兜底（≥ 有胜于无）。
   ///
   /// 好处：TMDB 的**中文译名与海报质量**最好，可补 Bangumi 缺的欧美剧。
+  /// **按日期**抓国产剧集（本日历的**主力源**，用户明确要求用 TMDB）。
+  ///
+  /// ## ★★ 为什么从"榜单"改成"按日"（实测驱动的改造）
+  /// 上一版用的是 `/tv/on_the_air` —— 它只给"本周有更新的剧"，
+  /// **不告诉你哪天**（20 条全是英文剧，与"国产剧日历"需求完全不搭）。
+  ///
+  /// 本轮实测发现 TMDB **真的支持按播出日筛**：
+  /// ```
+  /// /discover/tv?air_date.gte=D&air_date.lte=D&with_original_language=zh
+  /// 10-11 → 你好星期六、仙逆、现在就出发、武神主宰、披荆斩棘
+  /// 10-12 → 吞噬星空、无上神帝、死刑将至、魅影神捕、逆天至尊
+  /// 10-13 → 毛雪汪、武神主宰、遮天、一念永恒、炼气十万年
+  /// ```
+  /// **换 5 个日期结果全部不同** ⇒ 过滤确实生效（不是固定榜单）。
+  /// 且全是 `lang=zh` 的国产剧 ⇒ 正好命中用户需求。
+  ///
+  /// ## 为什么逐天查 7 次（而不是查一次）
+  /// `air_date.gte/lte` 只能给**一个区间**；周视图要"每天各有什么"。
+  /// 查 `gte=周一&lte=周日` 会得到 7 天混在一起的一大堆，
+  /// 且无法知道每条属于哪一天（`discover` 返回里**没有**该剧在本周的
+  /// 具体播出日 —— `first_air_date` 是首播日，不是本周更新日）。
+  /// ⇒ **必须逐天查**（7 个请求，实测每个 ~0.3s）。
+  ///
+  /// ## 为什么带 `with_original_language=zh`
+  /// 用户明确"聚焦国内"。不带则混入大量欧美剧（实测 20 条里一半是英文）。
   Future<CalendarSourceResult> _fetchTmdb(String apiKey) async {
     const src = 'tmdb';
-    const label = 'TMDB 在播';
-    try {
-      final cached = await cache?.get('calendar:$src');
-      String body;
-      if (cached != null && cached.isNotEmpty) {
-        body = cached;
-      } else {
-        final r = await _dio.get<String>(
-          'https://api.themoviedb.org/3/tv/on_the_air',
-          queryParameters: {'api_key': apiKey, 'language': 'zh-CN'},
-          options: Options(responseType: ResponseType.plain,
-              headers: {'User-Agent': _ua}),
-        );
-        if (r.statusCode != 200 || r.data == null) {
-          // ⚠️ 不把 api_key 写进错误消息（安全红线）
-          return CalendarSourceResult(
-              source: src, label: label, error: 'HTTP ${r.statusCode}');
+    const label = 'TMDB 国产剧集';
+    final out = <CalendarEntry>[];
+    final failures = <String>[];
+    final monday = _mondayOfThisWeek();
+
+    // 逐天并行（7 个请求，互不依赖）
+    final days = [for (var i = 0; i < 7; i++) monday.add(Duration(days: i))];
+    final results = await Future.wait(days.map((d) async {
+      final date = _ymd(d);
+      final weekday = d.weekday; // 1=Mon … 7=Sun
+      final key = 'calendar:$src:$date';
+      try {
+        final cached = await cache?.get(key);
+        String body;
+        if (cached != null && cached.isNotEmpty) {
+          body = cached;
+        } else {
+          final r = await _dio.get<String>(
+            'https://api.themoviedb.org/3/discover/tv',
+            queryParameters: {
+              'api_key': apiKey,
+              'language': 'zh-CN',
+              // ★★ 按**播出日区间**筛（`gte == lte` 即"当天"）
+              'air_date.gte': date,
+              'air_date.lte': date,
+              // ★ 只国产（用户要求"聚焦国内"）
+              'with_original_language': 'zh',
+              'sort_by': 'popularity.desc',
+              'page': '1',
+            },
+            options: Options(responseType: ResponseType.plain,
+                headers: {'User-Agent': _ua}),
+          );
+          if (r.statusCode == 401) {
+            // ⚠️ 不把 api_key 写进错误消息（安全红线）
+            failures.add('key 无效');
+            return <CalendarEntry>[];
+          }
+          if (r.statusCode != 200 || r.data == null) {
+            failures.add('HTTP ${r.statusCode}');
+            return <CalendarEntry>[];
+          }
+          body = r.data!;
+          // ⚠️ 只缓存**成功**的响应（失败缓存会让日历空 6 小时）
+          await cache?.put(key, body, ttl: todayTtl);
         }
-        body = r.data!;
-        await cache?.put('calendar:$src', body, ttl: cacheTtl);
+        final j = jsonDecode(body);
+        final list = <CalendarEntry>[];
+        for (final it in ((j as Map)['results'] as List? ?? const [])) {
+          if (it is! Map) continue;
+          final name = (it['name'] as String?) ??
+              (it['original_name'] as String?) ??
+              '';
+          if (name.isEmpty) continue;
+          final poster = it['poster_path'] as String?;
+          // ★ 类别：TMDB 的 `genre_ids`（见 `CalendarCategory` 的实测表）
+          final gids = ((it['genre_ids'] as List?) ?? const [])
+              .map((x) => (x as num).toInt())
+              .toList();
+          list.add(CalendarEntry(
+            title: name,
+            // TMDB 的 zh-CN 已给中文名；`original_name` 作兜底
+            titleCn: it['name'] as String?,
+            // ★ `air_date` = 我们查的那一天（这是"当日更新"的语义）
+            airDate: date,
+            weekday: weekday,
+            posterUrl: poster == null
+                ? null
+                : 'https://image.tmdb.org/t/p/w300$poster',
+            rating: (it['vote_average'] as num?)?.toDouble(),
+            summary: it['overview'] as String?,
+            // ★ 热度（用户要求"按热度显示"）
+            popularity: (it['popularity'] as num?)?.toDouble(),
+            // ★ 类别（用户要求"按类别区分"）
+            category: CalendarCategory.fromTmdbGenres(gids),
+            source: src,
+            sourceId: it['id']?.toString(),
+          ));
+        }
+        // 已按 popularity.desc 请求 ⇒ 服务端已排好；这里**再排一次**
+        // 保证"按热度"是确定性行为（不依赖服务端默认）
+        list.sort((a, b) => (b.popularity ?? 0).compareTo(a.popularity ?? 0));
+        return list;
+      } catch (e) {
+        failures.add('$date: ${_friendly(e)}');
+        return <CalendarEntry>[];
       }
-      final j = jsonDecode(body);
-      final out = <CalendarEntry>[];
-      for (final it in ((j as Map)['results'] as List? ?? const [])) {
-        if (it is! Map) continue;
-        final first = it['first_air_date'] as String?;
-        final poster = it['poster_path'] as String?;
-        out.add(CalendarEntry(
-          title: (it['original_name'] as String?) ??
-              (it['name'] as String?) ??
-              '',
-          titleCn: it['name'] as String?,
-          airDate: first,
-          weekday: _weekdayOf(first),
-          posterUrl: poster == null
-              ? null
-              : 'https://image.tmdb.org/t/p/w300$poster',
-          rating: (it['vote_average'] as num?)?.toDouble(),
-          summary: it['overview'] as String?,
-          source: src,
-          sourceId: it['id']?.toString(),
-        ));
-      }
-      return CalendarSourceResult(source: src, label: label, entries: out);
-    } catch (e) {
-      return CalendarSourceResult(
-          source: src, label: label, error: _friendly(e));
+    }));
+    for (final list in results) {
+      out.addAll(list);
     }
+
+    if (out.isEmpty && failures.isNotEmpty) {
+      // 去重后只报一个原因（7 天同一原因会重复 7 次）
+      final uniq = failures.toSet().take(2).join('；');
+      return CalendarSourceResult(source: src, label: label, error: uniq);
+    }
+
+    return CalendarSourceResult(source: src, label: label, entries: out);
+  }
+
+  /// **懒加载播放平台**（用户要求"显示播放平台，点击能跳转"）。
+  ///
+  /// ## 为什么是懒加载而不是在 `_fetchTmdb` 里一起拉（真机 bug 驱动）
+  /// 原实现在 `_fetchTmdb` 末尾补平台，两个问题：
+  /// ① `out.take(24)` 里 `out` 是**整周**条目（140 条）
+  ///    ⇒ 只覆盖**周一**，用户选周日时**永远拿不到平台**
+  /// ② 就算改成"每天各取几条"，7 天 × N 次 + discover 7 次
+  ///    **必然超过每源 7s 的 deadline** ⇒ 整个 TMDB 源被砍
+  ///
+  /// ⇒ 改为：**只给"当前看到的那一天"补**（20 条约 2–3s），
+  ///    并按 TMDB id 缓存（同一部剧不重复查）。
+  ///
+  /// ## 缓存策略
+  /// · key = `platform:<tmdbId>`，TTL 用 [cacheTtl]（6h）
+  ///   —— 平台归属极少变，长 TTL 合理
+  /// · **只缓存成功结果**（失败不缓存，否则"网络抖动"会锁 6 小时）
+  ///
+  /// ## 返回
+  /// `tmdbId → 中文平台名`（拿不到的条目**不在 map 里**，UI 显示"未知"）。
+  Future<Map<String, String>> fetchPlatforms(
+    List<CalendarEntry> entries, {
+    required String apiKey,
+    int limit = 20,
+  }) async {
+    final out = <String, String>{};
+    // 只处理 TMDB 条目（B站/Bangumi 没有平台概念）
+    final targets = entries
+        .where((e) => e.source == 'tmdb' && (e.sourceId?.isNotEmpty ?? false))
+        .take(limit)
+        .toList();
+    if (targets.isEmpty) return out;
+
+    // 先查缓存
+    final need = <CalendarEntry>[];
+    for (final e in targets) {
+      final c = await cache?.get('platform:${e.sourceId}');
+      if (c != null && c.isNotEmpty) {
+        out[e.sourceId!] = c;
+      } else {
+        need.add(e);
+      }
+    }
+    if (need.isEmpty) return out;
+
+    // 限并发 6（TMDB 约 40 请求/10s）
+    const concurrency = 6;
+    for (var i = 0; i < need.length; i += concurrency) {
+      final batch = need.skip(i).take(concurrency).toList();
+      await Future.wait(batch.map((e) async {
+        try {
+          final r = await _dio.get<String>(
+            'https://api.themoviedb.org/3/tv/${e.sourceId}',
+            queryParameters: {'api_key': apiKey, 'language': 'zh-CN'},
+            options: Options(responseType: ResponseType.plain,
+                headers: {'User-Agent': _ua}),
+          );
+          if (r.statusCode != 200 || r.data == null) return;
+          final jd = jsonDecode(r.data!);
+          final nets = ((jd as Map)['networks'] as List?) ?? const [];
+          final names = [
+            for (final n in nets)
+              if (n is Map && (n['name'] as String?)?.isNotEmpty == true)
+                n['name'] as String
+          ];
+          if (names.isEmpty) return;
+          final cn = cnPlatformName(names.first);
+          out[e.sourceId!] = cn;
+          await cache?.put('platform:${e.sourceId}', cn, ttl: cacheTtl);
+        } catch (_) {
+          // 单条失败不影响其余（平台是"锦上添花"）
+        }
+      }));
+    }
+    debugPrint('[Calendar] 平台补查：${out.length}/${targets.length} 条'
+        '（缓存命中 ${targets.length - need.length}）');
+    return out;
+  }
+
+  /// **拉完整详情**（供"点击查看简介"弹层）。
+  ///
+  /// ## 一次请求拿全部（`append_to_response` 的价值）
+  /// `GET /tv/{id}?append_to_response=credits&language=zh-CN`
+  /// 实测同时返回：简介 / 评分 / 人数 / 类型 / 平台 / 国家 /
+  /// 季数集数 / 状态 / 官网 / **演员（含角色名）/ 导演 / 创作者**
+  /// ⇒ 不必"先拉基本信息再拉 credits"两次请求。
+  ///
+  /// ## 缓存
+  /// key = `detail:<tmdbId>`，TTL 用 [cacheTtl]（6h）。
+  /// 详情变化很慢（评分/演员），长 TTL 合理。
+  ///
+  /// ## 返回 null 的语义
+  /// 拉取失败或 id 无效 ⇒ **返回 null**（UI 显示"暂无详情"），
+  /// **不抛异常**（详情是"锦上添花"，不该让弹层崩）。
+  Future<CalendarDetail?> fetchDetail(
+    String tmdbId, {
+    required String apiKey,
+  }) async {
+    if (tmdbId.isEmpty) return null;
+    final cacheKey = 'detail:$tmdbId';
+    try {
+      final cached = await cache?.get(cacheKey);
+      if (cached != null && cached.isNotEmpty) {
+        return _parseDetail(cached);
+      }
+      final r = await _dio.get<String>(
+        'https://api.themoviedb.org/3/tv/$tmdbId',
+        queryParameters: {
+          'api_key': apiKey,
+          'language': 'zh-CN',
+          // ★ 一次请求同时拿 credits（演员+导演）——
+          //   分开拉会多一次请求，且实测没必要
+          'append_to_response': 'credits',
+        },
+        options: Options(responseType: ResponseType.plain,
+            headers: {'User-Agent': _ua}),
+      );
+      if (r.statusCode != 200 || r.data == null) {
+        debugPrint('[Calendar] 详情拉取失败 HTTP ${r.statusCode}');
+        return null;
+      }
+      await cache?.put(cacheKey, r.data!, ttl: cacheTtl);
+      return _parseDetail(r.data!);
+    } catch (e) {
+      debugPrint('[Calendar] 详情拉取异常: ${_friendly(e)}');
+      return null;
+    }
+  }
+
+  /// 解析 `/tv/{id}?append_to_response=credits` 的响应。
+  ///
+  /// ⚠️ 全部字段防御式取值（§5.3）—— TMDB 的字段**常缺**
+  ///（实测《你好，星期六》的 `episode_run_time` 有值而
+  /// 《仙逆》的是空数组；`created_by` 也可能为空）。
+  CalendarDetail _parseDetail(String body) {
+    final j = jsonDecode(body) as Map;
+    String? str(Object? v) {
+      final s = v?.toString();
+      return (s == null || s.isEmpty) ? null : s;
+    }
+
+    List<String> names(Object? list, {bool cn = false}) => [
+          for (final x in (list as List? ?? const []))
+            if (x is Map && (x['name'] as String?)?.isNotEmpty == true)
+              cn ? cnPlatformName(x['name'] as String) : x['name'] as String
+        ];
+
+    // 导演 = `created_by`（剧集的"创作者"，实测《仙逆》= 耳根）
+    //      + `crew[job == 'Director']`（实测 = 石头熊/冯毅）
+    // 两者都可能有值，合并去重。
+    final directors = <String>[];
+    for (final c in (j['created_by'] as List? ?? const [])) {
+      if (c is Map && (c['name'] as String?)?.isNotEmpty == true) {
+        directors.add(c['name'] as String);
+      }
+    }
+    final credits = j['credits'];
+    if (credits is Map) {
+      for (final c in (credits['crew'] as List? ?? const [])) {
+        if (c is Map && c['job'] == 'Director') {
+          final n = c['name'] as String?;
+          if (n != null && n.isNotEmpty && !directors.contains(n)) {
+            directors.add(n);
+          }
+        }
+      }
+    }
+
+    // 主演：**带角色名**（实测 `('史泽鲲', '王林 (voice)')`）——
+    // 比豆瓣的纯名字更有信息量。角色名去掉 `(voice)` 这类括注。
+    final actors = <String>[];
+    if (credits is Map) {
+      for (final c in (credits['cast'] as List? ?? const [])) {
+        if (c is! Map) continue;
+        final n = c['name'] as String?;
+        if (n == null || n.isEmpty) continue;
+        final role = (c['character'] as String? ?? '')
+            .replaceAll(RegExp(r'\s*\(.*?\)'), '')
+            .trim();
+        actors.add(role.isEmpty ? n : '$n 饰 $role');
+        if (actors.length >= 12) break;
+      }
+    }
+
+    final poster = str(j['poster_path']);
+    final backdrop = str(j['backdrop_path']);
+    return CalendarDetail(
+      title: (str(j['name']) ?? str(j['original_name'])) ?? '',
+      originalTitle: str(j['original_name']),
+      overview: str(j['overview']),
+      tagline: str(j['tagline']),
+      posterUrl: poster == null
+          ? null
+          : 'https://image.tmdb.org/t/p/w300$poster',
+      backdropUrl: backdrop == null
+          ? null
+          : 'https://image.tmdb.org/t/p/w780$backdrop',
+      rating: (j['vote_average'] as num?)?.toDouble(),
+      voteCount: (j['vote_count'] as num?)?.toInt(),
+      firstAirDate: str(j['first_air_date']),
+      lastAirDate: str(j['last_air_date']),
+      genres: names(j['genres']),
+      countries: [
+        for (final c in (j['origin_country'] as List? ?? const []))
+          if (c is String && c.isNotEmpty) countryName(c)
+      ],
+      platforms: names(j['networks'], cn: true),
+      directors: directors,
+      actors: actors,
+      seasonCount: (j['number_of_seasons'] as num?)?.toInt(),
+      episodeCount: (j['number_of_episodes'] as num?)?.toInt(),
+      status: str(j['status']),
+      homepage: str(j['homepage']),
+      tmdbId: (j['id'] ?? '').toString(),
+    );
+  }
+
+  /// 平台补查的**条数上限**（保留给将来"全量预取"用）。
+  ///
+  /// 取 24：覆盖"一天 20 条"这个实测规模，且并发 6 ⇒ 最多 4 批
+  ///（每批约 1s）⇒ 总耗时约 4s，仍在每源 7s deadline 内。
+  static const platformFetchLimit = 24;
+
+  /// TMDB 的 network 名 → **中文平台名**（"点击跳转"要用中文关键词）。
+  ///
+  /// ## 为什么需要映射
+  /// TMDB 返回英文/混合名：`Tencent Video` / `iQIYI` / `Mango TV` /
+  /// `bilibili` / `Youku` —— 而用户看到中文名才有意义，
+  /// 且跳转时要按平台选**对应的搜索页**（见 `platformSearchUrl`）。
+  ///
+  /// ## network id 依据（实测 `search/company`）
+  /// ```
+  /// Tencent Video → 74457      iQIYI → 172414
+  /// Youku → 48460              MangoTV → 139947
+  /// bilibili → 123270
+  /// ```
+  /// ⚠️ 有些剧挂在**电视台**（`Hunan Television`）而非流媒体
+  /// ⇒ 那种映射到"湖南卫视"，跳转时用它自己的搜索词。
+  static String cnPlatformName(String tmdbName) {
+    final n = tmdbName.toLowerCase();
+    if (n.contains('tencent') || n.contains('qq')) return '腾讯视频';
+    if (n.contains('iqiyi') || n.contains('爱奇艺')) return '爱奇艺';
+    if (n.contains('youku') || n.contains('优酷')) return '优酷';
+    if (n.contains('mango') || n.contains('mgtv')) return '芒果TV';
+    if (n.contains('bilibili')) return 'B站';
+    if (n.contains('hunan')) return '湖南卫视';
+    if (n.contains('zhejiang')) return '浙江卫视';
+    if (n.contains('jiangsu')) return '江苏卫视';
+    if (n.contains('dragon') || n.contains('shanghai')) return '东方卫视';
+    if (n.contains('cctv')) return 'CCTV';
+    // 未识别的保留原名（比显示"未知"更有信息量）
+    return tmdbName;
   }
 
   // ══════════════════════════════════════════════════════════
@@ -828,35 +1414,6 @@ class CalendarClient {
     return d?.weekday ?? 1;
   }
 
-  static String _pad(Object? v) {
-    final s = v?.toString() ?? '?';
-    return s.length >= 2 ? s : '0$s';
-  }
-
-  /// 把 `airstamp`（ISO8601 带时区）换算到 **UTC+8** 后取**星期几**。
-  ///
-  /// ## 为什么按 UTC+8 算星期（而不改归属日）
-  /// 实测：TVmaze 按"电视台当地日"过滤（请求 02-10 返回的 168 条里
-  /// 有 8 条 `airdate=02-09`，但它们的 `airstamp` 换算到电视台本地时区
-  /// 后全部等于 02-10）。
-  ///
-  /// 对中国观众，美东 02-10 20:00 = 北京 **02-11** 09:00
-  /// ⇒ 归属到"北京时间的那一天"更符合直觉。
-  ///
-  /// ⚠️ 但本实现**只改星期、不改 `airDate`** —— 因为要精确改归属日
-  /// 必须请求相邻两天（见 `_fetchTvmaze` 头部的性能实测：
-  /// 那会让请求量到 18 个、响应 4.4 MB、耗时 22.8 秒，不可接受）。
-  /// 对**周视图**这个用途，算对星期已经足够。
-  ///
-  /// ⚠️ `airstamp` 缺失时返回 null（调用方退回按 `airdate` 算）。
-  static int? _utc8Weekday(String? airstamp) {
-    if (airstamp == null || airstamp.isEmpty) return null;
-    final dt = DateTime.tryParse(airstamp);
-    if (dt == null) return null;
-    final utc8 = dt.toUtc().add(const Duration(hours: 8));
-    return utc8.weekday; // 1=Mon … 7=Sun
-  }
-
   /// Unix 秒 → `yyyy-MM-dd`（按 **UTC+8** 解释）。
   ///
   /// ## 为什么按 UTC+8
@@ -891,16 +1448,7 @@ class CalendarClient {
     return '$y-${m.group(1)!.padLeft(2, '0')}-${m.group(2)!.padLeft(2, '0')}';
   }
 
-  /// TVmaze 的 `summary` 是 HTML（`<p>…</p>`）⇒ 去掉标签再显示。
-  static String? _stripHtml(String? s) {
-    if (s == null || s.isEmpty) return null;
-    return s
-        .replaceAll(RegExp(r'<[^>]+>'), '')
-        .replaceAll('&amp;', '&')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .trim();
-  }
+
 }
 
 /// **合并去重**（多源同一部剧只留一条）。
@@ -949,9 +1497,13 @@ List<CalendarEntry> mergeCalendarEntries(List<CalendarEntry> all) {
     if (e.title.trim().isEmpty) continue;
     final day = e.airDate ?? 'w${e.weekdayResolved}';
     final keys = <String>[
-      // ① 同源同 id（**最强**：抓取层的重复，如 TVmaze 的多次请求）
+      // ① 同源同 id（**最强**：抓取层的重复，如分页/多次请求带回同一条）
+      //
+      // ★ 2026-10-11 加日期：TMDB 允许一部剧**同时**属于多个类别
+      //   （如既有 16 动漫又有 10764 综艺）⇒ 按类别分别查询时会**重复返回**
+      //   同一条 ⇒ 必须带日期才能把它们合并成一条。
       if (e.sourceId != null && e.sourceId!.isNotEmpty)
-        'src:${e.source}:${e.sourceId}',
+        'src:${e.source}:${e.sourceId}:${e.airDate ?? e.weekdayResolved}',
       // ② 同源 + 同日期 + 同标题
       //    （同源内同一天的同名条目 = 同一部剧，安全）
       //

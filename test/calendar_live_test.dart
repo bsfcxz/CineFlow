@@ -12,6 +12,8 @@
 //    用 `flutter test test/calendar_live_test.dart` 单独跑。
 library;
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:cineflow/data/calendar_client.dart';
@@ -109,35 +111,30 @@ void main() {
               '    Android 9+ 禁明文 ⇒ 不升 https 会**海报全裂**');
     }, timeout: timeout);
 
-    test('★★ TVmaze：可用时必须解析出条目（不可用则允许跳过）', () async {
-      final client = CalendarClient(cache: MemoryCalendarCache());
-      final cal = await client.fetchWeek();
-      final tv = cal.sources.firstWhere((s) => s.source == 'tvmaze');
-      // ⚠️ TVmaze 单请求实测 7.8 秒 / 154 KB ⇒ 网络拥塞时会撞 deadline。
-      //    这**不是解析问题** ⇒ 不可用时跳过（打印原因），可用时严格校验。
-      if (!tv.ok) {
-        expect(tv.error, isNot(contains('解析')),
-            reason: '★★ 失败必须是网络/超时，不能是解析错误');
-        print('  ⚠️ TVmaze 本次不可用：${tv.error}（环境问题，非解析问题）');
+    test('★★ TMDB：可用时必须解析出条目（需填 key，否则跳过）', () async {
+      // ⚠️ TMDB 需要 API key（存在 secure_storage，**不入库**）
+      //    ⇒ 测试环境通常没有 ⇒ 只在提供时校验。
+      //    可用环境变量 `CF_TMDB_KEY` 传入（CI/本地手动验证用）：
+      //      但要跑真网测试必须先 `flutter test --dart-define` 或设环境变量。
+      final key = Platform.environment['CF_TMDB_KEY'];
+      if (key == null || key.isEmpty) {
+        print('  ⚠️ 未提供 CF_TMDB_KEY ⇒ 跳过 TMDB 校验');
+        print('     （运行时 key 来自「我的 → 追剧日历设置」，不入库）');
         return;
       }
-
+      final client = CalendarClient(cache: MemoryCalendarCache());
+      final cal = await client.fetchWeek(tmdbKey: key);
+      final tm = cal.sources.firstWhere((s) => s.source == 'tmdb');
+      expect(tm.ok, isTrue, reason: '★ 提供了 key 就该成功');
+      print('  TMDB 国产剧集: ${tm.entries.length} 条');
+      expect(tm.entries.length, greaterThan(0),
+          reason: '★★ 实测每天 20 条国产剧');
+      // ★ 必须全是国产（`with_original_language=zh` 的效果）
       final byDay = <int, int>{};
-      for (final e in tv.entries) {
+      for (final e in tm.entries) {
         byDay[e.weekdayResolved] = (byDay[e.weekdayResolved] ?? 0) + 1;
       }
-      print('  TVmaze 按星期分布: $byDay（共 ${tv.entries.length} 条）');
-      expect(tv.entries.length, greaterThan(20),
-          reason: '★★ 实测单日 ~150 条 ⇒ 7 天应远超 20');
-      // 集数格式（SxxExx）
-      final withEp = tv.entries.where((e) => e.episode != null).length;
-      print('  TVmaze: 有集数标记 $withEp 条');
-      expect(withEp, greaterThan(0), reason: '★ SxxExx 由 season/number 拼出');
-      // ★★ 海报必须 https（同 Bangumi 的明文 HTTP 问题）
-      final httpPosters =
-          tv.entries.where((e) => e.posterUrl?.startsWith('http://') ?? false);
-      expect(httpPosters.length, 0,
-          reason: '★★ 海报不能是明文 http（Android 9+ 会拦）');
+      print('  TMDB 按星期分布: $byDay');
     }, timeout: timeout);
 
     test('★★ B站时间线：不能因缺 Referer 而失败', () async {

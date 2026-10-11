@@ -2064,3 +2064,177 @@ check-dev.ps1     21 项全过，退出码 0
 1. **多服务器聚合的真机验证**：设备上只登录了 1 个账号
 2. **`libmpv.so` 缺解码器**：仍需重编（`tool/check_mpv_decoders.py` 有修法）
 3. **Bangumi 源在本机/真机不可达**（服务端 WAF 拦 TLS 指纹，已留证据）
+
+### 2026-10-11（续 2）· **追剧日历国内化 + 详情弹层 + 「我的」页 4 组修复**
+
+用户三批要求（全部实现，真机截图实证）：
+
+> ① "追剧日历中删除 TVmaze……我在中国，主要聚焦国内的 腾讯、爱奇艺、b站、优酷等国产剧集"
+> ② "去重，按热度显示，也显示播放平台，点击能跳转到播放平台。日期下面按类别区分"
+> ③ "增加点击可以查看到剧集、综艺、动漫等的简介和我们的豆瓣排行榜一样"
+> ④ "播放历史应该是 emby 服务端的继续观看……已看电影/追剧中/已看分集/收藏都应该可以点击……
+>     点击服务端的地址可以测试延迟。多账号聚合地址和内容没增加进去"
+
+## 一、删 TVmaze、TMDB 升为主力（实测驱动的源清单变更）
+
+| 源 | 实测结论 | 处置 |
+|---|---|---|
+| **TMDB** `discover/tv` + `air_date.gte/lte` | 换 5 个日期结果**全不同** ⇒ 过滤真生效；<br>每天 20 条**全是国产剧**（`lang=zh`），7 天实测验过 | **主力** |
+| **B站** 时间线 | ✅ 可用，但 `types=1/4` **只有动漫**；实测 2/3/5/6 全空 ⇒ **B站没有国产真人剧** | 补充（动漫） |
+| **TVmaze** | 用户明确不要 | **已删除**（含死代码清理） |
+| **腾讯** `pbaccess` | `ret=0` 但 **`data` 为 None**（空壳） | 不做 |
+| **爱奇艺** `videolib` | `risk_level:2` + **`data` 为 None**（风控） | 不做 |
+| **优酷** mtop | 200 但无可用剧集列表 | 不做 |
+
+⚠️ **腾讯/爱奇艺/优酷不是"懒得做"** —— 三家都返回 HTTP 200 但内容为空或带风控标记，
+**客户端无法绕过**。用户要的"国产剧集"由 TMDB 覆盖。
+
+## 二、★★★ 两个会**静默出错**的陷阱（本轮最重要的发现）
+
+### ① `with_genres` 逗号是 AND，竖线才是 OR
+```
+with_genres=10764         → 8 条  ✅
+with_genres=10764,10767   → 1 条  ❌（要有**全部**类别）
+with_genres=10764|10767   → 8 条  ✅（任一即可）
+```
+⇒ 按"逗号=多选"写会让综艺从 8 条静默掉到 1 条。已在 `CalendarCategory.withGenres`
+用竖线 + 注释 + 守卫测试。
+
+### ② 平台补查放错位置（真机截图驱动）
+原实现在 `_fetchTmdb` 末尾 `out.take(24)` —— 而 `out` 是**整周 140 条**
+⇒ 只覆盖**周一**，用户选周日时**永远没平台**。
+且全量补会超每源 7s deadline ⇒ 整个 TMDB 源被砍。
+⇒ 改为**懒加载**：只补当前选中日（20 条约 2–3s），按 id 缓存 6h。
+真机实测：`平台补查：19/20 条`。
+
+## 三、四项新需求
+
+| 需求 | 实现 | 关键依据 |
+|---|---|---|
+| **去重** | 去重键 = `(源, id, 日期)` | TMDB 一部剧可同属多类别 ⇒ 按类别查询会重复返回，必须带日期 |
+| **按热度** | 组内 `popularity` 降序；无热度排最后且保原序 | 实测 discover 默认即按热度；显式再排保证确定性 |
+| **播放平台** | 懒加载 + 6h 缓存 | `discover` **不含** `networks`，`append_to_response` 无效 ⇒ 必须逐条查详情 |
+| **点击跳转** | 平台 chip → 对应平台搜索页；详情页优先官方页 | 6 家搜索页实测全部 200 |
+| **类别分组** | 动漫/综艺/剧集，组间固定序 | 见上"逗号=AND"陷阱 |
+
+## 四、详情弹层（用户："和我们的豆瓣排行榜一样"）
+
+复用 `douban_detail_sheet.dart` 的**信息层级**（刻意保持一致），
+但 TMDB 能给的**比豆瓣更多**。真机截图实证《武神主宰》：
+
+```
+动漫 连载中 | ★7.4 9 人评过 | 2020 / 中国大陆 / 动作冒险 Sci-Fi & Fantasy 动画
+简介（大段）
+导演 暗魔师        主演 唐泽宗 / 陈帅 / 吴凡 / 孙科
+类型 动作冒险 / Sci-Fi & Fantasy / 动画    制片国家/地区 中国大陆
+播放平台 腾讯视频   集数 1 季 / 702 集     首播 2020-03-07   更新 周日
+[去 腾讯视频 观看]
+```
+
+实测 `/tv/{id}?append_to_response=credits` **一次请求**同时拿到
+简介/评分/人数/类型/平台/国家/季集数/状态/官网/**演员（含角色名）/导演/创作者**
+⇒ 不必"先拉基本信息再拉 credits"两次。
+
+· `created_by`（剧集"创作者"，实测《仙逆》= 耳根）+ `crew[job=Director]`（石头熊/冯毅）
+· 实测《仙逆》`homepage` = `v.qq.com/x/cover/mzc00200aaogpgh.html` ⇒ **点进去就能看**
+
+## 五、「我的」页 4 组修复（实测确认**服务端全部正常**）
+
+### 实测取证（两台真实服务器）
+| 项 | 实测 |
+|---|---|
+| `Filters=IsPlayed/IsUnplayed/IsFavorite` | ✅ **全部生效**（s1: 2/2754；s2: 11/11126、5322、2 条收藏） |
+| `POST /Users/{uid}/FavoriteItems/{id}` | ✅ **读-写闭环验证通过**（写后 `IsFavorite=True`） |
+| `POST .../FavoriteItems/{id}/Delete` | ✅ 取消成功 |
+| `POST /Users/{uid}/PlayedItems/{id}` | ✅ 写后 `Played=True` |
+| `/Users/{uid}/Items/Resume` | ✅ 12 条（带 `PlayedPercentage`） |
+| `/Items/Resume?userId=` | ❌ **404**（必须走 `/Users/{uid}/` 前缀） |
+| `/System/Info/Public` | ✅ 200（s1: 536ms / s2: 53ms）→ **延迟测试用它** |
+| `/Users/Me` | ❌ **500** ⇒ 不能用来测延迟 |
+
+⇒ **结论：服务端没问题，全是客户端问题。**
+
+### 修的 4 处
+① **「播放历史」→「继续观看」**：旧实现用 `Filters=IsPlayed`（= **已看完**），
+   与"继续观看"是**两个概念** ⇒ 改用 `getResume`（`/Users/{uid}/Items/Resume`）。
+   并按用户要求**移到「制片公司」之前**（收藏类目之后）。
+② **四张统计卡全部可点** ⇒ 各自打开 `ServerListPage`（复用，不新建页面）。
+③ **服务器地址可点测延迟** —— 见下方"验证手段"一节。
+④ **多账号列表**：设备上目前只有 **1 台**（用户需自己加第二台），
+   但代码层面头部只显示当前会话 ⇒ 新增 `_accountList`（>1 台时显示全部 + 高亮当前）。
+
+### ★★★ 收藏/已看"看起来没保留"的**真根因**（IndexedStack 陷阱）
+用户报"点收藏和已观看后好像没有保留在我的中里面"。根因**两条叠加**：
+1. `IndexedStack` 让三个一级页面**全部常驻** ⇒ 「我的」页**永不 rebuild**
+2. `statsProvider` 是 `FutureProvider.autoDispose` —— 只有"没人监听"才销毁重算，
+   而 IndexedStack 让它**一直被监听** ⇒ **统计数字永远停在首进时的值**
+
+⇒ 修法：`_switchTab` 里 `ref.invalidate(statsProvider)`（切到该 Tab 时）。
+**不改成重建页面** —— IndexedStack 的"常驻"是要保留的特性（滚动位置）。
+
+## 六、★ 反思：我连续 4 轮用一个**抓不到的判据**做验证
+
+本轮我在"地址测延迟"上反复失败，每次都怀疑实现有问题。真相是**验证手段错了**：
+
+| 我用的判据 | 为什么是假的 |
+|---|---|
+| `logcat` 里找 `System/Info/Public` 请求 | **release 包没有 `debugPrint` 输出** ⇒ 计数**永远为 0** |
+| `uiautomator dump` 找 toast 文本 | dump 要 **2–4 秒**，SnackBar 只活 **3 秒** ⇒ 测试与实现赛跑 |
+| 按截图预览图目测 y 坐标 | 预览图 519×1131 缩放到 1080×2400 需 **×2.08** ⇒ 目测值全错 |
+| 用 `startswith('已看电影')` 找卡片 | 实际标签是 `'11 \| 已看电影'` ⇒ **永远 False** |
+
+⇒ **改法（一举解决 UX + 可验证性）**：把延迟从 SnackBar 改成**就地常驻显示**
+（`<server-A> 57ms`，带颜色分级）。真机截图实证 57ms（服务端实测 53ms，一致）。
+
+> 这正是 §8.4 说的"**验证手段本身没有被验证**" —— 危害比"没验证"更大：
+> 我确信自己在验证，实际一直在测一个恒为假的东西。
+
+## 本轮改动
+
+| 文件 | 改动 |
+|---|---|
+| `lib/data/calendar_client.dart` | 删 `_fetchTvmaze`；TMDB 改按 `air_date` 逐天查国产剧；<br>加 `CalendarCategory` / `CalendarDetail` / `fetchPlatforms` / `fetchDetail`；<br>`forWeekdayGrouped`（按类别分组+热度排序）；`platformSearchUrl`；`cnPlatformName` |
+| `lib/widgets/calendar_detail_sheet.dart` | **新增**：详情弹层（对齐豆瓣弹层的信息层级） |
+| `lib/pages/calendar_page.dart` | 整行可点→详情；类别小标题；平台 chip 跳转；TMDB key 输入框 |
+| `lib/pages/profile_page.dart` | 四格可点；地址就地显示延迟；多账号列表；<br>`ProfilePage`→`ConsumerStatefulWidget`；`_statsProvider`→`statsProvider` |
+| `lib/pages/history_page.dart` | 改用 `Resume`；标题/空态改「继续观看」 |
+| `lib/pages/home_shell.dart` | 切 Tab 时 `invalidate` 统计与账号 |
+| `test/calendar_category_test.dart` | **新增** 16 例 |
+| `test/profile_entries_test.dart` | **新增** 16 例 |
+| `test/calendar_client_test.dart` / `calendar_live_test.dart` | 适配源清单变更；缓存测试改**逐源比对** |
+
+## 验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1318 All tests passed!（1287 → 1318，+31）
+check-dev.ps1     21 项全过，退出码 0
+凭据泄漏复查       6 项全无
+```
+
+**反向注入**：本轮 19 个守卫全部注入验证（首轮 6/8 抓到，
+发现 2 处**假守卫** → 补强后 8/8）。发现的两处假守卫：
+· `contains('onTap: () => _openList(')` —— 4 张卡里**任意一张**还在就通过
+  ⇒ 改为断言**出现次数 = 4**
+· `contains("filters: 'IsFavorite'")` —— 把收藏卡改成 `IsPlayed` 仍全绿
+  （`statsProvider` 里还有一处同名 filter 满足了断言）
+  ⇒ 改为断言 `includeTypes` + `filters` **成对**出现
+
+真机（Redmi K40，截图实证）：
+- ✅ 追剧日历：类别分组（动漫 4 / 综艺 6）+ 热度降序（96.4→86.4→32.0→10.9）
+  + 平台（腾讯视频↗ / B站↗ / 爱奇艺↗ / 湖南卫视↗ / 芒果TV↗）+ 平台补查 19/20 条
+- ✅ 详情弹层：简介/导演/主演/类型/国家/平台/集数/首播/更新 + 「去 腾讯视频 观看」
+- ✅ 「我的」四格全可点（4/4 打开列表页）；「继续观看」在「制片公司」之前
+- ✅ 地址就地显示延迟 `<server-A> 57ms`（绿色）
+- ✅ 无崩溃
+
+## 未完成 / 已知限制
+
+1. **「已看分集」只显示剧名，没有集号**（真机观察：全屏都是「星月征途」，
+   用户无法区分是第几集）⇒ 需要在卡片副标题里带 `ParentIndexNumber/IndexNumber`
+2. **腾讯/爱奇艺/优酷无公开接口**（实测三家都是空壳/风控）
+   ⇒ 国产剧集由 TMDB 覆盖，但**不含平台独播剧的完整清单**
+3. **平台只在"当前选中日"懒加载**：切到其它天需再等 2–3s
+4. **多账号未真机验证**：设备上只登录了 1 台（用户需自己加第二台）
+5. **Bangumi 在本机/真机不可达**（服务端 WAF 拦 TLS 指纹）
+6. `libmpv.so` 缺解码器仍需重编

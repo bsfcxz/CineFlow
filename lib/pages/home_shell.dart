@@ -66,7 +66,43 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     _restorePortrait();
   }
 
-  void _switchTab(int i) => setState(() => _index = i);
+  /// 切一级 Tab。
+  ///
+  /// ## ★★ 为什么切到「我的」时要 `invalidate` 统计（真机 bug 驱动）
+  ///
+  /// ### 用户报障
+  /// > "在 cineflow 中点收藏和已观看后好像没有保留在我的中里面"
+  ///
+  /// ### 根因（两条叠加，缺一不会出问题）
+  /// ① `IndexedStack` **让三个页面全部常驻**（这是它的设计目的：保留
+  ///    滚动位置）。⇒ 「我的」页**永远不会 rebuild**，
+  ///    它 `watch` 的 provider 也就不会被重新订阅。
+  /// ② `_statsProvider` 是 `FutureProvider.autoDispose` —— 只有
+  ///    "没人监听"时才会被销毁重算。而 `IndexedStack` 让它**一直被监听**
+  ///    ⇒ **统计数字永远停在首次进入时的值**。
+  ///
+  /// ⇒ 结果：用户在详情页点了收藏（服务端**确实写成功** —— 已实测
+  ///   `POST /Users/{uid}/FavoriteItems/{id}` 后 `IsFavorite=True`），
+  ///   但切回「我的」看到的还是旧数字，看起来"没保留"。
+  ///
+  /// ### 为什么用 invalidate 而不是改 `IndexedStack`
+  /// `IndexedStack` 的"常驻"是**要保留的特性**（首页滚动位置、
+  /// 排行榜分组选择都不该被打回初始态）。只需在**切到该 Tab 时**
+  /// 主动刷新数据即可。这也符合"数据是别人的、UI 只管展示"的分层。
+  ///
+  /// ### 边界
+  /// `ref.invalidate` 对未监听的 provider 是**安全空操作**（Riverpod 语义），
+  /// 所以这里不需要判断"当前在不在我的页"。
+  void _switchTab(int i) {
+    setState(() => _index = i);
+    // 「我的」= index 2（见 `_pages`）
+    if (i == 2) {
+      ref.invalidate(statsProvider);
+      ref.invalidate(accountsProvider);
+    }
+    // 首页 = index 0：继续观看/最近添加也可能因播放而变
+    if (i == 0) ref.invalidate(homeProvider);
+  }
 
   @override
   Widget build(BuildContext context) {

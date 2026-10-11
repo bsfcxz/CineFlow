@@ -1,6 +1,7 @@
 /// 我的 —— 用户头卡（真实头像/服务器）+ 观看统计（Emby 真实数据）+ 设置组 + 退出
 library;
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -13,6 +14,8 @@ import 'history_page.dart';
 import 'playback_settings_page.dart';
 import 'kernel_settings_page.dart';
 import '../data/emby_provider.dart';
+import '../data/media_provider.dart';
+import '../data/session_store.dart';
 import '../data/models.dart';
 import '../pan115/pan115_browser_page.dart';
 import '../pan115/pan115_store.dart';
@@ -33,7 +36,7 @@ class _Stats {
       this.favorites, this.moviesTotal, this.seriesTotal);
 }
 
-final _statsProvider = FutureProvider.autoDispose<_Stats>((ref) async {
+final statsProvider = FutureProvider.autoDispose<_Stats>((ref) async {
   final api = ref.watch(embyApiProvider);
   if (api == null) throw const MediaException('未登录');
 
@@ -55,13 +58,38 @@ final _statsProvider = FutureProvider.autoDispose<_Stats>((ref) async {
       results[5]);
 });
 
-class ProfilePage extends ConsumerWidget {
+class ProfilePage extends ConsumerStatefulWidget {
   const ProfilePage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ProfilePage> createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends ConsumerState<ProfilePage> {
+  /// 服务器延迟测试结果（**就地显示**，见 `_testLatency`）。
+  ///
+  /// ## 为什么是 State 而不是 SnackBar（实测驱动）
+  /// 原来是 `ScaffoldMessenger.showSnackBar` —— 3 秒后消失。
+  /// 两个问题：
+  /// · **UX**：延迟是"状态"不是"一次性通知"，用户点完想再看就没了
+  /// · **可验证性**：`uiautomator dump` 要 2–4 秒，SnackBar 只活 3 秒
+  ///   ⇒ 我连续 4 轮真机验证都抓不到它（测试与实现赛跑）。
+  ///   这正是 §8.4 说的"验证手段本身没被验证"。
+  int? _latencyMs;
+
+  /// 延迟测试中的标记（显示"测试中…"）。
+  bool _testing = false;
+
+  /// 测试失败的文案（`null` = 没有失败）。
+  String? _latencyError;
+
+  /// 已测过的服务器（避免切换页面后重复测）。
+  String? _latencyServerUrl;
+
+  @override
+  Widget build(BuildContext context) {
     final session = ref.watch(sessionProvider).value;
-    final stats = ref.watch(_statsProvider);
+    final stats = ref.watch(statsProvider);
 
     return Scaffold(
       backgroundColor: Cf.bg,
@@ -71,8 +99,10 @@ class ProfilePage extends ConsumerWidget {
           children: [
             SizedBox(height: 12),
             _headCard(context, ref, session, stats),
+            // ★ 多账号列表（只有 >1 台时才显示）
+            _accountList(context, ref),
             SizedBox(height: 12),
-            _statGrid(stats),
+            _statGrid(context, stats),
             SizedBox(height: 14),
             _settingsGroup([
               // ★ 多账号与资源整合（放在最前 —— 它是"资源来源"级别的设置）
@@ -113,11 +143,16 @@ class ProfilePage extends ConsumerWidget {
                       builder: (_) => const Pan115BrowserPage()),
                 ),
               ),
+              // ★ 「继续观看」放在这里（用户要求"将下面的播放历史移动到收藏后面"）
+              //
+              // ## 为什么改名（从"播放历史"→"继续观看"）
+              // 用户明确："播放历史对应的内容应该是 emby 服务端的继续观看内容"。
+              // 旧名字 + 旧数据源（`Filters=IsPlayed` = 已看完）会误导用户。
               _SettingItem(
-                icon: Icons.history_rounded,
+                icon: Icons.play_circle_outline_rounded,
                 color: const Color(0xFFFFB347),
-                title: '播放历史',
-                sub: '最近观看的全部记录',
+                title: '继续观看',
+                sub: '服务端的续播列表 · 从上次位置接着看',
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const HistoryPage()),
@@ -191,10 +226,16 @@ class ProfilePage extends ConsumerWidget {
                 //（`ServerListPage` + `loader: api.getUpcoming`）——
                 // 数据只来自**当前那一台 Emby**，且没有周一到周日的视图。
                 //
-                // ## 改之后
-                // `CalendarPage`：周一~周日横向选择条 + 每天更新列表，
-                // 数据来自 Bangumi / TVmaze / B站 / TMDB 四个源（并行 + 失败隔离）。
-                sub: '周一~周日 · 番剧 / 美剧 / 国创更新',
+                // ## 改之后（按用户"聚焦国内"的要求调整过）
+                // `CalendarPage`：周一~周日横向选择条 + 每天更新列表。
+                // 数据源：
+                // · **TMDB**（主力）—— `discover/tv` 按 `air_date` 逐天查
+                //   国产剧；实测每天 20 条 `lang=zh`
+                // · **B站**（补充）—— 仅番剧/国创（**动漫**）；
+                //   实测 B站**没有国产真人剧**
+                // · ~~TVmaze~~ 已按用户要求删除
+                // · 腾讯/爱奇艺/优酷**不做**（实测接口返回空壳/风控）
+                sub: '周一~周日 · 国产剧集 / 动漫更新（TMDB + B站）',
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const CalendarPage()),
@@ -332,16 +373,28 @@ class ProfilePage extends ConsumerWidget {
                     ),
                   ),
                   SizedBox(width: 6),
+                  // ★ 服务器地址**可点** ⇒ 测延迟（用户要求）
+                  //
+                  // ## 为什么用 `/System/Info/Public` 测（实测驱动）
+                  // · `/System/Info/Public` → HTTP 200（s1: 536ms / s2: 53ms）
+                  // · `/Users/Me`          → HTTP **500** ← 不能用
+                  // 且该端点**不需要 token** ⇒ 即使凭据失效也能测"网络通不通"
+                  // （能区分"服务器挂了"与"登录态过期"）。
                   Expanded(
-                    child: Text(
-                      session == null
-                          ? '未连接服务器'
-                          : (Uri.tryParse(session.serverUrl)?.host ??
-                              session.serverUrl),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 11, color: Cf.text3),
+                    child: _AddressChip(
+                      serverUrl: session?.serverUrl,
+                      // ⚠️ 只有"测的就是当前这台"时才显示结果 ——
+                      //    否则切换账号后会显示上一台的数据（错配）
+                      latencyMs: _latencyServerUrl == session?.serverUrl
+                          ? _latencyMs
+                          : null,
+                      testing: _testing,
+                      error: _latencyServerUrl == session?.serverUrl
+                          ? _latencyError
+                          : null,
+                      onTap: session == null
+                          ? null
+                          : () => _testLatency(context, ref, session),
                     ),
                   ),
                 ]),
@@ -385,46 +438,285 @@ class ProfilePage extends ConsumerWidget {
         ),
       );
 
-  Widget _statGrid(AsyncValue<_Stats> stats) {
+  /// **测服务器延迟**（点击地址触发，用户要求）。
+  ///
+  /// ## 为什么用 `/System/Info/Public`（实测驱动）
+  /// | 端点 | 实测 |
+  /// |---|---|
+  /// | `/System/Info/Public` | ✅ HTTP 200（s1: 536ms / s2: 53ms） |
+  /// | `/Users/Me` | ❌ HTTP **500** ← 不能用 |
+  ///
+  /// 且该端点**不需要 token** ⇒ 能区分两种情况：
+  /// · 连不上 ⇒ "服务器不可达"（网络/DNS/端口问题）
+  /// · 连上但 200 ⇒ 服务器活着（若此时 App 内其他请求失败 ⇒ 是登录态问题）
+  ///
+  /// ## 为什么测 3 次取**最小值**
+  /// 单次测的是"第一个请求"（含 TLS 握手/DNS 缓存冷启动），会偏高。
+  /// 取 3 次最小值更接近真实带宽延迟（这也是 ping 类工具的常见做法）。
+  Future<void> _testLatency(
+      BuildContext context, WidgetRef ref, MediaSession session) async {
+    if (_testing) return;
+    setState(() {
+      _testing = true;
+      _latencyError = null;
+      _latencyMs = null;
+      _latencyServerUrl = session.serverUrl;
+    });
+    final base = session.serverUrl.replaceAll(RegExp(r'/+$'), '');
+    final dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 8),
+      receiveTimeout: const Duration(seconds: 8),
+      // 不校验状态码 —— 拿到响应就算"通"（我们要的是耗时）
+      validateStatus: (_) => true,
+    ));
+    final times = <int>[];
+    String? err;
+    for (var i = 0; i < 3; i++) {
+      final sw = Stopwatch()..start();
+      try {
+        await dio.get<String>('$base/System/Info/Public',
+            options: Options(responseType: ResponseType.plain));
+        sw.stop();
+        times.add(sw.elapsedMilliseconds);
+      } catch (e) {
+        sw.stop();
+        err = e.toString();
+        break;
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _testing = false;
+      if (times.isEmpty) {
+        // 失败也要显示 —— "服务器不可达"同样是用户需要的信息
+        _latencyError = err?.contains('timeout') ?? false ? '超时' : '不可达';
+      } else {
+        _latencyMs = times.reduce((a, b) => a < b ? a : b);
+      }
+    });
+  }
+
+  /// 多账号列表（用户要求"多账号聚合地址和内容没增加进去"）。
+  ///
+  /// ## 为什么要单独列出来
+  /// 头部卡片只显示 `sessionProvider`（**当前**会话）⇒ 登录了多台时
+  /// 用户看不到另外几台。这里把 `accountsProvider` 的**全部**账号列出来，
+  /// 每台一行（平台色点 + 名称 + 地址），当前那台高亮。
+  ///
+  /// ## 实测背景
+  /// 设备上目前只登录了 **1 台**（`已登录 1 台`）。**只有 1 台时不显示
+  /// 本区块**（避免视觉冗余）—— 用户加第二台后自动出现。
+  Widget _accountList(BuildContext context, WidgetRef ref) {
+    final accounts = ref.watch(accountsProvider);
+    return accounts.maybeWhen(
+      data: (list) {
+        if (list.length <= 1) return const SizedBox.shrink();
+        final cur = ref.watch(sessionProvider).value;
+        return Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text('已登录 ${list.length} 台服务器',
+                    style: TextStyle(fontSize: 11, color: Cf.text3)),
+              ),
+              for (final a in list)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(children: [
+                    Icon(
+                      (cur != null &&
+                              SessionStore.accountKey(cur) ==
+                                  SessionStore.accountKey(a))
+                          ? Icons.check_circle_rounded
+                          : Icons.circle_outlined,
+                      size: 13,
+                      color: (cur != null &&
+                              SessionStore.accountKey(cur) ==
+                                  SessionStore.accountKey(a))
+                          ? Cf.accent
+                          : Cf.text3,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '${a.user.name} · '
+                        '${Uri.tryParse(a.serverUrl)?.host ?? a.serverUrl}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11, color: Cf.text2),
+                      ),
+                    ),
+                  ]),
+                ),
+            ],
+          ),
+        );
+      },
+      orElse: () => const SizedBox.shrink(),
+    );
+  }
+
+  /// 四张统计卡 —— **全部可点**，点进去看具体内容（用户要求）。
+  ///
+  /// ## ★★ 用户原话
+  /// > "已看电影可以、追剧中、已看分级、收藏都应该可以点击且能看到具体内容"
+  ///
+  /// ## 每张卡对应的**服务端查询**（全部实测验证过）
+  /// | 卡 | 查询 | 实测 |
+  /// |---|---|---|
+  /// | 已看电影 | `IncludeItemTypes=Movie&Filters=IsPlayed` | ✅ s2: 11 条 |
+  /// | 追剧中 | `IncludeItemTypes=Series&Filters=IsUnplayed` | ✅ s2: 5322 |
+  /// | 已看分集 | `IncludeItemTypes=Episode&Filters=IsPlayed` | ✅ s2: 916 |
+  /// | 收藏 | `IncludeItemTypes=Movie,Series,Episode&Filters=IsFavorite` | ✅ s2: 2 条（黑夜告白/战旗如画） |
+  ///
+  /// ⚠️ 全部走 `/Users/{uid}/Items`（**不带 `/emby/` 前缀**也通，
+  /// 实测两种都 HTTP 200；带前缀更稳妥，见 `getItems` 的实现）。
+  Widget _statGrid(BuildContext context, AsyncValue<_Stats> stats) {
     return stats.when(
-      loading: () => SizedBox(height: 66),
+      loading: () => const SizedBox(height: 66),
       error: (_, _) => const SizedBox.shrink(),
       data: (s) => Row(children: [
-        _statCard('${s.moviesWatched}', '已看电影'),
-        _statCard('${s.seriesWatching}', '追剧中'),
-        _statCard('${s.episodesWatched}', '已看分集'),
-        _statCard('${s.favorites}', '收藏'),
+        _statCard(
+          '${s.moviesWatched}',
+          '已看电影',
+          onTap: () => _openList(
+            ctx: context,
+            title: '已看电影',
+            emptyIcon: Icons.movie_outlined,
+            emptyText: '还没有标记为看过的电影',
+            loader: (api) => api.getItems(
+              includeTypes: 'Movie',
+              filters: 'IsPlayed',
+              sortBy: 'DatePlayed',
+              sortOrder: 'Descending',
+              limit: 200,
+            ).then((p) => p.items),
+          ),
+        ),
+        _statCard(
+          '${s.seriesWatching}',
+          '追剧中',
+          onTap: () => _openList(
+            ctx: context,
+            title: '追剧中',
+            emptyIcon: Icons.live_tv_outlined,
+            emptyText: '没有未看完的剧集',
+            loader: (api) => api.getItems(
+              includeTypes: 'Series',
+              filters: 'IsUnplayed',
+              sortBy: 'DatePlayed',
+              sortOrder: 'Descending',
+              limit: 200,
+            ).then((p) => p.items),
+          ),
+        ),
+        _statCard(
+          '${s.episodesWatched}',
+          '已看分集',
+          onTap: () => _openList(
+            ctx: context,
+            title: '已看分集',
+            emptyIcon: Icons.checklist_rounded,
+            emptyText: '还没有看过的分集',
+            loader: (api) => api.getItems(
+              includeTypes: 'Episode',
+              filters: 'IsPlayed',
+              sortBy: 'DatePlayed',
+              sortOrder: 'Descending',
+              limit: 200,
+            ).then((p) => p.items),
+          ),
+        ),
+        _statCard(
+          '${s.favorites}',
+          '收藏',
+          onTap: () => _openList(
+            ctx: context,
+            title: '收藏',
+            emptyIcon: Icons.favorite_border_rounded,
+            emptyText: '还没有收藏任何内容',
+            loader: (api) => api.getItems(
+              includeTypes: 'Movie,Series,Episode',
+              filters: 'IsFavorite',
+              sortBy: 'DateCreated',
+              sortOrder: 'Descending',
+              limit: 200,
+            ).then((p) => p.items),
+          ),
+        ),
       ]),
     );
   }
 
-  Widget _statCard(String value, String label) {
-    return Expanded(
-      child: Container(
-        margin: const EdgeInsets.only(right: 10),
-        padding: const EdgeInsets.symmetric(vertical: 11),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: Cf.surface,
-          border: Border.all(color: Cf.border),
+  /// 打开"某个统计项的具体内容"列表页（复用 `ServerListPage`）。
+  ///
+  /// ## 为什么复用而不新建页面
+  /// `ServerListPage` 已经处理了加载/空态/错误态/点卡片进详情
+  ///（制片公司、服务端播放列表、追剧日历都用它）
+  /// ⇒ 新建一个只会重复这些逻辑，且空态文案容易写漏。
+  void _openList({
+    required BuildContext ctx,
+    required String title,
+    required IconData emptyIcon,
+    required String emptyText,
+    required Future<List<MediaItem>> Function(MediaProvider api) loader,
+  }) {
+    Navigator.push(
+      ctx,
+      MaterialPageRoute(
+        builder: (_) => ServerListPage(
+          title: title,
+          emptyIcon: emptyIcon,
+          emptyText: emptyText,
+          loader: loader,
         ),
-        child: Column(children: [
-          // 200% 字号下数字（如 5289）会拆行——等比缩放保持单行
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Text(value,
-                maxLines: 1,
-                style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w900,
-                    color: Cf.accent)),
+      ),
+    );
+  }
+
+  Widget _statCard(String value, String label, {VoidCallback? onTap}) {
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        // ★ 可点卡片必须有按压反馈（§6.4.1：可点区域要能感知）
+        child: Container(
+          margin: const EdgeInsets.only(right: 10),
+          padding: const EdgeInsets.symmetric(vertical: 11),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(Cf.radiusMd),
+            color: Cf.surface,
+            border: Border.all(color: Cf.border),
           ),
-          const SizedBox(height: 2),
-          Text(label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 9, color: Cf.text3)),
-        ]),
+          child: Column(children: [
+            // 200% 字号下数字（如 5289）会拆行——等比缩放保持单行
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(value,
+                  maxLines: 1,
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                      color: Cf.accent)),
+            ),
+            const SizedBox(height: 2),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 9, color: Cf.text3)),
+                // 一个小箭头暗示"可点"（否则用户不知道能点）
+                if (onTap != null)
+                  Icon(Icons.chevron_right_rounded,
+                      size: 11, color: Cf.text3),
+              ],
+            ),
+          ]),
+        ),
       ),
     );
   }
@@ -534,6 +826,91 @@ class _SettingItem extends StatelessWidget {
           const Icon(Icons.chevron_right_rounded,
               size: Cf.iconMd, color: Cf.text3),
         ]),
+      ),
+    );
+  }
+}
+
+/// **服务器地址**（可点 ⇒ 测延迟）。
+///
+/// 抽成独立组件的原因：`_headCard` 已经很长（头像+名字+地址+统计），
+/// 把"可点 + 提示点击"的逻辑塞进去会更难读。
+class _AddressChip extends StatelessWidget {
+  const _AddressChip({
+    required this.serverUrl,
+    this.onTap,
+    this.latencyMs,
+    this.testing = false,
+    this.error,
+  });
+
+  final String? serverUrl;
+  final VoidCallback? onTap;
+
+  /// 延迟毫秒（null = 还没测）。
+  final int? latencyMs;
+
+  /// 正在测（显示"测试中…"）。
+  final bool testing;
+
+  /// 测试失败文案（`null` = 没失败）。
+  final String? error;
+
+  /// 延迟的颜色分级（给用户"快/慢"的直观感受）。
+  ///
+  /// 阈值取常见经验值：<100ms 很好 / <300ms 可用 / 更高偏慢。
+  Color _latencyColor(int ms) {
+    if (ms < 100) return Cf.success;
+    if (ms < 300) return Cf.warn;
+    return const Color(0xFFFF6B6B);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final url = serverUrl;
+    if (url == null) {
+      return Text('未连接服务器',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 11, color: Cf.text3));
+    }
+    final host = Uri.tryParse(url)?.host ?? url;
+
+    // 右侧状态：测试中 / 结果 / 失败 / 只显示"可点"提示
+    final Widget tail;
+    if (testing) {
+      tail = Text('测试中…',
+          style: TextStyle(fontSize: 10, color: Cf.text3));
+    } else if (latencyMs case final ms?) {
+      tail = Text('${ms}ms',
+          style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: _latencyColor(ms)));
+    } else if (error case final e?) {
+      tail = Text(e, style: TextStyle(fontSize: 10, color: Cf.warn));
+    } else {
+      tail = Icon(Icons.speed_rounded, size: 12, color: Cf.text3);
+    }
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(Cf.radiusXs),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(host,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: Cf.text3)),
+            ),
+            const SizedBox(width: 4),
+            tail,
+          ],
+        ),
       ),
     );
   }

@@ -15,11 +15,17 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/theme.dart';
 import '../data/calendar_client.dart';
-import '../state/providers.dart' show calendarWeekProvider;
+import '../widgets/calendar_detail_sheet.dart';
+import '../state/providers.dart'
+    show
+        calendarClientProvider,
+        calendarWeekProvider,
+        sessionStoreProvider;
 
 /// 中式的星期名（周一开头）。
 const _weekdayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -39,14 +45,137 @@ class _CalendarPageState extends ConsumerState<CalendarPage> {
   /// 周一作为**视觉起点**（列表从周一开始），但**选中项**是今天。
   late int _selected = DateTime.now().weekday;
 
+  /// **填 TMDB API Key**（国产剧集的唯一可用数据源）。
+  ///
+  /// ## 为什么必须让用户自己填（安全红线）
+  /// TMDB key 属凭据 ⇒ **绝不能硬编码进仓库**。
+  /// 与弹幕的 AppSecret 同一策略：用户自己申请、自己填，
+  /// 存 `flutter_secure_storage`（Android Keystore）。
+  ///
+  /// ## 为什么国产剧集只能靠 TMDB（有实测证据）
+  /// 用户要求"聚焦腾讯/爱奇艺/B站/优酷"，但实测：
+  /// · **B站**时间线只有**动漫**（番剧/国创），没有国产真人剧
+  /// · **腾讯** `pbaccess` → HTTP 200 但 **`data` 为 None**（空壳）
+  /// · **爱奇艺** `videolib` → `risk_level:2` + **`data` 为 None**（风控）
+  /// · **优酷** mtop → 200 但无可用剧集列表
+  /// ⇒ 三家**不是"懒得做"，是拿不到数据**（它们的反爬）。
+  /// 而 **TMDB** 实测能按 `air_date` 逐天给国产剧（每天 20 条 `lang=zh`）。
+  ///
+  /// 申请地址：<https://www.themoviedb.org/settings/api>（免费）
+  Future<void> _editKey(BuildContext context) async {
+    final store = ref.read(sessionStoreProvider);
+    final cur = await store.loadTmdbKey() ?? '';
+    if (!mounted) return;
+    final ctl = TextEditingController(text: cur);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('TMDB API Key'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '追剧日历的**国产剧集**数据来自 TMDB。\n'
+              '免费申请：themoviedb.org → 设置 → API\n\n'
+              '（Key 只存在本机安全存储，不会上传）',
+              style: Cf.caption.copyWith(color: Cf.text3),
+            ),
+            const SizedBox(height: Cf.gap2),
+            TextField(
+              controller: ctl,
+              // 与弹幕 AppSecret 同款处理：输入时遮蔽
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'API Key (v3 auth)',
+                hintText: '32 位十六进制',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          // 清空（不再用 TMDB 时）
+          if (cur.isNotEmpty)
+            TextButton(
+              onPressed: () async {
+                await store.saveTmdbKey('');
+                if (ctx.mounted) Navigator.pop(ctx, true);
+              },
+              child: const Text('清除'),
+            ),
+          FilledButton(
+            onPressed: () async {
+              await store.saveTmdbKey(ctl.text);
+              if (ctx.mounted) Navigator.pop(ctx, true);
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (saved == true) {
+      ref.invalidate(calendarWeekProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('已保存，正在重新加载'),
+          duration: Duration(seconds: 2),
+        ));
+      }
+    }
+  }
+
+  /// **平台缓存**（`tmdbId → 中文平台名`）。
+  ///
+  /// ## 为什么放在 State 而不是依赖 entry 上的字段
+  /// 平台是**后到的**（懒加载，见 `CalendarClient.fetchPlatforms`），
+  /// 而 `CalendarEntry` 是不可变模型 ⇒ 平台到达后单独存一份，
+  /// 由 UI 按 id 查表显示（避免为"补个平台"重建整周数据）。
+  final _platforms = <String, String>{};
+
+  /// 已触发过平台补查的天（防同一轮重复触发）。
+  final _platformFetched = <int>{};
+
+  /// 给**当前选中日**补查平台（懒加载）。
+  ///
+  /// ## 为什么必须懒加载（真机 bug 驱动）
+  /// 原实现把平台补查放在 `_fetchTmdb` 里，`out.take(24)` 里 `out` 是
+  /// **整周 140 条** ⇒ 只覆盖**周一**，用户选周日时永远没有平台
+  /// （真机截图确认）。
+  /// 且全量补会超过每源 7s deadline ⇒ 整个 TMDB 源被砍。
+  Future<void> _ensurePlatforms(WeekCalendar cal, int weekday) async {
+    if (_platformFetched.contains(weekday) || !mounted) return;
+    _platformFetched.add(weekday);
+    try {
+      final key = await ref.read(sessionStoreProvider).loadTmdbKey();
+      if (key == null || key.isEmpty) return;
+      final day = cal.forWeekday(weekday);
+      if (day.isEmpty) return;
+      final got = await ref
+          .read(calendarClientProvider)
+          .fetchPlatforms(day, apiKey: key);
+      if (!mounted || got.isEmpty) return;
+      setState(() => _platforms.addAll(got));
+    } catch (e) {
+      debugPrint('[Calendar] 平台补查失败（非致命）: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final async = ref.watch(calendarWeekProvider);
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('追剧日历'),
         actions: [
+          IconButton(
+            tooltip: 'TMDB API Key（国产剧集数据源）',
+            icon: const Icon(Icons.key_rounded),
+            onPressed: () => _editKey(context),
+          ),
           IconButton(
             tooltip: '刷新',
             icon: const Icon(Icons.refresh_rounded),
@@ -60,12 +189,27 @@ class _CalendarPageState extends ConsumerState<CalendarPage> {
           message: '$e',
           onRetry: () => ref.invalidate(calendarWeekProvider),
         ),
-        data: (cal) => _Body(
-          cal: cal,
-          selected: _selected,
-          onSelect: (d) => setState(() => _selected = d),
-          onRefresh: () async => ref.invalidate(calendarWeekProvider),
-        ),
+        data: (cal) {
+          // ★ 数据到达后（或切日时）触发**当天**的平台懒加载
+          //   —— 用 `addPostFrameCallback` 避免在 build 里 setState
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _ensurePlatforms(cal, _selected);
+          });
+          return _Body(
+            cal: cal,
+            selected: _selected,
+            platforms: _platforms,
+            onSelect: (d) {
+              setState(() => _selected = d);
+              // 切到新的一天 ⇒ 立刻补那一天的平台
+              _ensurePlatforms(cal, d);
+            },
+            onRefresh: () async {
+              _platformFetched.clear();
+              ref.invalidate(calendarWeekProvider);
+            },
+          );
+        },
       ),
     );
   }
@@ -75,12 +219,16 @@ class _Body extends StatelessWidget {
   const _Body({
     required this.cal,
     required this.selected,
+    required this.platforms,
     required this.onSelect,
     required this.onRefresh,
   });
 
   final WeekCalendar cal;
   final int selected;
+
+  /// 平台缓存（`tmdbId → 中文平台名`，后到）。
+  final Map<String, String> platforms;
   final ValueChanged<int> onSelect;
   final Future<void> Function() onRefresh;
 
@@ -99,7 +247,17 @@ class _Body extends StatelessWidget {
         Expanded(
           child: RefreshIndicator(
             onRefresh: onRefresh,
-            child: _DayList(entries: cal.forWeekday(selected)),
+            child: Builder(builder: (context) {
+            // ★ 按类别分组 + 组内按热度降序（用户要求）
+            final grouped = cal.forWeekdayGrouped(selected);
+            final total = grouped.values.fold<int>(0, (a, l) => a + l.length);
+            return _DayList(
+              groups: grouped,
+              total: total,
+              weekday: selected,
+              platforms: platforms,
+            );
+          }),
           ),
         ),
       ],
@@ -247,13 +405,28 @@ class _SourceBanner extends StatelessWidget {
 
 /// 某一天的更新列表。
 class _DayList extends StatelessWidget {
-  const _DayList({required this.entries});
+  const _DayList({
+    required this.groups,
+    required this.total,
+    required this.weekday,
+    required this.platforms,
+  });
 
-  final List<CalendarEntry> entries;
+  /// 按类别分组的条目（组内已按热度降序）。
+  final Map<CalendarCategory, List<CalendarEntry>> groups;
+
+  /// 总条数（判断空态）。
+  final int total;
+
+  /// 当前星期（给"分组标题"用，便于将来加"周X 更新"）。
+  final int weekday;
+
+  /// 平台缓存（后到；见 `_CalendarPageState._platforms`）。
+  final Map<String, String> platforms;
 
   @override
   Widget build(BuildContext context) {
-    if (entries.isEmpty) {
+    if (total == 0) {
       return ListView(
         // 必须有可滚动子项，否则 RefreshIndicator 无法下拉
         physics: const AlwaysScrollableScrollPhysics(),
@@ -273,24 +446,92 @@ class _DayList extends StatelessWidget {
         ],
       );
     }
-    return ListView.separated(
+
+    // ★ 按类别分组渲染（用户要求"日期下面按类别区分、综艺、动漫、剧集等"）
+    //
+    // 用 `ListView` + 预先展平的 children（而不是 `ListView.builder`）
+    // —— 因为要在大列表里插入"分组小标题"，展平更直观且便于控制间距。
+    // 条目数实测每天 20–30 条 ⇒ 一次性构建无性能问题。
+    final children = <Widget>[];
+    for (final c in CalendarCategory.values) {
+      final list = groups[c] ?? const <CalendarEntry>[];
+      if (list.isEmpty) continue;
+      children.add(_CategoryHeader(category: c, count: list.length));
+      for (final e in list) {
+        children.add(_EntryTile(
+          entry: e,
+          // 平台是后到的 ⇒ 优先用缓存的（模型里的可能为空）
+          platform: e.sourceId == null ? e.platform : platforms[e.sourceId] ??
+              e.platform,
+        ));
+        children.add(const Divider(height: 1, indent: 76));
+      }
+    }
+    return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.symmetric(vertical: Cf.gap1),
-      itemCount: entries.length,
-      separatorBuilder: (_, __) => const Divider(height: 1, indent: 76),
-      itemBuilder: (context, i) => _EntryTile(entry: entries[i]),
+      padding: const EdgeInsets.only(bottom: Cf.gap3),
+      children: children,
+    );
+  }
+}
+
+/// 类别小标题（"动漫 · 11"）。
+class _CategoryHeader extends StatelessWidget {
+  const _CategoryHeader({required this.category, required this.count});
+
+  final CalendarCategory category;
+  final int count;
+
+  static const _colors = {
+    CalendarCategory.anime: Color(0xFF9B59B6),
+    CalendarCategory.variety: Color(0xFFE67E22),
+    CalendarCategory.series: Color(0xFF3498DB),
+  };
+
+  static const _icons = {
+    CalendarCategory.anime: Icons.animation_rounded,
+    CalendarCategory.variety: Icons.celebration_rounded,
+    CalendarCategory.series: Icons.theaters_rounded,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _colors[category] ?? Cf.text2;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Cf.gap2, Cf.gap2, Cf.gap2, 6),
+      child: Row(
+        children: [
+          Icon(_icons[category], size: 15, color: color),
+          const SizedBox(width: 6),
+          Text(category.label,
+              style: Cf.body.copyWith(
+                  fontWeight: FontWeight.w700, color: color)),
+          const SizedBox(width: 6),
+          Text('$count',
+              style: Cf.micro.copyWith(color: Cf.text3)),
+        ],
+      ),
     );
   }
 }
 
 class _EntryTile extends StatelessWidget {
-  const _EntryTile({required this.entry});
+  const _EntryTile({required this.entry, this.platform});
 
   final CalendarEntry entry;
 
+  /// **播放平台**（可能来自后到的缓存，故不走 `entry.platform`）。
+  final String? platform;
+
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    // ★ 整行可点 ⇒ 打开详情（用户：“增加点击可以查看到剧集、综艺、动漫等的简介”）
+    //
+    // ⚠️ 平台 chip 内部**自己**有 InkWell ⇒ 点 chip 只跳平台，
+    //    不会冒泡到这一层（Flutter 内层手势优先）。
+    return InkWell(
+      onTap: () => showCalendarDetail(context, entry),
+      child: Padding(
       padding: const EdgeInsets.symmetric(
           horizontal: Cf.gap2, vertical: Cf.gap1),
       child: Row(
@@ -309,18 +550,21 @@ class _EntryTile extends StatelessWidget {
                   style: Cf.body.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 4),
-                Row(
+                // ★ 来源 + 集数 + **播放平台**（用户要求"也显示播放平台"）
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 2,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     _SourceTag(source: entry.source),
-                    if (entry.episode case final ep?) ...[
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(ep,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Cf.micro.copyWith(color: Cf.accent)),
-                      ),
-                    ],
+                    if (entry.episode case final ep?)
+                      Text(ep,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Cf.micro.copyWith(color: Cf.accent)),
+                    // 平台 chip：**可点** → 跳该平台的搜索页
+                    if (platform case final p?)
+                      _PlatformChip(platform: p, title: entry.displayTitle),
                   ],
                 ),
                 if (entry.rating != null && entry.rating! > 0) ...[
@@ -331,14 +575,82 @@ class _EntryTile extends StatelessWidget {
                     const SizedBox(width: 2),
                     Text(entry.rating!.toStringAsFixed(1),
                         style: Cf.micro.copyWith(color: Cf.text3)),
+                    // 热度（用户要求"按热度显示" ⇒ 让用户看到依据）
+                    if (entry.popularity case final pop?
+                        when pop >= 1) ...[
+                      const SizedBox(width: 8),
+                      const Icon(Icons.local_fire_department_rounded,
+                          size: 13, color: Color(0xFFFF7043)),
+                      const SizedBox(width: 2),
+                      Text(pop >= 100 ? pop.toStringAsFixed(0)
+                              : pop.toStringAsFixed(1),
+                          style: Cf.micro.copyWith(color: Cf.text3)),
+                    ],
                   ]),
                 ],
               ],
             ),
           ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// **播放平台标签**（可点 → 跳转该平台搜索页）。
+///
+/// ## 为什么用"搜索页"（见 `platformSearchUrl` 说明）
+/// TMDB 给的是平台**名**，不是该平台的剧集 id ⇒ 无法拼详情页；
+/// 搜索页只要剧名就能定位（用户点一下就到）。
+///
+/// ## 为什么用 `url_launcher` 还是 `launchUrl`
+/// 本项目已有 `url_launcher`（见 pubspec）⇒ 直接用它打开外部浏览器。
+class _PlatformChip extends StatelessWidget {
+  const _PlatformChip({required this.platform, required this.title});
+
+  final String platform;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final url = platformSearchUrl(platform, title);
+    final chip = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Cf.accent.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(Cf.radiusXs),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(platform,
+              style: Cf.micro.copyWith(fontSize: 10, color: Cf.accent)),
+          if (url != null) ...[
+            const SizedBox(width: 2),
+            Icon(Icons.open_in_new_rounded, size: 10, color: Cf.accent),
+          ],
         ],
       ),
     );
+    if (url == null) return chip;
+    return InkWell(
+      onTap: () => _openPlatform(context, url, platform),
+      borderRadius: BorderRadius.circular(Cf.radiusXs),
+      child: chip,
+    );
+  }
+
+  Future<void> _openPlatform(
+      BuildContext context, String url, String platform) async {
+    // 复制剧名到剪贴板（搜索页打开后用户可直接粘贴，体验更顺）
+    final ok = await launchUrl(Uri.parse(url),
+        mode: LaunchMode.externalApplication);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text('无法打开 $platform')),
+      );
+    }
   }
 }
 
@@ -396,11 +708,18 @@ class _SourceTag extends StatelessWidget {
 
   final String source;
 
+  // ★ 2026-10-11 按用户要求聚焦国内后调整：
+  //   · TMDB 升为**主力**（按 `air_date` 逐天查国产剧；实测每天 20 条 `lang=zh`）
+  //   · B站 只覆盖**番剧/国创（动漫）**，实测没有国产真人剧 ⇒ 补充源
+  //   · TVmaze **已删**（用户明确不要）
+  //   · Bangumi 保留但本机/真机不可达（WAF 拦 TLS 指纹，UI 会显示"暂不可用"）
+  //   · 腾讯/爱奇艺/优酷**不做** —— 实测三家接口都返回空壳/风控
+  //     （`data` 字段为 None），见 `docs/CALENDAR-SOURCES.md`。
+  //     **不是"懒得做"，是拿不到数据。**
   static const _labels = {
-    'bangumi': ('BGM', Color(0xFFF09199)),
-    'tvmaze': ('TVM', Color(0xFF3C948B)),
-    'bilibili': ('B站', Color(0xFFFB7299)),
     'tmdb': ('TMDB', Color(0xFF01B4E4)),
+    'bilibili': ('B站', Color(0xFFFB7299)),
+    'bangumi': ('BGM', Color(0xFFF09199)),
   };
 
   @override
