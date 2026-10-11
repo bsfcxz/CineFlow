@@ -44,6 +44,12 @@ class _FakeStore implements SessionStore {
   Future<DanmakuConfig> loadDanmakuConfig() async => const DanmakuConfig();
   @override
   Future<void> saveDanmakuConfig(DanmakuConfig c) async {}
+
+  // 追剧日历的 TMDB key：测试里回 null（跳过 TMDB 源，不碰安全存储）
+  @override
+  Future<String?> loadTmdbKey() async => null;
+  @override
+  Future<void> saveTmdbKey(String key) async {}
 }
 
 void main() {

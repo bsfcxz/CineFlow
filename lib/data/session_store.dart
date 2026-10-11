@@ -240,6 +240,27 @@ class SessionStore {
   Future<void> setPref(String key, String value) =>
       _storage.write(key: '$_prefPrefix$key', value: value);
 
+  // ---- 追剧日历：TMDB API key ----
+  //
+  // ⚠️ 存这里（secure_storage）而不是明文 prefs / **绝不入库**：
+  //    API key 属凭据（本仓库安全红线）。用户自己填、自己用。
+  //    ⚠️ 仓库里**连占位符都不放**（与弹幕 AppSecret 同一策略）。
+  static const _tmdbKeyKey = 'cf_tmdb_key';
+
+  Future<String?> loadTmdbKey() async {
+    final v = await _storage.read(key: _tmdbKeyKey);
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  Future<void> saveTmdbKey(String key) async {
+    final v = key.trim();
+    if (v.isEmpty) {
+      await _storage.delete(key: _tmdbKeyKey);
+    } else {
+      await _storage.write(key: _tmdbKeyKey, value: v);
+    }
+  }
+
   // ---- 弹幕配置 ----
   //
   // ⚠️ 存这里而不是普通 SharedPreferences：配置里含 **AppSecret**

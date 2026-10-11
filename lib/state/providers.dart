@@ -4,6 +4,8 @@ library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../data/calendar_client.dart';
+import '../data/db/db_provider.dart' show appDbProvider;
 import '../data/emby_provider.dart';
 import '../data/home_repository.dart';
 import '../data/media_provider.dart';
@@ -203,4 +205,37 @@ final homeProvider = FutureProvider.autoDispose<HomeData>((ref) async {
   final api = ref.watch(embyApiProvider);
   if (api == null) throw const MediaException('未登录');
   return HomeData.fetch(api);
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 追剧日历（多源聚合，见 `lib/data/calendar_client.dart`）
+// ═══════════════════════════════════════════════════════════════
+
+/// 日历客户端（进程内单例 —— **必须**单例，因为它持有"失败冷却"状态）。
+///
+/// ## 为什么必须单例（真网测试抓到的 UX 问题）
+/// `CalendarClient` 内部记着 `_failedAt`（失败源冷却名单）。
+/// 若每次 build 都 new 一个，冷却状态丢失 ⇒ 一个必然失败的源
+/// （如本机连不上的 Bangumi）会让**每次打开日历都白等 8 秒退避**
+/// （实测：缓存全命中时仍耗时 **8,408 ms**）。
+final calendarClientProvider = Provider<CalendarClient>((ref) {
+  final c = CalendarClient();
+  final db = ref.watch(appDbProvider);
+  // 复用既有的 drift 缓存表（与豆瓣同一套 cacheGet/cachePut）
+  c.cache = DriftCalendarCache(db);
+  return c;
+});
+
+/// 本周日历数据。
+///
+/// ## TMDB key 从哪来（**绝不入库**）
+/// 用户可在「我的 → 追剧日历设置」里填自己的 TMDB API key，
+/// 存 `flutter_secure_storage`（与 Emby 凭据同一套机制）。
+/// 未填 ⇒ 跳过 TMDB 源（它只是辅助：TMDB 没有"按日"端点）。
+final calendarWeekProvider = FutureProvider.autoDispose<WeekCalendar>((
+  ref,
+) async {
+  final client = ref.watch(calendarClientProvider);
+  final key = await ref.watch(sessionStoreProvider).loadTmdbKey();
+  return client.fetchWeek(tmdbKey: key);
 });

@@ -131,8 +131,28 @@ void main() {
 
     test('★ 单账号时不显示服务器分组标题（避免无意义分组）', () {
       final sp = code('lib/pages/search_page.dart');
-      expect(sp.contains('final multi = groups.length > 1'), isTrue,
-          reason: '★ 只有一台时显示分组头是噪声');
+      // ★ 2026-10-11：搜索页改为**跨服务器合并去重**后，
+      //   原来的 `final multi = groups.length > 1` 变成
+      //   `final multiServer = ...`（语义更强：只数**成功**的源）。
+      expect(sp.contains('final multiServer ='), isTrue,
+          reason: '★ 只有一台（成功）时不该显示分组/汇总头');
+      // 合并去重必须真的接进 UI（定义了不用 = 等于没做）
+      expect(sp.contains('groupAcrossServers('), isTrue,
+          reason: '★★★ 跨服合并必须接进搜索页 —— 否则用户看到重复卡片\n'
+              '    （实测：搜「沙丘」36 条里有 16 条是同一部片）');
+    });
+
+    test('★★★ 多台都有时必须让用户**选源**（不能替用户猜）', () {
+      final sp = code('lib/pages/search_page.dart');
+      expect(sp.contains('_pickSource('), isTrue,
+          reason: '★★★ 实测两台差异很大：\n'
+              '    iLoveHD: mkv 4K HEVC 1.47GB 音轨2/字幕3\n'
+              '    HK-Emby: mp4 1080p 音轨1/字幕0\n'
+              '    ⇒ 猜错就要用户自己回去换，不如一次问清');
+      expect(sp.contains('showModalBottomSheet'), isTrue,
+          reason: '★ 用底部弹层给选项');
+      // 角标（只在多台时出现 ⇒ 单服务器用户零噪音）
+      expect(sp.contains('台可选'), isTrue);
     });
 
     test('★ 登录必须登记进 accounts（否则第一个账号不进聚合）', () {

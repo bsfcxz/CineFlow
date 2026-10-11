@@ -325,9 +325,24 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           child: CircularProgressIndicator(color: Cf.accent));
     }
     final groups = _groups!;
-    // 去重后的总命中数（同一部片在两台都有会算两条 —— 那是**有意的**：
-    // 它们确实是两个不同资源，用户可能因为码率/字幕/进度而选另一台）
-    final total = groups.fold<int>(0, (a, g) => a + g.hits.length);
+    // ★★ 跨服务器**合并去重**（2026-10-11）
+    //
+    // ## 改之前是什么
+    // 按服务器**分组展示**，同一部片在两台都有 ⇒ 用户看到**两条**。
+    // 实测（两台真实服务器，重叠 26.7%）：
+    // ```
+    // 搜「复仇者联盟」：11 条 → 只有 7 部不同的片（重复 4 条）
+    // 搜「沙丘」：      36 条 → 20 部（重复 16 条）
+    // 搜「海贼王」：    60 条 → 27 部（重复 33 条）
+    // ```
+    //
+    // ## 改之后
+    // 用 `groupAcrossServers` 按**外部 ID**（imdb/tmdb/tvdb）合并 ——
+    // 实测能识别出「海贼王 / 海贼王真人版 / 海贼王(真人版)」
+    // 这种**标题完全不同但同一部片**的情况（靠标题永远匹配不上）。
+    // 多台都有时只出一个卡片 + "N 台可选"角标，点开可选源。
+    final merged = groupAcrossServers(groups);
+    final total = merged.length;
     if (total == 0) {
       return Center(
           child: Text('没有找到与「${_ctrl.text}」相关的内容',
@@ -335,74 +350,162 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     }
 
     // ★ 单账号时不显示服务器标题（避免"一台服务器"的无意义分组头）
-    final multi = groups.length > 1;
+    final multiServer = groups.where((g) => g.error == null).length > 1;
+    // 失败提示（该台没搜到 ⇒ 必须如实说明，否则用户以为"那台没有"）
+    final failed = groups.where((g) => g.error != null).toList();
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        for (final g in groups) ...[
-          if (multi) ...[
-            Row(children: [
-              Icon(Icons.dns_outlined, size: 13, color: Cf.text3),
-              SizedBox(width: 5),
-              Expanded(
-                child: Text(g.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                        color: Cf.text2)),
-              ),
-              // 当前正在用的那台打个标（用户能一眼看出"哪台是主页"）
-              if (g.session.accessToken ==
-                  ref.read(sessionProvider).value?.accessToken)
-                Text('当前',
-                    style: TextStyle(fontSize: 10, color: Cf.accent)),
-            ]),
-            SizedBox(height: 8),
-          ],
-          if (g.error case final e?) ...[
-            // ⚠️ 单台失败**如实显示**（不伪装成"没结果"）——
-            //    否则用户会以为那台真的没有这部片。
+        if (failed.isNotEmpty) ...[
+          for (final g in failed)
             Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Text('该服务器搜索失败：$e',
-                  style: TextStyle(fontSize: 11, color: Cf.danger)),
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(children: [
+                Icon(Icons.error_outline_rounded, size: 13, color: Cf.danger),
+                SizedBox(width: 5),
+                Expanded(
+                  child: Text('${g.label} 搜索失败：${g.error}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11, color: Cf.danger)),
+                ),
+              ]),
             ),
-          ] else if (g.hits.isEmpty) ...[
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Text('该服务器没有匹配结果',
-                  style: TextStyle(fontSize: 11, color: Cf.text3)),
+          SizedBox(height: 10),
+        ],
+        // 汇总一行（用户一眼知道"去重后有多少部"）
+        if (multiServer)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              '共 $total 部'
+              '${merged.any((m) => m.hasMultiple) ? '，'
+                  '${merged.where((m) => m.hasMultiple).length} 部多台可选' : ''}',
+              style: TextStyle(fontSize: 11, color: Cf.text3),
             ),
-          ] else
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: g.hits.length,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                childAspectRatio: 2 / 3.45,
-              ),
-              itemBuilder: (context, i) {
-                final hit = g.hits[i];
-                // ★ 用**该条所属服务器**的 api 渲染海报 ——
-                //   用当前会话的 api 会去错的服务器取图（404/白图）。
-                return PosterCard(
+          ),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: merged.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: 2 / 3.45,
+          ),
+          itemBuilder: (context, i) {
+            final g = merged[i];
+            final hit = g.primary;
+            // ★ 用**该条所属服务器**的 api 渲染海报 ——
+            //   用当前会话的 api 会去错的服务器取图（404/白图）。
+            return Stack(
+              children: [
+                PosterCard(
                   item: hit.item,
                   api: hit.api,
-                  onTap: () => _openHit(hit),
-                );
-              },
-            ),
-          SizedBox(height: 18),
-        ],
+                  onTap: () => g.hasMultiple
+                      ? _pickSource(g)
+                      : _openHit(hit),
+                ),
+                // "N 台可选"角标（只在真的多台时有 ⇒ 单服务器用户零噪音）
+                if (g.hasMultiple)
+                  Positioned(
+                    top: 4,
+                    left: 4,
+                    child: IgnorePointer(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(Cf.radiusXs),
+                        ),
+                        child: Text('${g.serverCount} 台可选',
+                            style: const TextStyle(
+                                fontSize: 9, color: Colors.white)),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
+        SizedBox(height: 18),
         _doubanSection(),
       ],
     );
+  }
+
+  /// **选源**：同一部片在多台都有时，让用户挑一台播放。
+  ///
+  /// ## 为什么不直接取第一台（plezy 的做法是"并组"但默认取首选）
+  /// 两台的真实差异很大（实测）：
+  /// ```
+  /// iLoveHD: mkv 4K HEVC · 1.47 GB · 音轨2/字幕3
+  /// HK-Emby: mp4 1080p    · 1.2 GB · 音轨1/字幕0
+  /// ```
+  /// ⇒ 用户可能想要字幕多的那台，也可能想要小体积的。
+  /// **猜错就要用户自己回去换**，不如一次问清。
+  ///
+  /// ## 为什么放在搜索卡片层（而不是详情页）
+  /// 调研（plezy）显示：真做聚合的项目也是**在搜索结果层选源**，
+  /// 详情页用"绑定单服务器"的模型 —— 因为把 `(serverId,itemId)`
+  /// 穿透详情/播放/上报三层是月级别的改造。我们沿用同一取舍。
+  Future<void> _pickSource(AggregatedGroup g) async {
+    final picked = await showModalBottomSheet<AggregatedHit>(
+      context: context,
+      backgroundColor: Cf.surface2,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+            top: Radius.circular(Cf.radiusLg)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+              child: Row(children: [
+                Expanded(
+                  child: Text(g.primary.item.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: Cf.text)),
+                ),
+                Text('${g.copies.length} 个来源',
+                    style: TextStyle(fontSize: 11, color: Cf.text3)),
+              ]),
+            ),
+            const Divider(height: 1),
+            for (final c in g.copies)
+              ListTile(
+                leading: Icon(Icons.dns_outlined, size: 18, color: Cf.text2),
+                title: Text(c.serverLabel,
+                    style: TextStyle(fontSize: 13, color: Cf.text)),
+                // 副标题用**该条的元数据**帮用户判断（分辨率/大小在详情页才有）
+                subtitle: Text(
+                  [
+                    if (c.item.productionYear != null)
+                      '${c.item.productionYear}',
+                    c.item.type,
+                    if (c.item.communityRating != null)
+                      '★${c.item.communityRating!.toStringAsFixed(1)}',
+                  ].join(' · '),
+                  style: TextStyle(fontSize: 11, color: Cf.text3),
+                ),
+                onTap: () => Navigator.pop(ctx, c),
+              ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+    if (picked != null && mounted) await _openHit(picked);
   }
 
   /// 打开一条聚合命中 —— **若来自另一台服务器，先切过去**。

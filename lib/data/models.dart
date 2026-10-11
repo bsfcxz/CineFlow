@@ -128,6 +128,19 @@ class MediaItem {
   /// ⚠️ 需要调用方在 `Fields` 里显式请求 `Collections`；未请求时为空列表。
   final List<String> collectionIds;
 
+  /// **外部 ID**（`imdb` / `tmdb` / `tvdb` / `anidb` …，key 已归一化为小写）。
+  ///
+  /// ## 用途：**跨服务器去重**（本项目"多账号聚合"的核心依赖）
+  /// `MediaItem.id` 是**各服务器自己的 GUID**，跨服务器无意义；
+  /// 而 imdb/tmdb id 是**全局唯一**的 ⇒ 用它判断"两台都有同一部片"。
+  ///
+  /// ## 实测依据（2026-10-11）
+  /// · 填充率：Tmdb 87–100% / Imdb 75–95% / Tvdb 67–76%（两台真实服务器）
+  /// · 需请求 `Fields=ProviderIds`（Emby 默认不返回）
+  ///
+  /// ⚠️ 可能为空（实测 iLoveHD 有 1/12 条没有）⇒ 必须有**标题兜底**策略。
+  final Map<String, String> providerIds;
+
   const MediaItem({
     required this.id,
     required this.name,
@@ -157,6 +170,7 @@ class MediaItem {
     this.parentThumbImageTag,
     this.seriesPrimaryImageTag,
     this.collectionIds = const [],
+    this.providerIds = const {},
   });
 
   factory MediaItem.fromJson(Map<String, dynamic> j) {
@@ -200,7 +214,38 @@ class MediaItem {
       parentThumbImageTag: j['ParentThumbImageTag'] as String?,
       seriesPrimaryImageTag: j['SeriesPrimaryImageTag'] as String?,
       collectionIds: _parseCollections(j['Collections']),
+      // ★ 外部 ID（跨服务器去重的**唯一可靠依据**）
+      //
+      // ## 为什么必须解析它（实测取证，2026-10-11，两台真实 Emby）
+      // 填充率：
+      // ```
+      // iLoveHD: Tmdb 87% / Tvdb 76% / Imdb 75.5%
+      // HK-Emby: Tmdb 100% / Imdb 95% / Tvdb 67%
+      // ```
+      // ⇒ 用 imdb/tmdb id 判"同一部片在两台都有"**准确率极高**；
+      //   而标题匹配对中英文混排的片源（"Re：从零开始…" vs
+      //   "Re:ZERO -Starting Life in Another World-"）几乎无效。
+      //
+      // ⚠️ **必须要求 `Fields=ProviderIds`** —— Emby 默认不返回该字段。
+      // ⚠️ **key 大小写不统一**（实测同一台服务器里同时有 `Imdb` 与 `IMDB`）
+      providerIds: _parseProviderIds(j['ProviderIds']),
     );
+  }
+
+  /// 解析 `ProviderIds`（`{"Tmdb":"477063","Imdb":"tt4205768",...}`）。
+  ///
+  /// ## 为什么统一小写 key
+  /// 实测**同一台服务器**的数据里出现过 `Imdb` 与 `IMDB` 两种写法
+  /// ⇒ 不归一化会漏。归一化后 `imdb`/`tmdb`/`tvdb` 是稳定键。
+  static Map<String, String> _parseProviderIds(Object? raw) {
+    if (raw is! Map) return const {};
+    final out = <String, String>{};
+    raw.forEach((k, v) {
+      final key = k.toString().trim().toLowerCase();
+      final val = v?.toString().trim() ?? '';
+      if (key.isNotEmpty && val.isNotEmpty) out[key] = val;
+    });
+    return out;
   }
 
   /// 解析 `Collections`（条目所属的**合集**，如"漫威电影宇宙"）。

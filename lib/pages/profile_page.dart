@@ -19,6 +19,7 @@ import '../pan115/pan115_store.dart';
 import '../state/providers.dart';
 import 'server_list_page.dart';
 import 'account_manager_page.dart';
+import 'calendar_page.dart';
 
 /// 观看统计（TotalRecordCount 查询，Counts 端点部分服务器不可用）
 class _Stats {
@@ -183,17 +184,20 @@ class ProfilePage extends ConsumerWidget {
                 icon: Icons.event_available_rounded,
                 color: const Color(0xFF0984E3),
                 title: '追剧日历',
-                sub: '未来 30 天会上线的剧集',
+                // ★★ 2026-10-11 改为**真正的周视图日历**（多源聚合）
+                //
+                // ## 改之前是什么（用户要求重构）
+                // 只是把 Emby 的 `/Shows/Upcoming` 套进通用列表页
+                //（`ServerListPage` + `loader: api.getUpcoming`）——
+                // 数据只来自**当前那一台 Emby**，且没有周一到周日的视图。
+                //
+                // ## 改之后
+                // `CalendarPage`：周一~周日横向选择条 + 每天更新列表，
+                // 数据来自 Bangumi / TVmaze / B站 / TMDB 四个源（并行 + 失败隔离）。
+                sub: '周一~周日 · 番剧 / 美剧 / 国创更新',
                 onTap: () => Navigator.push(
                   context,
-                  MaterialPageRoute(
-                    builder: (_) => ServerListPage(
-                      title: '追剧日历',
-                      emptyIcon: Icons.event_busy_rounded,
-                      emptyText: '未来 30 天没有待播剧集',
-                      loader: (api) => api.getUpcoming(days: 30),
-                    ),
-                  ),
+                  MaterialPageRoute(builder: (_) => const CalendarPage()),
                 ),
               ),
               _SettingItem(
