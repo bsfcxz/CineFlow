@@ -11,6 +11,8 @@ import '../core/router.dart';
 import '../core/theme.dart';
 import '../data/emby_provider.dart';
 import '../data/media_provider.dart';
+import '../data/calendar_client.dart' show CalendarEntry,
+    CalendarCategory;
 import '../data/models.dart';
 import '../player/player_routes.dart';
 import '../state/providers.dart';
@@ -238,8 +240,15 @@ class _DetailPageState extends ConsumerState<DetailPage> {
   String? _selectedSeasonId;
   String? _selectedVersionId;
   String? _syncedItemId;
-  bool _fav = false;
-  bool _watched = false;
+
+  /// **是否已追**（= 本地订阅 ∪ Emby 收藏）。
+  ///
+  /// ## 为什么是两个来源的并集（用户明确要求）
+  /// > "追剧日历中的订阅也包括 emby 服务端的收藏"
+  /// · **本地订阅** —— 追剧日历点星标订的（drift 表）
+  /// · **Emby 收藏** —— 服务端 `IsFavorite`
+  /// 用户在 Emby 里收藏过的剧必须也显示"已追"，否则会以为数据丢了。
+  bool _following = false;
   bool _toggling = false;
 
   /// 分集区的定位锚点：剧集的「选集播放」按钮靠它滚过去。
@@ -321,9 +330,14 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     // 按钮状态随条目同步
     if (_syncedItemId != item.id) {
       _syncedItemId = item.id;
-      _fav = item.isFavorite;
-      _watched = item.played;
-      // 剧集：详情一到位就预取"看到第几集"，让按钮首帧就是「继续播放 第 N 集」。
+      // 追剧 = 本地订阅 ∪ Emby 收藏（见 `_following` 说明）
+    // 追剧 = 本地订阅 ∪ Emby 收藏（见 _following 说明）
+    // ① 先用 Emby 收藏（同步、首帧就有值）
+    _following = item.isFavorite;
+    // ② 再异步叠加**本地订阅**（drift 查询，不阻塞首屏）
+    //    ⚠️ 不叠加的话：日历里点星标订的剧，详情页仍显示"未追"
+    _syncLocalSubscription(item);
+        // 剧集：详情一到位就预取"看到第几集"，让按钮首帧就是「继续播放 第 N 集」。
       // 放这里而不是 initState —— 那时 item 还没加载出来，拿不到 id。
       // 用 Future.microtask 避免在 build 期间直接 setState。
       if (isSeries) {
@@ -373,7 +387,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                     errorBuilder: (_, _, _) => Container(color: Cf.surface))
               else
                 Container(color: Cf.surface),
-              const DecoratedBox(
+              DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
@@ -781,33 +795,95 @@ class _DetailPageState extends ConsumerState<DetailPage> {
         ),
       ),
       SizedBox(width: 9),
-      // 收藏（真实 toggle）
+      // ★ **追剧**（原为「收藏」，用户要求改）
+      //
+      // ## 用户原话
+      // > "追剧日历中的订阅也包括 emby 服务端的收藏就是这个详情页的爱心按钮哦，
+      // >  你将我从 emby 服务端中 api 的收藏按钮改为追剧。"
+      //
+      // ## ★★ 订阅范围 = **本地订阅 ∪ Emby 收藏**（两个来源都要算）
+      // · **本地订阅** —— 追剧日历里点星标订的（drift 表）
+      // · **Emby 收藏** —— 服务端 `IsFavorite`（实测你已有 2 条：
+      //   黑夜告白 / 战旗如画）
+      // ⇒ 任一边为真就显示"已追"。
+      //
+      // ⚠️ 为什么不能只读本地：用户**已在 Emby 里收藏过**的剧必须也算追剧，
+      //    否则他会觉得"我之前收藏的都不见了"（数据在，只是没显示）。
+      //
+      // ## 点击行为：**写本地订阅**（不再动 Emby 收藏）
+      // 用户明确"把收藏按钮**改为**追剧"⇒ 语义换了。
+      // 好处：订阅是本地概念，不受"服务端是否支持收藏"影响
+      //（B站/Bangumi 来的条目 Emby 里根本没有，收藏无从谈起）。
       _roundBtn(
-        icon: _fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-        color: _fav ? Cf.danger : Cf.text,
+        icon: _following ? Icons.star_rounded : Icons.star_border_rounded,
+        // 已追用金色（与日历卡片的星标一致），比红色爱心更贴合"追剧"语义
+        color: _following ? const Color(0xFFF2C94C) : Cf.text,
+        // 已追 ⇒ 淡金底色（状态一眼可辨，见 `_roundBtn` 的说明）
+        fill: _following
+            ? const Color(0xFFF2C94C).withValues(alpha: 0.18)
+            : null,
+        tip: _following ? '已追剧，点击取消' : '加入追剧',
         onTap: _toggling
             ? null
             : () async {
-                final next = !_fav;
-                setState(() {
-                  _toggling = true;
-                  _fav = next;
-                });
+                setState(() => _toggling = true);
                 try {
-                  final api = ref.read(embyApiProvider)!;
-                  final result = await api.toggleFavorite(item.id, favorite: next);
-                  if (result != next) setState(() => _fav = !next);
-                } catch (e) {
-                  // ★ 原为 `showComingSoon(context, '收藏失败，请稍后重试')` ——
-                  //   用「即将推出」的弹窗去报**失败**，是双重错误：
-                  //   ① 用户看到"即将推出"会以为这功能没做（其实做了，只是这次失败了）
-                  //   ② 失败原因被吞掉（`catch (_)`），无法判断能否自救
-                  //   改为 SnackBar + 真实原因，风格与"操作反馈"语义一致。
-                  debugPrint('[Detail] 收藏切换失败: $e');
-                  setState(() => _fav = !_fav);
+                  // ⚠️ 详情页的 item 是 Emby 条目，而订阅表的主键是
+                  //    `(source, sourceId, mediaType)` —— Emby 条目要映射成
+                  //    `(tmdb, <tmdbId>, tv|movie)`。
+                  //    没有 tmdb id 时退回用 Emby id（仍可订阅，只是跨源
+                  //    身份会弱一些）。
+                  final now = await toggleCalendarSubscription(
+                    ref,
+                    entry: _entryForSubscription(item),
+                    mediaType: item.type == 'Movie' ? 'movie' : 'tv',
+                    status: _statusForSubscription(item),
+                  );
+                  if (mounted) setState(() => _following = now);
+
+                  // ★★ **同步到服务端库**（用户 2026-10-11 要求）
+                  //
+                  // > "我点的详情页的追剧小星星如果在服务端的库内存在的
+                  // >  应该同步进去"
+                  //
+                  // ## 为什么
+                  // 详情页的条目**来自 Emby 库**（它有 `item.id`）⇒
+                  // 订阅时应该**同时**写 Emby 收藏，这样：
+                  // · 换设备/换 App（Emby 网页端）也能看到"已收藏"
+                  // · 本地订阅表与 Emby 收藏保持一致（不再两份状态）
+                  //
+                  // ## 失败不阻断
+                  // 本地订阅已经写成功了（那是主行为）；
+                  // Emby 写失败只提示，**不回滚本地** ——
+                  // 否则"服务端不可达"会导致用户连本地都订阅不上。
+                  try {
+                    final api = ref.read(embyApiProvider);
+                    if (api != null) {
+                      await api.toggleFavorite(item.id, favorite: now);
+                    }
+                  } catch (e) {
+                    debugPrint('[Detail] 同步 Emby 收藏失败（非致命）: $e');
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text('已本地追剧，但未同步到服务器：$e'),
+                        duration: const Duration(seconds: 3),
+                      ));
+                    }
+                  }
+
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                      content: Text('收藏失败：$e'),
+                      content: Text(now
+                          ? '已加入追剧：《${item.name}》'
+                          : '已取消追剧：《${item.name}》'),
+                      duration: const Duration(seconds: 2),
+                    ));
+                  }
+                } catch (e) {
+                  debugPrint('[Detail] 追剧切换失败: $e');
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text('操作失败：$e'),
                       duration: const Duration(seconds: 3),
                     ));
                   }
@@ -816,38 +892,19 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                 }
               },
       ),
-      SizedBox(width: 9),
-      // 看过（真实 toggle）
-      _roundBtn(
-        icon: _watched ? Icons.visibility_rounded : Icons.visibility_outlined,
-        color: _watched ? Cf.warn : Cf.text,
-        onTap: _toggling
-            ? null
-            : () async {
-                final next = !_watched;
-                setState(() {
-                  _toggling = true;
-                  _watched = next;
-                });
-                try {
-                  final api = ref.read(embyApiProvider)!;
-                  final result = await api.togglePlayed(item.id, played: next);
-                  if (result != next) setState(() => _watched = !next);
-                } catch (e) {
-                  // 同上：失败不该用「即将推出」弹窗报。
-                  debugPrint('[Detail] 看过标记失败: $e');
-                  setState(() => _watched = !_watched);
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                      content: Text('标记失败：$e'),
-                      duration: const Duration(seconds: 3),
-                    ));
-                  }
-                } finally {
-                  if (mounted) setState(() => _toggling = false);
-                }
-              },
-      ),
+      // ★ 「已看」（小眼睛）按钮**已移除**（用户要求）
+      //
+      // ## 为什么移除
+      // 用户明确："去除右侧的已看按钮 就是这个小眼睛"。
+      // 手动标记"看过"是 Emby 网页端的习惯，在移动端：
+      // · 播放行为**已经自动**上报（`Sessions/Playing*` + `PlayedItems`）
+      // · 用户手动点它的场景极少，却占了底栏一个位置
+      // ⇒ 让位给「追剧」（下一颗按钮）。
+      //
+      // ## 底层能力保留
+      // `MediaProvider.togglePlayed` 仍在（"看完"判断走
+      // `item.unplayedItemCount == 0` 的 `allWatched`，决定播放按钮文案），
+      // 只是不再有手动开关。
       SizedBox(width: 9),
       // ★ 用户要求第一批第 2 项：**预告片**（替代原来的"下载"死按钮）
       //
@@ -896,23 +953,134 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     return out;
   }
 
+  /// 读本地订阅，叠加到 `_following`（**并集**，不清掉 Emby 收藏那部分）。
+  ///
+  /// ## 为什么是"叠加"而不是"覆盖"
+  /// `_following = item.isFavorite` 先给了 Emby 收藏的结果；
+  /// 本地订阅为 true 就置 true，为 false **不动** ——
+  /// 因为语义是"两边任一为真即已追"。
+  ///
+  /// ## 为什么要试两个键
+  /// 详情页订阅时按"有没有 tmdb id"分别落库（`tmdb:...` 或 `emby:...`）
+  /// ⇒ 查的时候两种都要试，否则会出现"刚订阅完，回详情页仍显示未追"。
+  Future<void> _syncLocalSubscription(MediaItem item) async {
+    try {
+      final keys = await ref.read(subscribedKeysProvider.future);
+      final tmdb = item.providerIds['tmdb'];
+      final hasTmdb = tmdb != null && tmdb.isNotEmpty;
+      final mt = item.type == 'Movie' ? 'movie' : 'tv';
+      final k1 = '${hasTmdb ? 'tmdb' : 'emby'}:${hasTmdb ? tmdb : item.id}:$mt';
+      final k2 = 'emby:${item.id}:$mt';
+      final local = keys.contains(k1) || keys.contains(k2);
+      if (!mounted) return;
+      if (local && !_following) setState(() => _following = true);
+    } catch (e) {
+      // 订阅状态读失败**不阻塞详情页**（它只影响按钮外观）
+      debugPrint('[Detail] 读本地订阅失败（非致命）: $e');
+    }
+  }
+
+  /// Emby 条目 → 订阅用的 [CalendarEntry]。
+  ///
+  /// ## 为什么能映射（实测）
+  /// Emby 条目的 `ProviderIds.Tmdb` 就是 TMDB id（实测填充率
+  /// 电影 100% / 剧集 87%）⇒ 用它作订阅的 `sourceId`，
+  /// 这样**详情页订阅的**与**日历里订阅的**是**同一条**（同一主键）。
+  ///
+  /// ## 没有 tmdb id 时怎么办
+  /// 退回用 Emby 的 `item.id`（仍可订阅，只是与 TMDB 那侧不是同一条
+  /// ⇒ 日历的周历查不到它的播出信息）。**不编造 id**。
+  CalendarEntry _entryForSubscription(MediaItem item) {
+    final tmdb = item.providerIds['tmdb'];
+    final hasTmdb = tmdb != null && tmdb.isNotEmpty;
+    return CalendarEntry(
+      title: item.name,
+      // 订阅表的主键列
+      source: hasTmdb ? 'tmdb' : 'emby',
+      sourceId: hasTmdb ? tmdb : item.id,
+      posterUrl: item.posterUrl(ref.read(embyApiProvider)!) ??
+          item.backdropUrl(ref.read(embyApiProvider)!),
+      rating: item.communityRating,
+      category: _categoryOf(item),
+      // ⚠️ `MediaItem` **没有** studios 字段（它在 `MediaItemDetail` 上）
+      // ⇒ 这里留空。日历那侧会用 TMDB `networks` 补平台，
+      //    所以订阅后照样能看到"腾讯视频"之类。
+      //    （不为它给 MediaItem 加字段：Emby 的 Studios 只在详情端点返回，
+      //      列表接口不带 ⇒ 加了也是常年 null，反而误导。）
+      platform: null,
+      airDate: null,
+    );
+  }
+
+  /// 推断类别（详情页没有 TMDB genre，用 Emby `Genres` 近似）。
+  ///
+  /// ⚠️ 这是**近似**：Emby 的 Genre 是中文（动画/真人秀），
+  ///    与 TMDB 的 genre id 不是一套。能判出"动画/真人秀"就够用。
+  CalendarCategory _categoryOf(MediaItem item) {
+    final g = item.genres.join('|');
+    if (g.contains('动画') || g.contains('动漫')) return CalendarCategory.anime;
+    if (g.contains('真人秀') || g.contains('脱口秀') || g.contains('综艺')) {
+      return CalendarCategory.variety;
+    }
+    return CalendarCategory.series;
+  }
+
+  /// 订阅时记什么状态（"连载中"/"已完结"）。
+  ///
+  /// ## 判据优先级（都能拿到就用更可靠的）
+  /// ① Emby `item.status`（实测有值：`Continuing` / `Ended`）
+  /// ② 都没有 ⇒ 空串（UI 不显示状态标签，**不猜**）
+  ///
+  /// ⚠️ 不用"有没有未看集数"来推：那会把"已完结但没看完"误判成连载中。
+  String _statusForSubscription(MediaItem item) {
+    final st = item.status;
+    if (st == null || st.isEmpty) return '';
+    return switch (st) {
+      'Continuing' => '连载中',
+      'Ended' => '已完结',
+      _ => '',
+    };
+  }
+
   Widget _roundBtn(
       {required IconData icon,
       required VoidCallback? onTap,
-      Color color = Cf.text}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: const Color(0x14FFFFFF),
-          border: Border.all(
-              color: onTap == null ? Cf.border : const Color(0x26FFFFFF)),
-        ),
-        child: Icon(icon, size: 16, color: color),
+      // ⚠️ 不能写 `Color color = Cf.text` —— 参数默认值必须是**编译期常量**，
+      //    而 `Cf.text` 已随主题可变（用户要求换肤含文字色）。
+      //    ⇒ 用可空 + 内部兜底。
+      Color? color,
+      Color? fill,
+      String? tip}) {
+    final c = color ?? Cf.text;
+    // ## 为什么加 `fill` 与 `tip`（真机截图驱动）
+    // 「追剧」按钮改完后我拍了张图：未追时是一颗**灰色细轮廓星**，
+    // 与旁边醒目的渐变播放按钮比几乎没有存在感 ⇒ 用户发现不了这里能追剧。
+    // ⇒ 已追时给**淡金底色**（状态一眼可辨）；未追保持默认通透感。
+    //
+    // `tip` 给无障碍：自绘按钮必须显式给出语义标签，
+    // 否则读屏只能念出一个无意义的"按钮"（与底部 Tab 同款处理）。
+    final btn = Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: fill ?? const Color(0x14FFFFFF),
+        border: Border.all(
+            color: onTap == null
+                ? Cf.border
+                : (fill != null
+                    ? c.withValues(alpha: 0.55)
+                    : const Color(0x26FFFFFF))),
       ),
+      child: Icon(icon, size: 16, color: c),
+    );
+    if (tip == null) {
+      return GestureDetector(onTap: onTap, child: btn);
+    }
+    return Semantics(
+      button: true,
+      label: tip,
+      child: GestureDetector(onTap: onTap, child: btn),
     );
   }
 
@@ -1318,7 +1486,7 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                     clamp: true,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 9, color: Cf.text3)),
+                    style: TextStyle(fontSize: 9, color: Cf.text3)),
             ]),
             ),
           );

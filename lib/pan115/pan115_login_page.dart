@@ -232,7 +232,7 @@ class _Pan115LoginPageState extends ConsumerState<Pan115LoginPage> {
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: const Color(0x55FFB347)),
         ),
-        child: const Row(
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Icon(Icons.warning_amber_rounded, size: 20, color: Color(0xFFFFB347)),

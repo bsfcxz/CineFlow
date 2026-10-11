@@ -154,7 +154,7 @@ class _AccountTile extends StatelessWidget {
           child: Text(host,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, color: Cf.text)),
+              style: TextStyle(fontSize: 13, color: Cf.text)),
         ),
         if (isCurrent) ...[
           const SizedBox(width: 6),
@@ -173,7 +173,7 @@ class _AccountTile extends StatelessWidget {
         session.user.name.isEmpty ? session.user.id : session.user.name,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 11, color: Cf.text3),
+        style: TextStyle(fontSize: 11, color: Cf.text3),
       ),
       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
         if (!isCurrent)

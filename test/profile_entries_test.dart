@@ -64,58 +64,6 @@ void main() {
     });
   });
 
-  group('★★★ 统计卡必须可点（4 张都能看内容）', () {
-    test('★★★ 四张卡都要有 onTap（**四张**，不是"至少一张"）', () {
-      final c = code('lib/pages/profile_page.dart');
-      // 用户："已看电影可以、追剧中、已看分级、收藏都应该可以点击且能看到具体内容"
-      //
-      // 每张卡对应一个服务端查询（全部实测验证）：
-      //   已看电影 → Movie + IsPlayed         (s2: 11 条)
-      //   追剧中   → Series + IsUnplayed      (s2: 5322)
-      //   已看分集 → Episode + IsPlayed       (s2: 916)
-      //   收藏     → Movie,Series,Episode + IsFavorite (s2: 2 条)
-      for (final label in ['已看电影', '追剧中', '已看分集', '收藏']) {
-        expect(c.contains("'$label',"), isTrue, reason: '★ 缺卡片 $label');
-      }
-      // ⚠️ 反向注入发现：只断言 `contains('onTap: () => _openList(')` 是**假守卫**
-      //    —— 4 张卡里**任意一张**还在就通过（注入时命中 4 处，无法只改一张）。
-      //    ⇒ 必须断言**出现次数 = 4**（每张卡各一次）。
-      final n = 'onTap: () => _openList('.allMatches(c).length;
-      expect(n, 4,
-          reason: '★★★ 必须**四张卡都可点**（实测 $n 处 onTap）；\n'
-              '    只断言 "contains" 时改掉 3 张仍会通过 —— 假守卫');
-      expect(c.contains('void _openList('), isTrue);
-    });
-
-    test('★★★ 每个列表 loader 的 Filter 必须与卡片语义**一一对应**', () {
-      final c = code('lib/pages/profile_page.dart');
-      // ## 实测（本轮，两台真实服务器）：Filters 参数**确实生效**
-      //   s1: Movie+IsPlayed 2 / 2754
-      //   s2: Movie+IsPlayed 11 / 11126，Series+IsUnplayed 5322，Favorite 2
-      //
-      // ## ⚠️ 反向注入发现的**假守卫**
-      // 原来只断言 `contains("filters: 'IsFavorite'")` —— 把**收藏卡**的
-      // filter 改成 `IsPlayed` 后测试**仍然全绿**，因为
-      // `statsProvider`（统计数字的查询）里还有一处 `IsFavorite` 满足了断言。
-      // ⇒ 必须断言**具体 loader** 的组合（`includeTypes` + `filters` 成对出现）。
-      const pairs = [
-        ("includeTypes: 'Movie',\n              filters: 'IsPlayed',",
-         '已看电影'),
-        ("includeTypes: 'Series',\n              filters: 'IsUnplayed',",
-         '追剧中'),
-        ("includeTypes: 'Episode',\n              filters: 'IsPlayed',",
-         '已看分集'),
-        ("includeTypes: 'Movie,Series,Episode',\n              filters: 'IsFavorite',",
-         '收藏'),
-      ];
-      for (final (needle, card) in pairs) {
-        expect(c.contains(needle), isTrue,
-            reason: '★★★ 卡片「$card」的 includeTypes 与 filters 必须成对正确\n'
-                '    （只断言单个 filter 会被别处的同名 filter 满足 —— 假守卫）');
-      }
-    });
-  });
-
   group('★★★ 服务端地址可点测延迟', () {
     test('★★★ 地址必须是可点组件（不是纯 Text）', () {
       final c = code('lib/pages/profile_page.dart');
@@ -218,23 +166,124 @@ void main() {
     });
   });
 
-  group('★★ 入口顺序（用户要求"播放历史移动到收藏后面"）', () {
-    test('★★ 「继续观看」必须在「制片公司」之前', () {
-      final s = File('lib/pages/profile_page.dart').readAsStringSync();
-      final iWatch = s.indexOf("title: '继续观看'");
-      final iStudio = s.indexOf("title: '制片公司'");
-      expect(iWatch, greaterThan(0), reason: '★ 入口必须存在');
-      expect(iStudio, greaterThan(0));
-      expect(iWatch, lessThan(iStudio),
-          reason: '★★ 用户："将下面的播放历史移动到收藏后面"');
+  group('★★ 入口顺序与增删（用户要求）', () {
+    test('★★★ 「继续观看」必须**已从我的页移除**（用户 2026-10-11）', () {
+      // 它已移到「追剧」Tab 的第二个分页（与"追剧日历"并列）。
+      // 同一内容两处入口会让用户困惑"哪个才是我要看的"。
+      final c = code('lib/pages/profile_page.dart');
+      expect(c.contains("title: '继续观看'"), isFalse,
+          reason: '★★★ 用户："删除继续观看"');
+      // ⚠️ `HistoryPage` 仍在（被「追剧」Tab 复用），只是不从这里进
+      final t = code('lib/pages/tracking_page.dart');
+      expect(t.contains('HistoryPage'), isTrue,
+          reason: '★ 它被追剧 Tab 复用，不能一起删');
     });
 
-    test('★★ 标题必须叫「继续观看」（不是「播放历史」）', () {
-      final s = File('lib/pages/profile_page.dart').readAsStringSync();
-      final i = s.indexOf("title: '继续观看'");
-      expect(i, greaterThan(0),
+    test('★★★ 「服务端播放列表」必须**已移除**（用户 2026-10-11）', () {
+      final c = code('lib/pages/profile_page.dart');
+      expect(c.contains("title: '服务端播放列表'"), isFalse,
+          reason: '★★★ 用户："删除服务端播放列表"');
+      expect(c.contains('getPlaylists'), isFalse,
+          reason: '★ 入口没了就不该再调它');
+    });
+
+    test('★★★ 统计四格必须**已移除**（用户 2026-10-11）', () {
+      // 用户："删除我的底栏内容中的已看电影、追剧中、已看分集、收藏"
+      final c = code('lib/pages/profile_page.dart');
+      for (final label in ['已看电影', '追剧中', '已看分集', '收藏']) {
+        expect(c.contains("'$label'"), isFalse,
+            reason: '★★★ 统计卡「$label」必须已删');
+      }
+      // 三个只服务四格的方法也要删（死代码比没有更贵）
+      for (final m in ['_statGrid', '_statCard', '_openList']) {
+        expect(c.contains(m), isFalse,
+            reason: '★★ $m 只服务那四格，留着是死代码');
+      }
+      // ⚠️ statsProvider 保留（_headCard 用它的库规模数字）
+      expect(c.contains('statsProvider'), isTrue,
+          reason: '★ 库规模数字（电影/剧集总数）仍在用');
+    });
+
+    test('★★★ 「制片公司」必须**已移除**（用户要求）', () {
+      // ## 用户原话（2026-10-11）
+      // > "去除我的中的制片公司"
+      //
+      // ⚠️ 断言的是**入口不存在**，而不是"底层能力不存在" ——
+      //    `getStudios` / `getStudioItems` 要保留，只是不再从「我的」进入。
+      final c = code('lib/pages/profile_page.dart');
+      expect(c.contains("title: '制片公司'"), isFalse,
+          reason: '★★★ 用户明确要求移除该入口');
+      expect(c.contains('Icons.apartment_rounded'), isFalse,
+          reason: '★ 图标也不该留着（死代码）');
+    });
+
+    test('★★ 标题必须叫「继续观看」（不是「播放历史」）—— 在追剧 Tab 里', () {
+      // ⚠️ 入口已从「我的」页移除（用户 2026-10-11），
+      //    但**页面标题**仍要是「继续观看」—— 它在追剧 Tab 的分页里。
+      final t = File('lib/pages/history_page.dart').readAsStringSync();
+      expect(t.contains("const Text('继续观看',"), isTrue,
           reason: '★★ 用户："播放历史对应的内容应该是继续观看内容"\n'
               '    ⇒ 名字也要跟着改，否则与数据源不符');
+      // 不能再出现播放历史这个旧名
+      expect(t.contains("'播放历史'"), isFalse,
+          reason: '★★ 旧名会与数据源不符（IsPlayed ≠ Resume）');
+    });
+  });
+
+  group('★★★ 详情页：收藏 → 追剧（用户要求）', () {
+    test('★★★ 「已看」（小眼睛）按钮必须**已移除**', () {
+      // 用户原话："去除右侧的已看按钮 就是这个小眼睛"
+      final c = code('lib/pages/detail_page.dart');
+      expect(c.contains('Icons.visibility_rounded'), isFalse,
+          reason: '★★★ 用户明确要求移除');
+      expect(c.contains('Icons.visibility_outlined'), isFalse);
+      // ⚠️ 底层能力保留（`MediaProvider.togglePlayed` 仍在），
+      //    只是详情页不再调它
+      expect(c.contains('togglePlayed('), isFalse,
+          reason: '★ 按钮没了就不该再调它');
+    });
+
+    test('★★★ 收藏按钮必须改成「追剧」', () {
+      final c = code('lib/pages/detail_page.dart');
+      // 用户："你将我从 emby 服务端中 api 的收藏按钮改为追剧"
+      expect(c.contains('_following'), isTrue,
+          reason: '★★★ 要有"是否已追"状态');
+      expect(c.contains('toggleCalendarSubscription('), isTrue,
+          reason: '★★★ 点击写**本地订阅**（不再是 Emby 收藏）');
+      // ★ 用户 2026-10-11（追加要求）：
+      //   "我点的详情页的追剧小星星如果在服务端的库内存在的应该同步进去"
+      //   ⇒ 订阅时**同时**写 Emby 收藏（这样换设备/网页端也能看到）
+      //   ⇒ 所以 `toggleFavorite` **是有意保留**的，不能断言它不存在。
+      expect(c.contains('toggleFavorite('), isTrue,
+          reason: '★★★ 追剧要同步到服务端库（用户明确要求）');
+      // 但要确认它**不是**主行为（主行为是本地订阅）
+      expect(c.contains('toggleCalendarSubscription('), isTrue,
+          reason: '★★★ 主行为仍是本地订阅');
+      // 顺序：先本地订阅，再同步服务端（本地成功才算追剧成功）
+      final iLocal = c.indexOf('toggleCalendarSubscription(');
+      final iServer = c.indexOf('toggleFavorite(');
+      expect(iLocal, lessThan(iServer),
+          reason: '★★ 先写本地（主行为），再同步服务端 ——\n'
+              '    否则服务端失败会导致本地也没订上');
+    });
+
+    test('★★★ 追剧状态 = 本地订阅 ∪ Emby 收藏（并集）', () {
+      final c = code('lib/pages/detail_page.dart');
+      // 用户："追剧日历中的订阅**也包括** emby 服务端的收藏"
+      // ⇒ 已在 Emby 收藏的剧必须也显示"已追"，否则用户以为数据丢了
+      expect(c.contains('_following = item.isFavorite'), isTrue,
+          reason: '★★★ Emby 收藏那一路不能丢');
+      expect(c.contains('_syncLocalSubscription('), isTrue,
+          reason: '★★★ 本地订阅那一路也要叠加');
+    });
+
+    test('★★ 详情页订阅要按"有无 tmdb id"分别落键', () {
+      final c = code('lib/pages/detail_page.dart');
+      // 实测：Emby 条目 87–100% 有 tmdb id
+      // 有 ⇒ 用 tmdb 作 sourceId（与日历订阅同一条）
+      // 无 ⇒ 退回 emby id（仍可订阅，只是跨源身份弱）
+      expect(c.contains("'tmdb' : 'emby'"), isTrue,
+          reason: '★★ 两种来源要分开（不编造 id）');
     });
   });
 }

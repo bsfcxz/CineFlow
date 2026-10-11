@@ -84,7 +84,7 @@ class _TrailerButtonState extends ConsumerState<TrailerButton> {
   @override
   Widget build(BuildContext context) {
     // 未加载完 或 没预告 ⇒ 不占位（避免布局跳动后突然多出一个按钮）
-    if (!_loaded || _trailers.isEmpty) return const SizedBox.shrink();
+    if (!_loaded || _trailers.isEmpty) return SizedBox.shrink();
 
     return Semantics(
       button: true,
@@ -104,7 +104,7 @@ class _TrailerButtonState extends ConsumerState<TrailerButton> {
                 color: const Color(0x14FFFFFF),
                 border: Border.all(color: const Color(0x26FFFFFF)),
               ),
-              child: const Icon(Icons.movie_filter_outlined,
+              child: Icon(Icons.movie_filter_outlined,
                   size: 18, color: Cf.text),
             ),
           ),

@@ -16,6 +16,7 @@ import '../keys.dart';
 import 'home_page.dart';
 import 'profile_page.dart';
 import 'rank_page.dart';
+import 'tracking_page.dart';
 
 class HomeShell extends ConsumerStatefulWidget {
   const HomeShell({super.key});
@@ -29,6 +30,9 @@ class _HomeShellState extends ConsumerState<HomeShell> {
 
   static final List<Widget> _pages = <Widget>[
     HomePage(),
+    // ★ 「追剧」在首页**右侧**（用户要求："在底栏首页的右侧增加一个底栏追剧"）
+    //   —— 顺序与参考稿的 4 Tab 一致：首页 → 追剧 → 排行榜 → 我的
+    const TrackingPage(),
     const RankPage(),
     ProfilePage(),
   ];
@@ -95,12 +99,20 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   /// 所以这里不需要判断"当前在不在我的页"。
   void _switchTab(int i) {
     setState(() => _index = i);
-    // 「我的」= index 2（见 `_pages`）
-    if (i == 2) {
+    // ⚠️ index 与 `_pages` 的顺序**强耦合**（改顺序必须同步改这里）
+    //   当前：0=首页 1=追剧 2=排行榜 3=我的
+    const iTracking = 1;
+    const iProfile = 3;
+    if (i == iProfile) {
       ref.invalidate(statsProvider);
       ref.invalidate(accountsProvider);
     }
-    // 首页 = index 0：继续观看/最近添加也可能因播放而变
+    // 追剧页：订阅列表与 Emby 续播都可能变（刚播过/刚订阅）
+    if (i == iTracking) {
+      ref.invalidate(subscriptionsProvider);
+      ref.invalidate(subscribedKeysProvider);
+    }
+    // 首页：继续观看/最近添加也可能因播放而变
     if (i == 0) ref.invalidate(homeProvider);
   }
 
@@ -218,6 +230,9 @@ class _TabItem {
 
 const _tabItems = <_TabItem>[
   _TabItem(Icons.home_outlined, Icons.home_rounded, '首页'),
+  // ★ 「追剧」在首页**右侧**（用户要求，对齐参考稿的 4 Tab）
+  //   图标用 event_note（日历+条目）—— 参考稿底栏就是这个形状
+  _TabItem(Icons.event_note_outlined, Icons.event_note_rounded, '追剧'),
   _TabItem(Icons.leaderboard_outlined, Icons.leaderboard_rounded, '排行榜'),
   _TabItem(Icons.person_outline_rounded, Icons.person_rounded, '我的'),
 ];

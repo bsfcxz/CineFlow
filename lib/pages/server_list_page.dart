@@ -151,13 +151,13 @@ class _ServerListPageState extends ConsumerState<ServerListPage> {
               // ⚠️ 用 **13**（已有档位）而不是 13.5 ——
               //    `design_tokens_test` 守着"裸 fontSize 种类不超过 11"，
               //    新增一个 0.5px 档会变红，且 13 与 13.5 肉眼无差。
-              style: const TextStyle(fontSize: 13, color: Cf.text)),
+              style: TextStyle(fontSize: 13, color: Cf.text)),
           subtitle: sub == null
               ? null
               : Text(sub,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: Cf.text3)),
+                  style: TextStyle(fontSize: 11, color: Cf.text3)),
           onTap: () {
             final cb = widget.onItemTap;
             if (cb != null) {
@@ -173,7 +173,7 @@ class _ServerListPageState extends ConsumerState<ServerListPage> {
   }
 
   /// 无图/加载失败时的占位块（避免白洞）。
-  static Widget _thumbPlaceholder() => const ColoredBox(
+  static Widget _thumbPlaceholder() => ColoredBox(
         color: Cf.surface2,
         child: Icon(Icons.movie_outlined, size: 18, color: Cf.text3),
       );

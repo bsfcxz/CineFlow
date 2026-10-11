@@ -1285,7 +1285,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   Icon(Icons.network_check_rounded,
                       size: 20, color: Cf.warn),
                   SizedBox(width: 9),
-                  const Expanded(
+                  Expanded(
                     child: Text('网络较慢，缓冲跟不上播放',
                         style: TextStyle(fontSize: 11, color: Cf.text)),
                   ),
@@ -2311,7 +2311,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                                   }),
                               ]),
                               SizedBox(height: 6),
-                              const Row(children: [
+                              Row(children: [
                                 // 服务器实测无转码能力（免费版），故当前固定直连；
                                 // 结论与依据见 emby_provider.resolvePlayback 注释
                                 Text('直连播放（服务器不支持转码）',

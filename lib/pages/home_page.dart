@@ -15,7 +15,6 @@ import '../data/db/app_database.dart' show CalendarSubscription;
 import '../state/providers.dart';
 import '../widgets/media_cards.dart';
 import 'detail_page.dart';
-import 'open_player_resolved.dart';
 
 class HomePage extends ConsumerWidget {
   const HomePage({super.key});
@@ -60,36 +59,18 @@ class HomePage extends ConsumerWidget {
                 // 且订阅时落了**完整快照**（剧名/海报/平台/更新日）
                 // ⇒ 外部源（TMDB/B站）全挂也照样显示。
                 const _MyTrackingSection(),
-                if (d.resume.isNotEmpty)
-                  CfSection(
-                    title: '继续观看',
-                    trailing: '全部 ›',
-                    // ★ 原为 showComingSoon('播放历史') —— 但 HistoryPage 早就实现好了
-                    //（`lib/pages/history_page.dart`）。"做好了却没接上"比没做更糟：
-                    //   用户以为这功能不存在。实测发现于 2026-10 的按钮审查。
-                    onTrailing: () => context.push(Routes.history),
-                    child: SizedBox(
-                      // ⚠️ 必须跟着卡片宽度变（U9 测试抓到：写死 165 时
-                      //    Medium 溢出 11.4、Expanded 溢出 28.3 —— 横屏直接报
-                      //    `RenderFlex overflowed by 27 pixels`，
-                      //    底部文字被裁 + 黄色溢出条纹）。
-                      height: ContinueCard.heightFor(context),
-                      child: ListView.separated(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        itemCount: d.resume.length,
-                        separatorBuilder: (_, _) => SizedBox(width: 13),
-                        itemBuilder: (_, i) => ContinueCard(
-                            item: d.resume[i],
-                            api: ref.read(embyApiProvider)!,
-                            // ★ 改用 openPlayerResolved：剧集条目会先解析出分集列表再进播放器，
-//     播放列表面板才有"第 N 集"与进度（用户反馈它缺失）。
-//     直接 openPlayer 会把剧集当单条视频，列表为空。
-                        onTap: () =>
-                            openPlayerResolved(context, d.resume[i], ref)),
-                      ),
-                    ),
-                  ),
+                // ★ 「继续观看」已**移除**（用户要求）
+                //
+                // ## 为什么移除
+                // 它已移到「追剧」Tab 的第二个分页（与"追剧日历"并列）——
+                // 用户明确："将我的追剧中的追剧日历和首页的继续观看放在这儿"。
+                // 首页再放一份是**重复展示**：同一批内容在两处出现，
+                // 用户会困惑"哪个才是我要看的"。
+                //
+                // ## 数据没白拉（别顺手删 `d.resume`）
+                // `HomeData.resume` 仍被「追剧」Tab 复用（`HistoryPage`
+                // 走的 `getResume` 是**另一次**调用，但语义相同）。
+                // 保留字段可让"将来首页想恢复"变成一行代码的事。
                 if (d.collections.isNotEmpty)
                   CfSection(
                     title: '合集',
@@ -229,22 +210,34 @@ class _CarouselState extends State<_Carousel> {
 
   @override
   Widget build(BuildContext context) {
-    // ⚠️ 原先是写死的 `height: 270`。
+    // ★★ 高度改为 **58% 屏高**（用户要求"占首页半屏"，对齐参考稿）
     //
-    // 问题：270 在 1080×2400 这类长屏上只占屏高 **11%** —— 主视觉被压成一条，
-    // 海报细节看不清；而在矮屏/横屏上又偏大。
+    // ## 演进（每次都是被实际问题推动的）
+    // · 最早：写死 `height: 270` ⇒ 长屏上只占 11%，主视觉被压成一条
+    // · 上一版：34%（夹 230..420）⇒ 仍偏矮，用户要"占半屏"
+    // · **本版：58%**（夹 300..620）
     //
-    // 参考项目（Best-Flutter-UI-Templates 的 hero、LinPlayer 的 HomePage）
-    // 都用**相对屏高的比例**，而不是固定像素。这里取 34%，并夹在
-    // [230, 420] 之间：下限保证矮屏仍能看清标题与简介，
-    // 上限避免大屏上主视觉占掉整屏、把下方内容全推出视野。
+    // ## 为什么取 58%（实测参考稿的真实值）
+    // ```css
+    // .hero { height: 58vh; min-height: 440px; max-height: 520px; }
+    // ```
+    // 参考稿的值是给**桌面浏览器**的（窗口高 700–900px ⇒ 58vh ≈ 440–520）。
+    // 手机 393×873dp 时 58% = 506dp，**正好落在参考稿的 [440,520] 区间内**
+    // ⇒ 视觉比例一致。
+    //
+    // ## 为什么仍要夹取（不照抄 min/max）
+    // 参考稿的 440..520 是**绝对像素**，用在手机上会出问题：
+    // · 矮屏（如横屏 393dp 高）⇒ 440 会把内容全顶出屏幕
+    // · 大屏平板 ⇒ 520 又太小，主视觉显得局促
+    // ⇒ 用比例 + 更宽的夹取区间（300..620），既守住"半屏"观感，
+    //    又不会在极端尺寸下崩。
     final screenH = MediaQuery.sizeOf(context).height;
-    final heroH = (screenH * 0.34).clamp(230.0, 420.0);
+    final heroH = (screenH * 0.58).clamp(300.0, 620.0);
     // 断点类：Medium/Expanded 下主视觉给得更大方（屏宽富裕，标题与简介更从容）
     final wc = CfBreakpoints.of(MediaQuery.sizeOf(context).width);
     final heroH2 = wc == CfBreakpoints.compact
         ? heroH
-        : (heroH * 1.15).clamp(230.0, 480.0);
+        : (heroH * 1.15).clamp(300.0, 680.0);
     return SizedBox(
       height: heroH2,
       width: double.infinity,
@@ -262,7 +255,7 @@ class _CarouselState extends State<_Carousel> {
           ),
         ),
 
-        // ---- 页码指示器（右下角）----
+        // ---- 页码指示器（**底部居中**，对齐参考稿）----
         //
         // ## 为什么必须加（此前**完全没有**）
         //
@@ -274,10 +267,26 @@ class _CarouselState extends State<_Carousel> {
         // 每个点包 `CfTapTarget` —— 6px 的圆点裸放是点不中的
         // （审计实测本仓库最小可点元素仅 16×16，正是这类写法造成的）。
         if (widget.items.length > 1)
+          // ★ 居中（用户要求"轮播图底栏的滑动模块应该在中间"）
+          //
+          // ## 参考稿的做法（我实测 CSS 得到的）
+          // ```css
+          // .hero-dots { position: absolute; bottom: 22px;
+          //              left: 50%; transform: translateX(-50%); }
+          // ```
+          // 即**水平居中 + 距底 22px**。原先我放在右下角（`right: 18`），
+          // 与参考稿不一致。
+          //
+          // ## 为什么用 `left/right: 0 + Center` 而不是 `left: width/2`
+          // `Positioned(left: 0, right: 0)` 让子项获得整宽约束，
+          // 再用 `Center` 居中 —— 这样**圆点数量变化时自动重新居中**
+          //（写死 `left: 196` 那种会在圆点变多时偏掉）。
           Positioned(
-            right: 18,
+            left: 0,
+            right: 0,
             bottom: 22,
-            child: Row(
+            child: Center(
+              child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 for (var i = 0; i < widget.items.length; i++)
@@ -314,6 +323,7 @@ class _CarouselState extends State<_Carousel> {
                     ),
                   ),
               ],
+              ),
             ),
           ),
       ]),

@@ -274,7 +274,7 @@ class _SourceBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: Cf.gap2, vertical: 6),
       child: Row(
         children: [
-          const Icon(Icons.info_outline_rounded, size: 15, color: Cf.text3),
+          Icon(Icons.info_outline_rounded, size: 15, color: Cf.text3),
           const SizedBox(width: 6),
           Expanded(
             child: Text(

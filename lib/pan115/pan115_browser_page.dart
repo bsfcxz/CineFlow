@@ -133,7 +133,7 @@ class _Pan115BrowserPageState extends ConsumerState<Pan115BrowserPage> {
           return Column(children: [
             _accountBar(info),
             _breadcrumb(),
-            const Divider(height: 1, color: Cf.border),
+            Divider(height: 1, color: Cf.border),
             Expanded(child: _body()),
           ]);
         },

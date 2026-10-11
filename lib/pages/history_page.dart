@@ -44,11 +44,26 @@ final _historyProvider =
 });
 
 class HistoryPage extends ConsumerWidget {
-  const HistoryPage({super.key});
+  const HistoryPage({super.key, this.embedded = false});
+
+  /// **嵌入模式**：不显示返回键与自绘标题栏。
+  ///
+  /// ## 两种用法
+  /// · `false`（默认）—— 独立页面：从「我的 → 继续观看」进来，需要返回键
+  /// · `true` —— 嵌在「追剧」Tab 的第二个分页里；外层已给标题，
+  ///   且它是一级 Tab **没有可返回的地方** ⇒ 返回键会是死按钮
+  ///
+  /// ## 为什么不复制一份页面
+  /// 复制会让加载/空态/错误态/下拉刷新四处逻辑各自演化
+  ///（"改了一处忘了另一处" —— 本仓库已有多起同类教训）。
+  final bool embedded;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final history = ref.watch(_historyProvider);
+    if (embedded) {
+      // 嵌入时不要 Scaffold（外层 Tab 页已有）、不要标题栏
+      return _body(context, ref, null);
+    }
     return Scaffold(
       backgroundColor: Cf.bg,
       body: SafeArea(
@@ -58,46 +73,55 @@ class HistoryPage extends ConsumerWidget {
             const Text('继续观看',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
           ]),
-          Expanded(
-            child: history.when(
-              loading: () => Center(
-                  child: CircularProgressIndicator(color: Cf.accent)),
-              error: (e, _) => CfErrorView(
-                message: e is MediaException ? e.message : '加载失败',
-                onRetry: () => ref.invalidate(_historyProvider),
-              ),
-              data: (items) {
-                if (items.isEmpty) {
-                  return Center(
-                      child: Text('没有正在观看的内容',
-                          style:
-                              TextStyle(fontSize: 12, color: Cf.text3)));
-                }
-                final api = ref.watch(embyApiProvider)!;
-                return RefreshIndicator(
-                  color: Cf.accent,
-                  backgroundColor: Cf.surface,
-                  onRefresh: () => ref.refresh(_historyProvider.future),
-                  child: GridView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: items.length,
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      mainAxisSpacing: 10,
-                      crossAxisSpacing: 10,
-                      childAspectRatio: 2 / 3.45,
-                    ),
-                    itemBuilder: (context, i) => PosterCard(
-                        item: items[i],
-                        api: api,
-                        onTap: () => openMediaItem(context, items[i])),
-                  ),
-                );
-              },
-            ),
-          ),
+          Expanded(child: _body(context, ref, null)),
         ]),
+      ),
+    );
+  }
+
+  /// 列表体（独立/嵌入两种模式**共用**）。
+  ///
+  /// `preloaded` 非空时直接用（嵌入模式已在上层 `when` 里拿到数据），
+  /// 为 null 时自己 `when`（独立模式）。
+  Widget _body(
+      BuildContext context, WidgetRef ref, List<MediaItem>? preloaded) {
+    if (preloaded != null) return _list(context, ref, preloaded);
+    final history = ref.watch(_historyProvider);
+    return history.when(
+      loading: () =>
+          Center(child: CircularProgressIndicator(color: Cf.accent)),
+      error: (e, _) => CfErrorView(
+        message: e is MediaException ? e.message : '加载失败',
+        onRetry: () => ref.invalidate(_historyProvider),
+      ),
+      data: (items) => _list(context, ref, items),
+    );
+  }
+
+  Widget _list(BuildContext context, WidgetRef ref, List<MediaItem> items) {
+    if (items.isEmpty) {
+      return Center(
+          child: Text('没有正在观看的内容',
+              style: TextStyle(fontSize: 12, color: Cf.text3)));
+    }
+    final api = ref.watch(embyApiProvider)!;
+    return RefreshIndicator(
+      color: Cf.accent,
+      backgroundColor: Cf.surface,
+      onRefresh: () => ref.refresh(_historyProvider.future),
+      child: GridView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: items.length,
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 2 / 3.45,
+        ),
+        itemBuilder: (context, i) => PosterCard(
+            item: items[i],
+            api: api,
+            onTap: () => openMediaItem(context, items[i])),
       ),
     );
   }

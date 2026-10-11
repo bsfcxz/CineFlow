@@ -6,23 +6,23 @@ import 'package:flutter/material.dart';
 /// **运行时可变**的（static 非 const），其余中性色保持 const。
 /// 改动 Cf 主题色字段后，凡在 const 表达式里引用它们的构造都要去掉 const。
 abstract final class Cf {
-  static const bg = Color(0xFF0B1020); // 全局背景（深海军蓝）
-  static const surface = Color(0xFF111A33); // 卡片
-  static const surface2 = Color(0xFF162040); // 输入框等二级表面
-  static const surface3 = Color(0xFF1B2647); // 三级表面（对话框/底部弹层用）
-  static const border = Color(0xFF233463);
+  static Color bg = const Color(0xFF0B1020); // 全局背景·随主题切换
+  static Color surface = const Color(0xFF111A33); // 卡片·随主题
+  static Color surface2 = const Color(0xFF162040); // 二级表面·随主题
+  static Color surface3 = const Color(0xFF1B2647); // 三级表面·随主题
+  static Color border = const Color(0xFF233463); // 描边·随主题
   static Color accent = const Color(0xFF00D4FF); // 主强调（青）·运行时可切换
   static Color accent2 = const Color(0xFF2E6BFF);
   static Color accent3 = const Color(0xFF6C5CE7);
-  static const text = Color(0xFFE6F4FF);
-  static const text2 = Color(0xFF8BA3CC);
-  static const text3 = Color(0xFF6D8ABA);
+  static Color text = const Color(0xFFE6F4FF); // 主文字·随主题
+  static Color text2 = const Color(0xFF8BA3CC); // 次级文字·随主题
+  static Color text3 = const Color(0xFF6D8ABA); // 弱化文字·随主题
   static const success = Color(0xFF00E5A0);
   static const warn = Color(0xFFFFB347);
   static const danger = Color(0xFFFF6B6B);
   static const emby = Color(0xFF52B54B);
   static const ai = Color(0xFFC084FC);
-  static const ink = Color(0xFF060A14); // 强调色按钮上的深色文字
+  static Color ink = const Color(0xFF060A14); // 强调按钮上的深色文字·随主题
 
   // ---- 间距节奏（4/8dp 体系，见 ui-ux-pro-max「8dp spacing rhythm」）----
   // 统一放这里而不是散落各页，避免出现 13/17/22 这类无节奏的魔数。
@@ -91,11 +91,37 @@ abstract final class Cf {
   ];
 
   /// 主题色预设（外观页四选一，index 对应）：名称 / accent / accent2 / accent3
-  static const themePresets = <(String, Color, Color, Color)>[
-    ('青', Color(0xFF00D4FF), Color(0xFF2E6BFF), Color(0xFF6C5CE7)),
-    ('绿', Color(0xFF52B54B), Color(0xFF00E5A0), Color(0xFF2E6BFF)),
-    ('紫', Color(0xFF6C5CE7), Color(0xFFC084FC), Color(0xFF2E6BFF)),
-    ('橙', Color(0xFFFF6B6B), Color(0xFFFFB347), Color(0xFF9B6BFF)),
+  /// 主题预设：`(名称, accent, accent2, accent3, bg, surface, text, text2, text3)`
+  ///
+  /// ## 为什么从 4 元组扩到 9 元组（2026-10-11）
+  /// 原先预设只含**强调色**（accent/accent2/accent3），结构色
+  /// （bg/surface/text）是 `const` 写死的 ⇒ 无法换肤。
+  /// 用户给了一套**完整配色规格**（含背景/卡片/文字），
+  /// 必须让结构色也进预设。
+  ///
+  /// ## 对比度（WCAG 2.1 实测，见 `docs/UI-DESIGN.md`）
+  /// 「霓虹粉」板：主文字 19.4:1 · 次级 6.4:1 · 弱化 3.4:1
+  /// · 主色 6.2:1 · 副色 4.9:1 ⇒ **全部达标**
+  static const themePresets = <(String, Color, Color, Color, Color, Color,
+      Color, Color, Color)>[
+    // 原名保留（结构色 = 现行深海军蓝）
+    ('青', Color(0xFF00D4FF), Color(0xFF2E6BFF), Color(0xFF6C5CE7),
+        Color(0xFF0B1020), Color(0xFF111A33), Color(0xFFE6F4FF),
+        Color(0xFF8BA3CC), Color(0xFF6D8ABA)),
+    ('绿', Color(0xFF52B54B), Color(0xFF00E5A0), Color(0xFF2E6BFF),
+        Color(0xFF0B1020), Color(0xFF111A33), Color(0xFFE6F4FF),
+        Color(0xFF8BA3CC), Color(0xFF6D8ABA)),
+    ('紫', Color(0xFF6C5CE7), Color(0xFFC084FC), Color(0xFF2E6BFF),
+        Color(0xFF0B1020), Color(0xFF111A33), Color(0xFFE6F4FF),
+        Color(0xFF8BA3CC), Color(0xFF6D8ABA)),
+    ('橙', Color(0xFFFF6B6B), Color(0xFFFFB347), Color(0xFF9B6BFF),
+        Color(0xFF0B1020), Color(0xFF111A33), Color(0xFFE6F4FF),
+        Color(0xFF8BA3CC), Color(0xFF6D8ABA)),
+    // ★ 「霓虹粉」—— 用户给的完整规格（背景 #0B0D12 / 卡片 #151922 /
+    //    主色 #FF4D8D / 副色 #A855F7 / 文字 #FFFFFF·#8B95A7·#5D6675）
+    ('粉', Color(0xFFFF4D8D), Color(0xFFA855F7), Color(0xFF6C5CE7),
+        Color(0xFF0B0D12), Color(0xFF151922), Color(0xFFFFFFFF),
+        Color(0xFF8B95A7), Color(0xFF5D6675)),
   ];
 
   /// 应用主题预设（外观页保存 / 启动恢复时调用）
@@ -104,6 +130,21 @@ abstract final class Cf {
     accent = p.$2;
     accent2 = p.$3;
     accent3 = p.$4;
+    // ★ 结构色也随主题走（用户要求换肤含背景/卡片/文字）
+    //
+    // ⚠️ 顺序无关，但要**全部**赋值 —— 漏一个就会出现
+    //    "背景换了但文字还是旧色"（对比度可能因此不达标）。
+    bg = p.$5;
+    surface = p.$6;
+    // 二级/三级表面与描边由 surface 派生（保证任何一套主题都协调）
+    surface2 = _lighten(p.$6, 0.055);
+    surface3 = _lighten(p.$6, 0.10);
+    border = _lighten(p.$6, 0.20);
+    text = p.$7;
+    text2 = p.$8;
+    text3 = p.$9;
+    // 强调色按钮上的深色文字：换个比 bg 更深的（保持"压在亮色上"的对比）
+    ink = _darken(p.$5, 0.25);
     logoGradient = LinearGradient(
       begin: Alignment.topLeft,
       end: Alignment.bottomRight,
@@ -129,6 +170,36 @@ abstract final class Cf {
     end: Alignment.bottomRight,
     colors: [accent, accent2],
   );
+
+  /// 把颜色往白色方向提亮 `amount`（0–1，纯白为 1）。
+  ///
+  /// ## 为什么用派生而不是逐主题手写
+  /// 每套主题若都要手写 surface2/surface3/border，
+  /// 加一套主题就要写 3 个色值 —— 且**容易写出不协调的组合**
+  /// （如"卡片偏蓝、描边偏紫"）。派生能保证同色调递进。
+  ///
+  /// ⚠️ 提亮是**线性插值**，不是真的调 HSL 明度 ——
+  ///    对深色主题足够（三个表面色差异很小）。
+  static Color _lighten(Color c, double amount) {
+    final a = amount.clamp(0.0, 1.0);
+    return Color.fromARGB(
+      255,
+      (c.r + (1 - c.r) * a).round().clamp(0, 255),
+      (c.g + (1 - c.g) * a).round().clamp(0, 255),
+      (c.b + (1 - c.b) * a).round().clamp(0, 255),
+    );
+  }
+
+  /// 把颜色往黑色方向压暗 `amount`（用于 `ink`：亮按钮上的深色文字）。
+  static Color _darken(Color c, double amount) {
+    final a = (1 - amount).clamp(0.0, 1.0);
+    return Color.fromARGB(
+      255,
+      (c.r * a).round().clamp(0, 255),
+      (c.g * a).round().clamp(0, 255),
+      (c.b * a).round().clamp(0, 255),
+    );
+  }
 
   static ThemeData theme() {
     final base = ThemeData(
@@ -166,9 +237,9 @@ abstract final class Cf {
         elevation: 0,
         scrolledUnderElevation: 0, // 关掉滚动变色，保持沉浸
         centerTitle: false,
-        titleTextStyle: const TextStyle(
+        titleTextStyle: TextStyle(
           fontSize: 16, fontWeight: FontWeight.w600, color: text),
-        iconTheme: const IconThemeData(color: text2, size: 20),
+        iconTheme: IconThemeData(color: text2, size: 20),
       ),
 
       cardTheme: CardThemeData(
@@ -177,13 +248,13 @@ abstract final class Cf {
         // 卡片会和背景糊在一起。
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(radiusMd),
-          side: const BorderSide(color: border),
+          side: BorderSide(color: border),
         ),
         elevation: 0,
         margin: EdgeInsets.zero,
       ),
 
-      listTileTheme: const ListTileThemeData(
+      listTileTheme: ListTileThemeData(
         iconColor: text2,
         textColor: text,
         subtitleTextStyle: TextStyle(fontSize: 12, color: text3),
@@ -195,14 +266,14 @@ abstract final class Cf {
         surfaceTintColor: Colors.transparent, // 关掉 M3 的染色（会偏紫）
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(radiusLg),
-          side: const BorderSide(color: border),
+          side: BorderSide(color: border),
         ),
-        titleTextStyle: const TextStyle(
+        titleTextStyle: TextStyle(
           fontSize: 16, fontWeight: FontWeight.w600, color: text),
-        contentTextStyle: const TextStyle(fontSize: 13, color: text2),
+        contentTextStyle: TextStyle(fontSize: 13, color: text2),
       ),
 
-      bottomSheetTheme: const BottomSheetThemeData(
+      bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: surface3,
         surfaceTintColor: Colors.transparent,
         modalBackgroundColor: surface3,
@@ -236,8 +307,8 @@ abstract final class Cf {
       chipTheme: ChipThemeData(
         backgroundColor: surface2,
         selectedColor: accent.withValues(alpha: 0.18),
-        side: const BorderSide(color: border),
-        labelStyle: const TextStyle(fontSize: 12, color: text2),
+        side: BorderSide(color: border),
+        labelStyle: TextStyle(fontSize: 12, color: text2),
         secondaryLabelStyle: TextStyle(fontSize: 12, color: accent),
         showCheckmark: false,
         padding: const EdgeInsets.symmetric(horizontal: gap3, vertical: gap1),
@@ -245,7 +316,7 @@ abstract final class Cf {
           borderRadius: BorderRadius.circular(radiusSm)),
       ),
 
-      dividerTheme: const DividerThemeData(
+      dividerTheme: DividerThemeData(
         color: border, thickness: 1, space: 1),
 
       textButtonTheme: TextButtonThemeData(
@@ -271,7 +342,7 @@ abstract final class Cf {
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           foregroundColor: text,
-          side: const BorderSide(color: border),
+          side: BorderSide(color: border),
           minimumSize: const Size(0, 48),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(radiusMd)),
@@ -296,12 +367,12 @@ abstract final class Cf {
 
       snackBarTheme: SnackBarThemeData(
         backgroundColor: surface3,
-        contentTextStyle: const TextStyle(fontSize: 13, color: text),
+        contentTextStyle: TextStyle(fontSize: 13, color: text),
         actionTextColor: accent,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(radiusMd),
-          side: const BorderSide(color: border),
+          side: BorderSide(color: border),
         ),
       ),
 
@@ -335,7 +406,7 @@ abstract final class Cf {
         fillColor: WidgetStateProperty.resolveWith((s) =>
             s.contains(WidgetState.selected) ? accent : Colors.transparent),
         checkColor: WidgetStateProperty.all(ink),
-        side: const BorderSide(color: border, width: 1.5),
+        side: BorderSide(color: border, width: 1.5),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(4)),
       ),
@@ -348,8 +419,8 @@ abstract final class Cf {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: surface2,
-        hintStyle: const TextStyle(color: text3, fontSize: 13),
-        labelStyle: const TextStyle(color: text3, fontSize: 13),
+        hintStyle: TextStyle(color: text3, fontSize: 13),
+        labelStyle: TextStyle(color: text3, fontSize: 13),
         // 输入框高度 ≥48dp（移动端触控目标）
         contentPadding:
             const EdgeInsets.symmetric(horizontal: gap4, vertical: gap4),
@@ -414,20 +485,20 @@ abstract final class Cf {
   //
   // 规则：**不再新增介于两档之间的字号**（如 12.5）。
   // 需要更弱就用颜色令牌（text2/text3）表达，而不是再切 0.5px。
-  static const pageTitle = TextStyle(
+  static final pageTitle = TextStyle(
       fontSize: 20, fontWeight: FontWeight.w700, color: text, height: 1.25);
-  static const section = TextStyle(
+  static final section = TextStyle(
       fontSize: 16, fontWeight: FontWeight.w600, color: text, height: 1.3);
-  static const title = TextStyle(
+  static final title = TextStyle(
       fontSize: 14, fontWeight: FontWeight.w600, color: text, height: 1.35);
-  static const body = TextStyle(fontSize: 13, color: text, height: 1.45);
-  static const label = TextStyle(fontSize: 12, color: text2, height: 1.4);
-  static const caption = TextStyle(fontSize: 11, color: text3, height: 1.4);
-  static const micro = TextStyle(fontSize: 10, color: text3, height: 1.3);
+  static final body = TextStyle(fontSize: 13, color: text, height: 1.45);
+  static final label = TextStyle(fontSize: 12, color: text2, height: 1.4);
+  static final caption = TextStyle(fontSize: 11, color: text3, height: 1.4);
+  static final micro = TextStyle(fontSize: 10, color: text3, height: 1.3);
 
   /// 数字等宽（进度、时长、计数）——避免数字变化时宽度跳动。
   /// 见 ui-ux-pro-max「number-tabular」。
-  static const numeric = TextStyle(
+  static final numeric = TextStyle(
     fontSize: 13,
     color: text,
     height: 1.4,

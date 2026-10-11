@@ -110,6 +110,29 @@ class MediaItem {
   /// 因此：**`unplayedItemCount < 总集数` ⇒ 至少看过一集**，
   /// 详情页据此把「立即播放」换成「继续播放」。
   final int? unplayedItemCount;
+
+  /// **总集数**（Emby `ChildCount`）—— 进度的**分母**。
+  ///
+  /// ## 为什么要单独映射（实测驱动）
+  /// 追剧卡片要显示「已看 8/12 · 剩 4 集」，分母只能从这里拿。
+  /// 实测该字段语义正确：
+  /// · 典籍里的中国 第二季 -> ChildCount=1,  Unplayed=1
+  /// · 星球大战：愿景    -> ChildCount=8,  Unplayed=8
+  /// · 讨伐魔王          -> ChildCount=12, Unplayed=12
+  ///
+  /// ⚠️ 不用 `RecursiveItemCount`：它在「含子季的剧」上与
+  ///    ChildCount 语义不同（ChildCount 是"这一层有几个子项"）。
+  final int? childCount;
+
+  /// **连载状态**（Emby `Status`：`Continuing` / `Ended`）。
+  ///
+  /// ## 实测（本轮，300 部 Series）
+  /// 填充率 **100%**：`Continuing` 57 部 / `Ended` 243 部。
+  /// ⇒ 比 TMDB 的 `status` 更"贴库"（它是这台服务器对这部剧的判定）。
+  ///
+  /// ⚠️ 与 TMDB 的状态**可能不一致**（国内剧的 TMDB 数据常滞后）。
+  ///    订阅时优先用 Emby 的（用户看的是自己的库）。
+  final String? status;
   final Map<String, String> imageTags;
   final List<String> backdropImageTags;
   final String? parentBackdropItemId;
@@ -162,6 +185,8 @@ class MediaItem {
     this.playedPercentage,
     this.positionTicks,
     this.unplayedItemCount,
+    this.childCount,
+    this.status,
     this.imageTags = const {},
     this.backdropImageTags = const [],
     this.parentBackdropItemId,
@@ -203,6 +228,10 @@ class MediaItem {
       playedPercentage: (ud?['PlayedPercentage'] as num?)?.toDouble(),
       positionTicks: (ud?['PositionTicks'] as num?)?.toInt(),
       unplayedItemCount: (ud?['UnplayedItemCount'] as num?)?.toInt(),
+      // 总集数：实测 Emby 的 ChildCount 就是「这部剧有多少集」
+      childCount: (j['ChildCount'] as num?)?.toInt(),
+      // 连载状态：实测 Emby 的 Status（Continuing/Ended）填充率 100%
+      status: j['Status'] as String?,
       imageTags: ((j['ImageTags'] as Map<String, dynamic>?) ?? const {})
           .cast<String, String>(),
       backdropImageTags: ((j['BackdropImageTags'] as List?) ?? const [])

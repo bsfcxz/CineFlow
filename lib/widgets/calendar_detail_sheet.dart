@@ -123,7 +123,7 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _Poster(url: cover),
-                const SizedBox(width: 13),
+                SizedBox(width: 13),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -136,7 +136,7 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
                             fontSize: 16, fontWeight: FontWeight.w800),
                       ),
                       // 类别 + 平台（豆瓣弹层这里是评分，我们先给归属信息）
-                      const SizedBox(height: 5),
+                      SizedBox(height: 5),
                       Wrap(
                         spacing: 6,
                         runSpacing: 4,
@@ -147,7 +147,7 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
                         ],
                       ),
                       if (rating != null) ...[
-                        const SizedBox(height: 5),
+                        SizedBox(height: 5),
                         Row(children: [
                           const Icon(Icons.star_rounded,
                               size: 16, color: Cf.warn),
@@ -159,7 +159,7 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
                                   color: Cf.warn)),
                           if (d?.voteCount case final c? when c > 0)
                             Text('  $c 人评过',
-                                style: const TextStyle(
+                                style: TextStyle(
                                     fontSize: 10, color: Cf.text3)),
                         ]),
                       ],
@@ -170,7 +170,7 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
                           child: Text(sub,
                               maxLines: 3,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 10,
                                   color: Cf.text3,
                                   height: 1.5)),
@@ -186,9 +186,9 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
               child: _loading
                   ? Center(
                       child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        // ⚠️ 不能写 `const CircularProgressIndicator(color: Cf.accent)`
-                        //    —— 虽然 `Cf.accent` 本身是 `const Color`，但放进
+                        padding: EdgeInsets.all(20),
+                        // ⚠️ 不能写 `CircularProgressIndicator(color: Cf.accent)`
+                        //    —— 虽然 `Cf.accent` 本身是 `Color`，但放进
                         //    `const` 构造里 Dart 仍报 `invalid_constant`
                         //    （`Cf.accent` 是**静态成员**，不是字面量）。
                         //    这里用它的字面值并**加守卫测试**防漂移。
@@ -207,40 +207,40 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
                       children: [
                         if (d?.overview case final intro?
                             when intro.isNotEmpty) ...[
-                          const Text('简介',
+                          Text('简介',
                               style: TextStyle(
                                   fontSize: 13, fontWeight: FontWeight.w800)),
-                          const SizedBox(height: 6),
+                          SizedBox(height: 6),
                           Text(intro,
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 12,
                                   color: Cf.text2,
                                   height: 1.7)),
-                          const SizedBox(height: 14),
+                          SizedBox(height: 14),
                         ] else if (_failed)
                           Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
+                            padding: EdgeInsets.only(bottom: 12),
                             child: Text(
                               e.source == 'tmdb'
                                   ? '详情加载失败（可能网络波动），可稍后重试'
                                   : '该来源暂不支持查看详情',
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 12, color: Cf.text3),
                             ),
                           ),
                         // 一行标语（TMDB 的 tagline，豆瓣没有对应物但很有味道）
                         if (d?.tagline case final tl? when tl.isNotEmpty) ...[
                           Text('「$tl」',
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 11,
                                   color: Cf.text3,
                                   fontStyle: FontStyle.italic)),
                           const SizedBox(height: 12),
                         ],
                         _infoRow('导演', d?.directors ?? const []),
-                        _infoRow('主演', (d?.actors ?? const []).take(8).toList()),
-                        _infoRow('类型', d?.genres ?? const []),
-                        _infoRow('制片国家/地区', d?.countries ?? const []),
+                        _infoRow('主演', (d?.actors ?? []).take(8).toList()),
+                        _infoRow('类型', d?.genres ?? []),
+                        _infoRow('制片国家/地区', d?.countries ?? []),
                         _infoRow('播放平台', d?.platforms ?? [
                           if (e.platform case final p?) p
                         ]),
@@ -251,11 +251,11 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
                           '${_weekdayCn(e.weekdayResolved)}'
                               '${e.episode == null ? '' : ' · ${e.episode}'}'
                         ]),
-                        const SizedBox(height: 8),
+                        SizedBox(height: 8),
                       ],
                     ),
             ),
-            const SizedBox(height: 10),
+            SizedBox(height: 10),
 
             // ── 底部动作行（对齐豆瓣弹层：主按钮 + 两个图标）──
             Row(
@@ -274,7 +274,7 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
                         _actionLabel(d, e),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w800,
                             color: Cf.ink),
@@ -365,11 +365,11 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
           SizedBox(
             width: 84,
             child: Text(label,
-                style: const TextStyle(fontSize: 11, color: Cf.text3)),
+                style: TextStyle(fontSize: 11, color: Cf.text3)),
           ),
           Expanded(
             child: Text(v.join(' / '),
-                style: const TextStyle(fontSize: 11, color: Cf.text2)),
+                style: TextStyle(fontSize: 11, color: Cf.text2)),
           ),
         ],
       ),
@@ -396,7 +396,7 @@ class _Poster extends StatelessWidget {
             color: Cf.surface2,
           ),
           alignment: Alignment.center,
-          child: const Icon(Icons.movie_outlined, color: Cf.text3),
+          child: Icon(Icons.movie_outlined, color: Cf.text3),
         );
     if (u == null || u.isEmpty) return fallback();
     return ClipRRect(

@@ -171,7 +171,7 @@ class _PlaybackSettingsPageState extends ConsumerState<PlaybackSettingsPage> {
                           size: 16, color: Cf.ai),
                     ),
                     SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [

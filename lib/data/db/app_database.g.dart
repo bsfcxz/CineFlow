@@ -846,6 +846,16 @@ class $CalendarSubscriptionsTable extends CalendarSubscriptions
     requiredDuringInsert: false,
     defaultValue: const Constant(''),
   );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
   static const VerificationMeta _subscribedAtMeta = const VerificationMeta(
     'subscribedAt',
   );
@@ -868,6 +878,7 @@ class $CalendarSubscriptionsTable extends CalendarSubscriptions
     platform,
     category,
     lastAirDate,
+    status,
     subscribedAt,
   ];
   @override
@@ -945,6 +956,12 @@ class $CalendarSubscriptionsTable extends CalendarSubscriptions
         ),
       );
     }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    }
     if (data.containsKey('subscribed_at')) {
       context.handle(
         _subscribedAtMeta,
@@ -1001,6 +1018,10 @@ class $CalendarSubscriptionsTable extends CalendarSubscriptions
         DriftSqlType.string,
         data['${effectivePrefix}last_air_date'],
       )!,
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
       subscribedAt: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}subscribed_at'],
@@ -1043,6 +1064,17 @@ class CalendarSubscription extends DataClass
   /// 最近一次已知的更新日（`yyyy-MM-dd`），用于排序与"还有几天"。
   final String lastAirDate;
 
+  /// **状态**（`连载中` / `已完结`；未知时为空串）。
+  ///
+  /// ## 为什么落库（用户要求"已完结的显示已完结，连载中的显示连载中"）
+  /// 与剧名/海报同理：订阅必须能**断网显示**。
+  /// 现查的话断网时状态空白 ⇒ 用户看到一张没有状态的怪卡片。
+  ///
+  /// ⚠️ 存的是**中文结果**而不是 TMDB 原始值（`Returning Series`）：
+  ///    映射规则一变，老数据不会自动跟随 —— 但那样只需重订一次，
+  ///    而存原始值会让 UI 每次都要做映射（多一处可能漏的地方）。
+  final String status;
+
   /// 订阅时间（Unix 秒）。
   final int subscribedAt;
   const CalendarSubscription({
@@ -1055,6 +1087,7 @@ class CalendarSubscription extends DataClass
     required this.platform,
     required this.category,
     required this.lastAirDate,
+    required this.status,
     required this.subscribedAt,
   });
   @override
@@ -1069,6 +1102,7 @@ class CalendarSubscription extends DataClass
     map['platform'] = Variable<String>(platform);
     map['category'] = Variable<String>(category);
     map['last_air_date'] = Variable<String>(lastAirDate);
+    map['status'] = Variable<String>(status);
     map['subscribed_at'] = Variable<int>(subscribedAt);
     return map;
   }
@@ -1084,6 +1118,7 @@ class CalendarSubscription extends DataClass
       platform: Value(platform),
       category: Value(category),
       lastAirDate: Value(lastAirDate),
+      status: Value(status),
       subscribedAt: Value(subscribedAt),
     );
   }
@@ -1103,6 +1138,7 @@ class CalendarSubscription extends DataClass
       platform: serializer.fromJson<String>(json['platform']),
       category: serializer.fromJson<String>(json['category']),
       lastAirDate: serializer.fromJson<String>(json['lastAirDate']),
+      status: serializer.fromJson<String>(json['status']),
       subscribedAt: serializer.fromJson<int>(json['subscribedAt']),
     );
   }
@@ -1119,6 +1155,7 @@ class CalendarSubscription extends DataClass
       'platform': serializer.toJson<String>(platform),
       'category': serializer.toJson<String>(category),
       'lastAirDate': serializer.toJson<String>(lastAirDate),
+      'status': serializer.toJson<String>(status),
       'subscribedAt': serializer.toJson<int>(subscribedAt),
     };
   }
@@ -1133,6 +1170,7 @@ class CalendarSubscription extends DataClass
     String? platform,
     String? category,
     String? lastAirDate,
+    String? status,
     int? subscribedAt,
   }) => CalendarSubscription(
     source: source ?? this.source,
@@ -1144,6 +1182,7 @@ class CalendarSubscription extends DataClass
     platform: platform ?? this.platform,
     category: category ?? this.category,
     lastAirDate: lastAirDate ?? this.lastAirDate,
+    status: status ?? this.status,
     subscribedAt: subscribedAt ?? this.subscribedAt,
   );
   CalendarSubscription copyWithCompanion(CalendarSubscriptionsCompanion data) {
@@ -1159,6 +1198,7 @@ class CalendarSubscription extends DataClass
       lastAirDate: data.lastAirDate.present
           ? data.lastAirDate.value
           : this.lastAirDate,
+      status: data.status.present ? data.status.value : this.status,
       subscribedAt: data.subscribedAt.present
           ? data.subscribedAt.value
           : this.subscribedAt,
@@ -1177,6 +1217,7 @@ class CalendarSubscription extends DataClass
           ..write('platform: $platform, ')
           ..write('category: $category, ')
           ..write('lastAirDate: $lastAirDate, ')
+          ..write('status: $status, ')
           ..write('subscribedAt: $subscribedAt')
           ..write(')'))
         .toString();
@@ -1193,6 +1234,7 @@ class CalendarSubscription extends DataClass
     platform,
     category,
     lastAirDate,
+    status,
     subscribedAt,
   );
   @override
@@ -1208,6 +1250,7 @@ class CalendarSubscription extends DataClass
           other.platform == this.platform &&
           other.category == this.category &&
           other.lastAirDate == this.lastAirDate &&
+          other.status == this.status &&
           other.subscribedAt == this.subscribedAt);
 }
 
@@ -1222,6 +1265,7 @@ class CalendarSubscriptionsCompanion
   final Value<String> platform;
   final Value<String> category;
   final Value<String> lastAirDate;
+  final Value<String> status;
   final Value<int> subscribedAt;
   final Value<int> rowid;
   const CalendarSubscriptionsCompanion({
@@ -1234,6 +1278,7 @@ class CalendarSubscriptionsCompanion
     this.platform = const Value.absent(),
     this.category = const Value.absent(),
     this.lastAirDate = const Value.absent(),
+    this.status = const Value.absent(),
     this.subscribedAt = const Value.absent(),
     this.rowid = const Value.absent(),
   });
@@ -1247,6 +1292,7 @@ class CalendarSubscriptionsCompanion
     this.platform = const Value.absent(),
     this.category = const Value.absent(),
     this.lastAirDate = const Value.absent(),
+    this.status = const Value.absent(),
     required int subscribedAt,
     this.rowid = const Value.absent(),
   }) : source = Value(source),
@@ -1263,6 +1309,7 @@ class CalendarSubscriptionsCompanion
     Expression<String>? platform,
     Expression<String>? category,
     Expression<String>? lastAirDate,
+    Expression<String>? status,
     Expression<int>? subscribedAt,
     Expression<int>? rowid,
   }) {
@@ -1276,6 +1323,7 @@ class CalendarSubscriptionsCompanion
       if (platform != null) 'platform': platform,
       if (category != null) 'category': category,
       if (lastAirDate != null) 'last_air_date': lastAirDate,
+      if (status != null) 'status': status,
       if (subscribedAt != null) 'subscribed_at': subscribedAt,
       if (rowid != null) 'rowid': rowid,
     });
@@ -1291,6 +1339,7 @@ class CalendarSubscriptionsCompanion
     Value<String>? platform,
     Value<String>? category,
     Value<String>? lastAirDate,
+    Value<String>? status,
     Value<int>? subscribedAt,
     Value<int>? rowid,
   }) {
@@ -1304,6 +1353,7 @@ class CalendarSubscriptionsCompanion
       platform: platform ?? this.platform,
       category: category ?? this.category,
       lastAirDate: lastAirDate ?? this.lastAirDate,
+      status: status ?? this.status,
       subscribedAt: subscribedAt ?? this.subscribedAt,
       rowid: rowid ?? this.rowid,
     );
@@ -1339,6 +1389,9 @@ class CalendarSubscriptionsCompanion
     if (lastAirDate.present) {
       map['last_air_date'] = Variable<String>(lastAirDate.value);
     }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
     if (subscribedAt.present) {
       map['subscribed_at'] = Variable<int>(subscribedAt.value);
     }
@@ -1360,6 +1413,7 @@ class CalendarSubscriptionsCompanion
           ..write('platform: $platform, ')
           ..write('category: $category, ')
           ..write('lastAirDate: $lastAirDate, ')
+          ..write('status: $status, ')
           ..write('subscribedAt: $subscribedAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -1800,6 +1854,7 @@ typedef $$CalendarSubscriptionsTableCreateCompanionBuilder =
       Value<String> platform,
       Value<String> category,
       Value<String> lastAirDate,
+      Value<String> status,
       required int subscribedAt,
       Value<int> rowid,
     });
@@ -1814,6 +1869,7 @@ typedef $$CalendarSubscriptionsTableUpdateCompanionBuilder =
       Value<String> platform,
       Value<String> category,
       Value<String> lastAirDate,
+      Value<String> status,
       Value<int> subscribedAt,
       Value<int> rowid,
     });
@@ -1869,6 +1925,11 @@ class $$CalendarSubscriptionsTableFilterComposer
 
   ColumnFilters<String> get lastAirDate => $composableBuilder(
     column: $table.lastAirDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -1932,6 +1993,11 @@ class $$CalendarSubscriptionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get subscribedAt => $composableBuilder(
     column: $table.subscribedAt,
     builder: (column) => ColumnOrderings(column),
@@ -1975,6 +2041,9 @@ class $$CalendarSubscriptionsTableAnnotationComposer
     column: $table.lastAirDate,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
 
   GeneratedColumn<int> get subscribedAt => $composableBuilder(
     column: $table.subscribedAt,
@@ -2037,6 +2106,7 @@ class $$CalendarSubscriptionsTableTableManager
                 Value<String> platform = const Value.absent(),
                 Value<String> category = const Value.absent(),
                 Value<String> lastAirDate = const Value.absent(),
+                Value<String> status = const Value.absent(),
                 Value<int> subscribedAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => CalendarSubscriptionsCompanion(
@@ -2049,6 +2119,7 @@ class $$CalendarSubscriptionsTableTableManager
                 platform: platform,
                 category: category,
                 lastAirDate: lastAirDate,
+                status: status,
                 subscribedAt: subscribedAt,
                 rowid: rowid,
               ),
@@ -2063,6 +2134,7 @@ class $$CalendarSubscriptionsTableTableManager
                 Value<String> platform = const Value.absent(),
                 Value<String> category = const Value.absent(),
                 Value<String> lastAirDate = const Value.absent(),
+                Value<String> status = const Value.absent(),
                 required int subscribedAt,
                 Value<int> rowid = const Value.absent(),
               }) => CalendarSubscriptionsCompanion.insert(
@@ -2075,6 +2147,7 @@ class $$CalendarSubscriptionsTableTableManager
                 platform: platform,
                 category: category,
                 lastAirDate: lastAirDate,
+                status: status,
                 subscribedAt: subscribedAt,
                 rowid: rowid,
               ),

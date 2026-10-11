@@ -35,6 +35,45 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
+/// **某部订阅剧的本周播出情况 + 状态**（追剧 Tab 的周历用）。
+///
+/// ## 为什么把"状态"和"周历"放在一次请求里
+/// 两者都来自 `GET /tv/{id}`（状态在顶层、分集在 `append_to_response`）
+/// ⇒ 合并成一次请求，订阅 10 部就省了 10 次往返。
+///
+/// ## 实测（本轮验证）
+/// ```
+/// 《仙逆》           status=Returning Series  本周 E162 air_date=2026-10-11
+/// 《你好，星期六》    status=Returning Series  本周 E39  air_date=2026-10-10
+/// ```
+class ShowWeek {
+  const ShowWeek({this.days = const {}, this.status});
+
+  /// `weekday(1=周一..7=周日) → 该天播出的集号列表`。
+  final Map<int, List<int>> days;
+
+  /// TMDB 原始状态（`Returning Series` / `Ended` / `Canceled` …）。
+  final String? status;
+
+  /// 中文状态（用户要求区分"已完结/连载中"）。
+  ///
+  /// ⚠️ 映射规则以**用户可理解的语义**为准，不是逐字翻译：
+  /// · `Returning Series` / `In Production` / `Planned` ⇒ **连载中**
+  /// · `Ended` / `Canceled` ⇒ **已完结**
+  /// · 未知/缺失 ⇒ null（UI 不显示状态标签，**不猜**）
+  String? get statusCn => switch (status) {
+        'Returning Series' => '连载中',
+        'In Production' => '连载中',
+        'Planned' => '连载中',
+        'Pilot' => '连载中',
+        'Ended' => '已完结',
+        'Canceled' => '已完结',
+        _ => null,
+      };
+
+  bool get isEmpty => days.isEmpty;
+}
+
 /// 日历条目的**完整详情**（供"点击查看简介"弹层用）。
 ///
 /// ## 字段来源与实测（TMDB `/tv/{id}?append_to_response=credits`）
@@ -1326,6 +1365,127 @@ class CalendarClient {
       homepage: str(j['homepage']),
       tmdbId: (j['id'] ?? '').toString(),
     );
+  }
+
+
+  /// **某个订阅剧本周哪几天更新**（追剧 Tab 的周历用）。
+  ///
+  /// ## 实测依据
+  /// ```
+  /// GET /tv/{id}?append_to_response=season/{最新季}
+  ///   → **一次请求**拿到全部集数（《仙逆》200 集 / 《你好，星期六》46 集）
+  ///   → 每集有 air_date（yyyy-MM-dd）
+  /// 《仙逆》本周更新: E162 air_date=2026-10-11（周日）
+  /// ```
+  /// （`append_to_response` 省掉了"先查季列表再逐个查季"的 N 次请求。）
+  ///
+  /// ## 返回
+  /// [ShowWeek]（含 `weekday → 集号` 与**状态**）。
+  /// 本周没有更新 ⇒ `days` 为空 Map（**不是 null**：空与"失败"要能区分）。
+  ///
+  /// ## ⚠️ 为什么只查**最新一季**
+  /// 老季的集日期早已过去，与"本周更新"无关。
+  /// 查全部季会让请求数随季数增长（《你好，星期六》5 季）。
+  Future<ShowWeek> fetchWeekEpisodes(
+    String tmdbId, {
+    required String apiKey,
+    DateTime? weekStart,
+  }) async {
+    if (tmdbId.isEmpty) return const ShowWeek();
+    final monday = _mondayOf(weekStart ?? DateTime.now());
+    // date(yyyy-MM-dd) → weekday(1=周一 … 7=周日)
+    //
+    // ⚠️ 必须显式写 `<String, int>{...}`：直接写 `{_ymd(d): d.weekday for ...}`
+    //    会被 Dart 解析成 **Map 字面量**并报 "Undefined name 'd'"
+    //    （生成式里的 `:` 让它误判为 map entry）。
+    final wk = <String, int>{
+      for (var i = 0; i < 7; i++)
+        _ymd(monday.add(Duration(days: i))): i + 1,
+    };
+
+    final cacheKey = 'weekep:$tmdbId:${_ymd(monday)}';
+    String? st; // TMDB status（缓存命中时从 body 里补读，见下）
+    try {
+      final cached = await cache?.get(cacheKey);
+      String body;
+      if (cached != null && cached.isNotEmpty) {
+        body = cached;
+      } else {
+        // ① 先拿最新季号（一次请求）
+        final r1 = await _dio.get<String>(
+          'https://api.themoviedb.org/3/tv/$tmdbId',
+          queryParameters: {'api_key': apiKey, 'language': 'zh-CN'},
+          options: Options(responseType: ResponseType.plain,
+              headers: {'User-Agent': _ua}),
+        );
+        if (r1.statusCode != 200 || r1.data == null) {
+          return const ShowWeek();
+        }
+        final meta = jsonDecode(r1.data!) as Map;
+        st = meta['status'] as String?;
+        final seasons = (meta['seasons'] as List?) ?? const [];
+        if (seasons.isEmpty) return ShowWeek(status: st);
+        final sn = (seasons.last as Map)['season_number'];
+        if (sn == null) return ShowWeek(status: st);
+
+        // ② 一次请求拿该季全部分集（用 append_to_response 省一次往返）
+        final r2 = await _dio.get<String>(
+          'https://api.themoviedb.org/3/tv/$tmdbId',
+          queryParameters: {
+            'api_key': apiKey,
+            'language': 'zh-CN',
+            'append_to_response': 'season/$sn',
+          },
+          options: Options(responseType: ResponseType.plain,
+              headers: {'User-Agent': _ua}),
+        );
+        if (r2.statusCode != 200 || r2.data == null) {
+          return ShowWeek(status: st);
+        }
+        body = r2.data!;
+        // ⚠️ 只缓存成功响应（含空结果的失败缓存会让周历空 6 小时）
+        await cache?.put(cacheKey, body, ttl: cacheTtl);
+      }
+
+      final j = jsonDecode(body) as Map;
+      // `append_to_response=season/N` 把结果挂在键 `season/N` 下
+      Map? seasonObj;
+      for (final k in j.keys) {
+        if (k is String && k.startsWith('season/') && j[k] is Map) {
+          seasonObj = j[k] as Map;
+          break;
+        }
+      }
+      // 缓存命中时 `st` 还没赋值 ⇒ 从 body 里补读（保证状态一致）
+      st ??= j['status'] as String?;
+      if (seasonObj == null) return ShowWeek(status: st);
+      final out = <int, List<int>>{};
+      for (final e in (seasonObj['episodes'] as List? ?? const [])) {
+        if (e is! Map) continue;
+        final air = e['air_date'] as String?;
+        if (air == null || air.isEmpty) continue;
+        final wd = wk[air];
+        if (wd == null) continue; // 不在本周
+        // 变量名不能叫 num（会遮蔽 Dart 内置类型），故改名 epNum。
+        // （踩过的报错：The name num is not a type）
+        final epNum = (e['episode_number'] as num?)?.toInt();
+        if (epNum == null) continue;
+        (out[wd] ??= []).add(epNum);
+      }
+      for (final l in out.values) {
+        l.sort();
+      }
+      return ShowWeek(days: out, status: st);
+    } catch (e) {
+      debugPrint('[Calendar] 周历分集拉取失败 ($tmdbId): ${_friendly(e)}');
+      return const ShowWeek();
+    }
+  }
+
+  /// 某个日期所在周的**周一**（UTC+8 语义，与 [_mondayOfThisWeek] 一致）。
+  static DateTime _mondayOf(DateTime d) {
+    final day = DateTime(d.year, d.month, d.day);
+    return day.subtract(Duration(days: day.weekday - 1));
   }
 
   /// 平台补查的**条数上限**（保留给将来"全量预取"用）。

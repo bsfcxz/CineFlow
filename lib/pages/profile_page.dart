@@ -10,17 +10,14 @@ import '../core/version.dart';
 import '../danmaku/danmaku_settings_page.dart';
 import 'about_page.dart';
 import 'appearance_page.dart';
-import 'history_page.dart';
 import 'playback_settings_page.dart';
 import 'kernel_settings_page.dart';
 import '../data/emby_provider.dart';
-import '../data/media_provider.dart';
 import '../data/session_store.dart';
 import '../data/models.dart';
 import '../pan115/pan115_browser_page.dart';
 import '../pan115/pan115_store.dart';
 import '../state/providers.dart';
-import 'server_list_page.dart';
 import 'account_manager_page.dart';
 import 'calendar_page.dart';
 
@@ -102,7 +99,17 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
             // ★ 多账号列表（只有 >1 台时才显示）
             _accountList(context, ref),
             SizedBox(height: 12),
-            _statGrid(context, stats),
+            // ★ 统计四格（已看电影/追剧中/已看分集/收藏）已移除
+            //   （用户 2026-10-11："删除我的底栏内容中的已看电影、追剧中、
+            //     已看分集、收藏"）
+            //
+            // ## 为什么移除
+            // · 这些数字是"全库统计"，与「我的」页的**管理**定位不符
+            // · 用户要看的"我在追什么"已经在「追剧」Tab 里
+            // · `statsProvider` 每次进页要发 6 个查询（其中 4 个只为这四格）
+            //
+            // ⚠️ `statsProvider` 仍保留（`_headCard` 用它的库规模数字：
+            //    电影/剧集总数），只是不再画那四张卡。
             SizedBox(height: 14),
             _settingsGroup([
               // ★ 多账号与资源整合（放在最前 —— 它是"资源来源"级别的设置）
@@ -143,78 +150,32 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                       builder: (_) => const Pan115BrowserPage()),
                 ),
               ),
-              // ★ 「继续观看」放在这里（用户要求"将下面的播放历史移动到收藏后面"）
+              // ★ 「继续观看」已移除（用户 2026-10-11）
               //
-              // ## 为什么改名（从"播放历史"→"继续观看"）
-              // 用户明确："播放历史对应的内容应该是 emby 服务端的继续观看内容"。
-              // 旧名字 + 旧数据源（`Filters=IsPlayed` = 已看完）会误导用户。
-              _SettingItem(
-                icon: Icons.play_circle_outline_rounded,
-                color: const Color(0xFFFFB347),
-                title: '继续观看',
-                sub: '服务端的续播列表 · 从上次位置接着看',
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const HistoryPage()),
-                ),
-              ),
-              _SettingItem(
-                icon: Icons.apartment_rounded,
-                color: const Color(0xFFE17055),
-                title: '制片公司',
-                sub: '按片厂浏览（漫威 / 皮克斯 / 东宝…）',
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => ServerListPage(
-                      title: '制片公司',
-                      emptyIcon: Icons.apartment_outlined,
-                      emptyText: '服务器没有制片公司数据',
-                      // 公司是**容器**不是可播条目 ⇒ 点它进"该公司作品"
-                      onItemTap: (ctx, r, item) => Navigator.push(
-                        ctx,
-                        MaterialPageRoute(
-                          builder: (_) => ServerListPage(
-                            title: item.name,
-                            emptyIcon: Icons.movie_outlined,
-                            emptyText: '该公司暂时没有作品',
-                            loader: (api) => api.getStudioItems(item.name),
-                          ),
-                        ),
-                      ),
-                      loader: (api) => api.getStudios(),
-                    ),
-                  ),
-                ),
-              ),
-              _SettingItem(
-                icon: Icons.queue_music_rounded,
-                color: const Color(0xFF00B894),
-                title: '服务端播放列表',
-                sub: '在 Emby 里建的列表 · 多端同步',
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => ServerListPage(
-                      title: '播放列表',
-                      emptyIcon: Icons.playlist_remove_rounded,
-                      emptyText: '服务器上没有播放列表\n（可在 Emby 网页端创建）',
-                      onItemTap: (ctx, r, item) => Navigator.push(
-                        ctx,
-                        MaterialPageRoute(
-                          builder: (_) => ServerListPage(
-                            title: item.name,
-                            emptyIcon: Icons.playlist_remove_rounded,
-                            emptyText: '这个列表是空的',
-                            loader: (api) => api.getPlaylistItems(item.id),
-                          ),
-                        ),
-                      ),
-                      loader: (api) => api.getPlaylists(),
-                    ),
-                  ),
-                ),
-              ),
+              // ## 为什么移除
+              // 它已在**「追剧」Tab 的第二个分页**里（与"追剧日历"并列）。
+              // 用户明确要求"删除继续观看" —— 同一内容两处入口会让用户困惑
+              // "哪个才是我要看的"。
+              //
+              // ⚠️ `HistoryPage` 仍在（被「追剧」Tab 复用），只是不再从这里进。
+              // ★ 「制片公司」已移除（用户要求）
+              //
+              // ## 为什么移除
+              // 用户明确："去除我的中的制片公司"。
+              // 该入口按片厂浏览（漫威/皮克斯/东宝…），属于"探索型"功能，
+              // 与「我的」页"管理自己资源"的定位不符。
+              //
+              // ## 底层能力保留（别顺手删 `getStudios`）
+              // `MediaProvider.getStudios` / `getStudioItems` 仍在
+              //（搜索页等处可能复用）⇒ 移除的只是这个入口。
+              // ★ 「服务端播放列表」已移除（用户 2026-10-11）
+              //
+              // ## 为什么移除
+              // 用户明确要求删除。它是"在 Emby 里建的列表"，
+              // 使用频率低（该库实测只有少量列表），且入口占了一行。
+              //
+              // ⚠️ `getPlaylists` / `getPlaylistItems` 仍在 provider 上
+              //    （将来若要放回，位置在「服务端」类目下）。
               _SettingItem(
                 icon: Icons.event_available_rounded,
                 color: const Color(0xFF0984E3),
@@ -359,17 +320,37 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                         fontSize: 16, fontWeight: FontWeight.w800)),
                 SizedBox(height: 3),
                 Row(children: [
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Cf.success,
-                      boxShadow: [
-                        BoxShadow(
-                            color: Cf.success.withValues(alpha: .6),
-                            blurRadius: 6),
-                      ],
+                  // ★ 状态圆点**可点**（用户 2026-10-11："小圆点不能点击"）
+                  //
+                  // ## 它原来是什么
+                  // 一个 7×7 的纯装饰 `Container` —— 但视觉上是"绿点 = 在线"，
+                  // 用户会自然地去点它（这是**可点暗示与实际行为不符**）。
+                  //
+                  // ## 现在
+                  // 点它 = **测延迟**（与点地址同一个动作）——
+                  // 因为它表达的就是"这台服务器活着吗"，点它测延迟最符合直觉。
+                  //
+                  // `CfTapTarget` 把命中区撑到 48dp：
+                  // 7px 的圆点裸放**点不中**（本仓库审计过同类问题，
+                  // 最小可点元素曾只有 16×16）。
+                  CfTapTarget(
+                    size: 44,
+                    semanticLabel: '服务器状态，点击测延迟',
+                    onTap: session == null
+                        ? null
+                        : () => _testLatency(context, ref, session),
+                    child: Container(
+                      width: 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Cf.success,
+                        boxShadow: [
+                          BoxShadow(
+                              color: Cf.success.withValues(alpha: .6),
+                              blurRadius: 6),
+                        ],
+                      ),
                     ),
                   ),
                   SizedBox(width: 6),
@@ -559,167 +540,16 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
     );
   }
 
-  /// 四张统计卡 —— **全部可点**，点进去看具体内容（用户要求）。
-  ///
-  /// ## ★★ 用户原话
-  /// > "已看电影可以、追剧中、已看分级、收藏都应该可以点击且能看到具体内容"
-  ///
-  /// ## 每张卡对应的**服务端查询**（全部实测验证过）
-  /// | 卡 | 查询 | 实测 |
-  /// |---|---|---|
-  /// | 已看电影 | `IncludeItemTypes=Movie&Filters=IsPlayed` | ✅ s2: 11 条 |
-  /// | 追剧中 | `IncludeItemTypes=Series&Filters=IsUnplayed` | ✅ s2: 5322 |
-  /// | 已看分集 | `IncludeItemTypes=Episode&Filters=IsPlayed` | ✅ s2: 916 |
-  /// | 收藏 | `IncludeItemTypes=Movie,Series,Episode&Filters=IsFavorite` | ✅ s2: 2 条（黑夜告白/战旗如画） |
-  ///
-  /// ⚠️ 全部走 `/Users/{uid}/Items`（**不带 `/emby/` 前缀**也通，
-  /// 实测两种都 HTTP 200；带前缀更稳妥，见 `getItems` 的实现）。
-  Widget _statGrid(BuildContext context, AsyncValue<_Stats> stats) {
-    return stats.when(
-      loading: () => const SizedBox(height: 66),
-      error: (_, _) => const SizedBox.shrink(),
-      data: (s) => Row(children: [
-        _statCard(
-          '${s.moviesWatched}',
-          '已看电影',
-          onTap: () => _openList(
-            ctx: context,
-            title: '已看电影',
-            emptyIcon: Icons.movie_outlined,
-            emptyText: '还没有标记为看过的电影',
-            loader: (api) => api.getItems(
-              includeTypes: 'Movie',
-              filters: 'IsPlayed',
-              sortBy: 'DatePlayed',
-              sortOrder: 'Descending',
-              limit: 200,
-            ).then((p) => p.items),
-          ),
-        ),
-        _statCard(
-          '${s.seriesWatching}',
-          '追剧中',
-          onTap: () => _openList(
-            ctx: context,
-            title: '追剧中',
-            emptyIcon: Icons.live_tv_outlined,
-            emptyText: '没有未看完的剧集',
-            loader: (api) => api.getItems(
-              includeTypes: 'Series',
-              filters: 'IsUnplayed',
-              sortBy: 'DatePlayed',
-              sortOrder: 'Descending',
-              limit: 200,
-            ).then((p) => p.items),
-          ),
-        ),
-        _statCard(
-          '${s.episodesWatched}',
-          '已看分集',
-          onTap: () => _openList(
-            ctx: context,
-            title: '已看分集',
-            emptyIcon: Icons.checklist_rounded,
-            emptyText: '还没有看过的分集',
-            loader: (api) => api.getItems(
-              includeTypes: 'Episode',
-              filters: 'IsPlayed',
-              sortBy: 'DatePlayed',
-              sortOrder: 'Descending',
-              limit: 200,
-            ).then((p) => p.items),
-          ),
-        ),
-        _statCard(
-          '${s.favorites}',
-          '收藏',
-          onTap: () => _openList(
-            ctx: context,
-            title: '收藏',
-            emptyIcon: Icons.favorite_border_rounded,
-            emptyText: '还没有收藏任何内容',
-            loader: (api) => api.getItems(
-              includeTypes: 'Movie,Series,Episode',
-              filters: 'IsFavorite',
-              sortBy: 'DateCreated',
-              sortOrder: 'Descending',
-              limit: 200,
-            ).then((p) => p.items),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  /// 打开"某个统计项的具体内容"列表页（复用 `ServerListPage`）。
-  ///
-  /// ## 为什么复用而不新建页面
-  /// `ServerListPage` 已经处理了加载/空态/错误态/点卡片进详情
-  ///（制片公司、服务端播放列表、追剧日历都用它）
-  /// ⇒ 新建一个只会重复这些逻辑，且空态文案容易写漏。
-  void _openList({
-    required BuildContext ctx,
-    required String title,
-    required IconData emptyIcon,
-    required String emptyText,
-    required Future<List<MediaItem>> Function(MediaProvider api) loader,
-  }) {
-    Navigator.push(
-      ctx,
-      MaterialPageRoute(
-        builder: (_) => ServerListPage(
-          title: title,
-          emptyIcon: emptyIcon,
-          emptyText: emptyText,
-          loader: loader,
-        ),
-      ),
-    );
-  }
-
-  Widget _statCard(String value, String label, {VoidCallback? onTap}) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        // ★ 可点卡片必须有按压反馈（§6.4.1：可点区域要能感知）
-        child: Container(
-          margin: const EdgeInsets.only(right: 10),
-          padding: const EdgeInsets.symmetric(vertical: 11),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(Cf.radiusMd),
-            color: Cf.surface,
-            border: Border.all(color: Cf.border),
-          ),
-          child: Column(children: [
-            // 200% 字号下数字（如 5289）会拆行——等比缩放保持单行
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(value,
-                  maxLines: 1,
-                  style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w900,
-                      color: Cf.accent)),
-            ),
-            const SizedBox(height: 2),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 9, color: Cf.text3)),
-                // 一个小箭头暗示"可点"（否则用户不知道能点）
-                if (onTap != null)
-                  Icon(Icons.chevron_right_rounded,
-                      size: 11, color: Cf.text3),
-              ],
-            ),
-          ]),
-        ),
-      ),
-    );
-  }
+  // ★ 统计四格（已看电影/追剧中/已看分集/收藏）已整体移除
+  //   （`_statGrid` / `_statCard` / `_openList` 三个方法一起删掉 ——
+  //    它们只服务那四格，留着就是死代码）
+  //   （用户 2026-10-11：删除我的底栏内容中的已看电影、追剧中、已看分集、收藏）
+  //
+  // ## 为什么连方法一起删（而不只是不调用它）
+  // 留着未引用的方法会让下一个改动者以为这功能还在，只是没接线，
+  // 进而花时间找为什么没显示。**死代码比没有更贵**。
+  //
+  // ⚠️ statsProvider 保留 —— _headCard 用它的库规模数字（电影/剧集总数）。
 
   Widget _settingsGroup(List<_SettingItem> items) {
     return Container(
@@ -788,7 +618,7 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
 }
 
 class _SettingItem extends StatelessWidget {
-  const _SettingItem({
+  _SettingItem({
     required this.icon,
     required this.color,
     required this.title,
@@ -806,7 +636,7 @@ class _SettingItem extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
+        padding: EdgeInsets.symmetric(
             horizontal: Cf.gap4, vertical: Cf.gap3),
         child: Row(children: [
           // 用统一徽章组件（30×30 + 描边），替掉原先手写的 29×29 无描边容器：
@@ -823,7 +653,7 @@ class _SettingItem extends StatelessWidget {
               Text(sub, style: Cf.micro),
             ]),
           ),
-          const Icon(Icons.chevron_right_rounded,
+          Icon(Icons.chevron_right_rounded,
               size: Cf.iconMd, color: Cf.text3),
         ]),
       ),

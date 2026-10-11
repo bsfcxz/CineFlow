@@ -33,7 +33,7 @@ class AboutPage extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           children: [
             Row(children: [
-              const BackButton(color: Cf.text),
+              BackButton(color: Cf.text),
               const Text('关于',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
             ]),

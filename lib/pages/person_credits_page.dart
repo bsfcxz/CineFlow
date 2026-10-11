@@ -105,7 +105,7 @@ class _PersonCreditsPageState extends ConsumerState<PersonCreditsPage> {
               Text(r,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: Cf.text3)),
+                  style: TextStyle(fontSize: 11, color: Cf.text3)),
           ],
         ),
       ),

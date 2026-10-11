@@ -41,17 +41,17 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
     return Scaffold(
       backgroundColor: Cf.bg,
       body: SafeArea(
-        child: ListView(padding: const EdgeInsets.all(16), children: [
+        child: ListView(padding: EdgeInsets.all(16), children: [
           Row(children: [
             BackButton(color: Cf.text),
-            const Text('外观',
+            Text('外观',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
           ]),
-          const SizedBox(height: 16),
+          SizedBox(height: 16),
 
           // —— 主题色 ——
           Container(
-            padding: const EdgeInsets.all(14),
+            padding: EdgeInsets.all(14),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(16),
               color: Cf.surface,
@@ -63,7 +63,7 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
                   style: TextStyle(
                       fontSize: 14, fontWeight: FontWeight.w800)),
               const SizedBox(height: 3),
-              const Text('强调色与主按钮渐变 · 立即生效',
+              Text('强调色与主按钮渐变 · 立即生效',
                   style: TextStyle(fontSize: 11, color: Cf.text3)),
               const SizedBox(height: 14),
               Row(mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -141,7 +141,7 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
               border: Border.all(color: Cf.border),
             ),
             child: Row(children: [
-              const Expanded(
+              Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                   Text('深色模式',

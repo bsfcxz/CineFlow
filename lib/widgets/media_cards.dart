@@ -70,7 +70,7 @@ class CfSection extends StatelessWidget {
                 onTap: onTrailing,
                 semanticLabel: trailing!,
                 child: Text(trailing!,
-                    style: const TextStyle(fontSize: 11, color: Cf.text3)),
+                    style: TextStyle(fontSize: 11, color: Cf.text3)),
               ),
           ]),
         ),
@@ -188,7 +188,7 @@ class PosterCard extends StatelessWidget {
         ].join(' · '),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 10, color: Cf.text3),
+        style: TextStyle(fontSize: 10, color: Cf.text3),
       ),
     ]);
 
@@ -448,7 +448,7 @@ class ContinueCard extends StatelessWidget {
               CfText(
                 remain != null ? '剩余 $remain 分钟' : '继续播放',
                 clamp: true,
-                style: const TextStyle(fontSize: 10, color: Cf.text3),
+                style: TextStyle(fontSize: 10, color: Cf.text3),
               ),
             ]),
           ),

@@ -25,8 +25,13 @@ void main() {
     test('★★★ 加表必须同时升 schemaVersion', () {
       final c = code('lib/data/db/app_database.dart');
       // AGENTS §8.1 第 6 条：改表结构必须升版本 + 写 migration
-      expect(c.contains('schemaVersion => 2'), isTrue,
-          reason: '★★★ v1→v2 加了 CalendarSubscriptions 表');
+      // ⚠️ 版本号会随新增列递增（v2 加表 → v3 加 status 列）
+      //    断言"至少 2"而不是写死 —— 写死会让每次加列都要改测试，
+      //    反而容易在改的时候顺手放宽成"任意值"（那可就不是守卫了）。
+      expect(c.contains('schemaVersion => 2') ||
+              c.contains('schemaVersion => 3') ||
+              c.contains('schemaVersion => 4'), isTrue,
+          reason: '★★★ 加了 CalendarSubscriptions 表 ⇒ 必须 >= 2');
       expect(c.contains('CalendarSubscriptions'), isTrue);
     });
 
@@ -34,8 +39,43 @@ void main() {
       final c = code('lib/data/db/app_database.dart');
       expect(c.contains('if (from < 2)'), isTrue,
           reason: '★★★ 不写迁移 ⇒ 老用户升级后启动即崩');
+      // v2→v3 用 addColumn（不是重建表）—— 保住用户已有订阅
+      expect(c.contains('addColumn'), isTrue,
+          reason: '★★★ 加列必须用 addColumn，否则老用户订阅数据丢失');
+      expect(c.contains('status'), isTrue,
+          reason: '★ 状态列（连载中/已完结）');
       expect(c.contains('m.createTable(calendarSubscriptions)'), isTrue,
           reason: '★★ 只建新表 —— 用 createAll 会试图重建已有表');
+    });
+
+    test('★★★ schemaVersion 与迁移必须**成对**（真机崩溃的直接教训）', () {
+      final c = code('lib/data/db/app_database.dart');
+      // ## 真实事故（本轮）
+      // schemaVersion 从 2 升到 3，但 `addColumn` 那段**没写进文件**
+      //（脚本 replace 锚点没命中且没报错）⇒ 设备上版本号是 3 而表里
+      // 没有 status 列 ⇒ `INSERT ... status ...` 报
+      // `SqliteException(1): no such column: status`
+      // ⇒ 订阅按钮点了没反应（异常被显示成页面上的一行字）。
+      //
+      // ## 为什么单测抓不到
+      // 单测用**内存库新建表**（走 `onCreate`），不经过 `onUpgrade`
+      // ⇒ 迁移漏写永远测不出来。只有"老库升级"这条路径才会炸。
+      //
+      // ## 断言：每个版本跨度都要有一段迁移代码
+      final v = RegExp(r'schemaVersion => (\d+)').firstMatch(c);
+      expect(v, isNotNull, reason: '必须能读到 schemaVersion');
+      // 至少要处理 2→3 这段（当前最低要求）
+      // ⚠️ 必须是 `from < 3`（**不是** `from == 2`）——
+      // 真实事故：设备已是 v3 时 `from == 2` 不成立 ⇒ addColumn 被跳过
+      // ⇒ 列永远补不上（"no such column"）。
+      expect(c.contains('if (from < 3)'), isTrue,
+          reason: '★★★ 必须用范围判断（from < 3）；\n'
+              '    用 from == 2 会在"设备已是 v3"时漏掉，列永远补不上');
+      expect(c.contains('if (from == 2)'), isFalse,
+          reason: '★★★ from == 2 是**错的**（真实事故）');
+      // 加列必须用 addColumn（不能 drop+create，那会丢用户订阅）
+      expect(c.contains('m.addColumn(calendarSubscriptions'), isTrue,
+          reason: '★★★ 加列要用 addColumn 保住已有订阅数据');
     });
 
     test('★★ 新表必须注册进 @DriftDatabase', () {

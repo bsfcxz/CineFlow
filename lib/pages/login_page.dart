@@ -232,7 +232,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 children: [
                   const Center(child: CfLogo()),
                   const SizedBox(height: 10),
-                  const Center(
+                  Center(
                     child: Text('CineFlow',
                         style: TextStyle(
                             fontSize: 22,
@@ -241,7 +241,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                             color: Cf.text)),
                   ),
                   const SizedBox(height: 4),
-                  const Center(
+                  Center(
                     child: Text('万影成流 · 一触即映',
                         style: TextStyle(
                             fontSize: 11,
@@ -288,7 +288,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
         Center(child: CfLogo()),
         SizedBox(height: 10),
         // 品牌名：Logo 下方
-        const Center(
+        Center(
           child: Text('CineFlow',
               style: TextStyle(
                   fontSize: 20,
@@ -297,7 +297,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                   color: Cf.text)),
         ),
         const SizedBox(height: 4),
-        const Center(
+        Center(
           child: Text('万影成流 · 一触即映',
               style: TextStyle(
                   fontSize: 10,
@@ -514,13 +514,13 @@ class _OrDivider extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 14),
       child: Row(children: [
-        const Expanded(child: Divider(color: Cf.border)),
+        Expanded(child: Divider(color: Cf.border)),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10),
           child: Text(text,
               style: TextStyle(fontSize: 10, color: Cf.text3)),
         ),
-        const Expanded(child: Divider(color: Cf.border)),
+        Expanded(child: Divider(color: Cf.border)),
       ]),
     );
   }

@@ -26,6 +26,7 @@
 ///   但本机记录在**未登录/换服务器**时仍可用，且不依赖网络。
 library;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:drift/drift.dart';
 
 part 'app_database.g.dart';
@@ -120,6 +121,17 @@ class CalendarSubscriptions extends Table {
   /// 最近一次已知的更新日（`yyyy-MM-dd`），用于排序与"还有几天"。
   TextColumn get lastAirDate => text().withDefault(const Constant(''))();
 
+  /// **状态**（`连载中` / `已完结`；未知时为空串）。
+  ///
+  /// ## 为什么落库（用户要求"已完结的显示已完结，连载中的显示连载中"）
+  /// 与剧名/海报同理：订阅必须能**断网显示**。
+  /// 现查的话断网时状态空白 ⇒ 用户看到一张没有状态的怪卡片。
+  ///
+  /// ⚠️ 存的是**中文结果**而不是 TMDB 原始值（`Returning Series`）：
+  ///    映射规则一变，老数据不会自动跟随 —— 但那样只需重订一次，
+  ///    而存原始值会让 UI 每次都要做映射（多一处可能漏的地方）。
+  TextColumn get status => text().withDefault(const Constant(''))();
+
   /// 订阅时间（Unix 秒）。
   IntColumn get subscribedAt => integer()();
 
@@ -130,14 +142,14 @@ class CalendarSubscriptions extends Table {
 ///
 /// 版本演进纪律：**新增表/列必须同时升 schemaVersion 并写 migration**，
 /// 否则老用户升级后启动即崩（drift 会抛 schema 不匹配）。
-/// 当前 `schemaVersion = 2`（v1→v2 新增 `CalendarSubscriptions`，
+/// 当前 `schemaVersion = 3`（v2→v3 订阅表加 `status` 列；v1→v2 新增 `CalendarSubscriptions`，
 /// 迁移用 `createTable` 而非 `createAll`，不动既有数据）。
 @DriftDatabase(tables: [DoubanCaches, PlayHistories, CalendarSubscriptions])
 class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -159,6 +171,74 @@ class AppDatabase extends _$AppDatabase {
           if (from < 2) {
             await m.createTable(calendarSubscriptions);
           }
+          // v2 → v3：订阅表加 `status` 列（用户要求区分"已完结/连载中"）
+          //
+          // ## ★ 用 `addColumn` 而不是重建表（保住用户已有订阅）
+          // 重建表（drop + create）会**丢掉用户已订阅的剧** ——
+          // 那是用户数据，不能因为加一列就清空。
+          //
+          // ## ★★ 真机踩过的坑：这段漏写会导致**运行时崩溃**
+          // 修 status 那次我漏了这段（`addColumn` 没写进来），
+          // 现象是：schemaVersion 已是 3，但表里没有 status 列
+          // ⇒ `INSERT INTO calendar_subscriptions (... status ...)`
+          //    报 `SqliteException(1): no such column: status`
+          // ⇒ 订阅按钮点了没反应（异常被 Flutter 吞成 "Null check
+          //    operator used on a null value" 显示在页面上）。
+          //
+          // ⇒ 教训：**schemaVersion 与迁移必须成对**。
+          //    版本号升了但没写迁移，比两者都不动更糟 ——
+          //    老库停在旧结构，而代码以为已经升级了。
+          //
+          // ⚠️⚠️ 条件必须是 `from < 3`，**不是** `from == 2`。
+          //
+          // ## 为什么（真实事故，两轮才修好）
+          // 第一轮：我把 schemaVersion 升到 3，但这段 addColumn **漏写**了
+          //   ⇒ 设备升到 v3 时什么都没做，表里没有 status 列。
+          // 第二轮：我补上迁移，但条件写成 `from == 2` ——
+          //   而设备**已经是 v3** ⇒ `from == 3` ⇒ 条件不成立
+          //   ⇒ addColumn **又被跳过**，列永远补不上。
+          //   （现象：`SqliteException(1): table calendar_subscriptions
+          //     has no column named status`）
+          //
+          // ## 正确语义
+          // drift 的 `from` = **打开时**库里的版本，`to` = 代码里的 schemaVersion。
+          // "需不需要加这一列" = "是不是从 v3 **之前**升上来的"
+          // ⇒ `from < 3`。
+          //
+          // ## 为什么不会重复加列
+          // · 新装库（from == 0）走 `onCreate`（不经过 `onUpgrade`），
+          //   `createAll` 建的表**已含** status 列
+          // · 已是 v3 的老库再次启动时 `onUpgrade` **根本不会被调用**
+          // ⇒ `from < 3` 只在"v1/v2 老库"上跑一次。
+          if (from < 3) {
+            await m.addColumn(calendarSubscriptions, calendarSubscriptions.status);
+          }
+          // ⚠️ 上面这条**不够**（真实事故）：`onUpgrade` 只在 from != to 时调用。
+          //    若库的版本号已是 3 但列没建出来（开发期踩过），
+          //    它永远不会再跑 ⇒ 列永远补不上。
+          //    ⇒ 真正的兜底是下面的 `beforeOpen` 自愈。
+        },
+
+        // ══════════════════════════════════════════════════════════
+        // ★★★ **schema 自愈**（幂等）：不依赖版本号，实查列是否存在
+        // ══════════════════════════════════════════════════════════
+        //
+        // ## 为什么必须有（真实事故）
+        // 我踩过一次：`schemaVersion` 已写进库（=3），但 `addColumn`
+        // 漏写了 ⇒ `onUpgrade` 只在 `from != to` 时调用 ⇒ **再也不跑**
+        // ⇒ `INSERT ... status ...` 报
+        //    `SqliteException(1): has no column named status`
+        // ⇒ 订阅按钮点了没反应。
+        //
+        // ## 为什么不用"清库"解决
+        // `pm clear` 能修好，但会**清掉用户的登录态与订阅** ——
+        // 那是用户数据，不能拿它换正确性。
+        //
+        // ## 为什么放 `beforeOpen`
+        // 每次打开库都跑 ⇒ 无论库处于什么状态（新建/升级/被改坏）
+        // 都收敛到目标结构。**必须幂等且快**（一次 PRAGMA 查询）。
+        beforeOpen: (details) async {
+          await _healSchema();
         },
       );
 
@@ -265,6 +345,48 @@ class AppDatabase extends _$AppDatabase {
       (delete(playHistories)..where((t) => t.itemId.equals(itemId))).go();
 
   int _nowSeconds() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  /// **schema 自愈**：确保"代码期望的列"在库里真的存在（缺则补）。
+  ///
+  /// ## 设计
+  /// · **幂等** —— 已存在就什么都不做（`beforeOpen` 每次启动都跑）
+  /// · **按表分组** —— 每张表一次 `PRAGMA table_info`，不逐列查
+  /// · **只加列，不改类型/不删列** —— 那需要真正的迁移（改类型会重建表）
+  ///
+  /// ## 为什么用 PRAGMA 而不是版本号
+  /// 版本号是"我以为的状态"，`PRAGMA table_info` 是"**实际**的状态"。
+  /// 两者不一致时（开发期踩过），只有后者能救。
+  Future<void> _healSchema() async {
+    /// 代码期望的列（表名 → 列名集合）。
+    /// ⚠️ 新增列时**两边都要加**：`Table` 定义 + 这里。
+    const expected = <String, List<String>>{
+      'calendar_subscriptions': [
+        'source', 'source_id', 'media_type', 'title', 'title_cn',
+        'poster_url', 'platform', 'category', 'last_air_date',
+        'subscribed_at',
+        // v3 新增（事故就是它）
+        'status',
+      ],
+    };
+
+    for (final e in expected.entries) {
+      try {
+        final rows = await customSelect('PRAGMA table_info(${e.key})').get();
+        if (rows.isEmpty) continue; // 表还不存在（新装库由 createAll 建）
+        final have = {for (final r in rows) r.read<String>('name')};
+        for (final col in e.value) {
+          if (have.contains(col)) continue;
+          // 缺列 ⇒ 补。全部按 TEXT + 默认空串（与本项目既有列风格一致）
+          await customStatement(
+              "ALTER TABLE ${e.key} ADD COLUMN $col TEXT NOT NULL DEFAULT ''");
+          debugPrint('[DB] 自愈：${e.key}.$col 已补列');
+        }
+      } catch (err) {
+        // 自愈失败**不能让 App 起不来** —— 记录后继续
+        debugPrint('[DB] 自愈 ${e.key} 失败（非致命）: $err');
+      }
+    }
+  }
+
   // ══════════════════ 追剧订阅 ══════════════════
   //
   // 用户要求：「我的追剧」= 追剧日历里**订阅**的内容。
@@ -289,6 +411,7 @@ class AppDatabase extends _$AppDatabase {
     String platform = '',
     String category = 'series',
     String lastAirDate = '',
+    String status = '',
   }) async {
     // ⚠️ 不用 record 做 key（drift 的 insert 需要各列独立传值），
     //    这里显式写三列条件，与下面的 delete 保持一致。
@@ -324,8 +447,40 @@ class AppDatabase extends _$AppDatabase {
       platform: Value(platform),
       category: Value(category),
       lastAirDate: Value(lastAirDate),
+      status: Value(status),
     ));
     return true;
+  }
+
+  /// **更新某条订阅的可变信息**（状态 / 最近更新日 / 平台）。
+  ///
+  /// ## 为什么需要（订阅是**快照**，而快照会过期）
+  /// 订阅时落的是当刻快照。但剧的**状态会变**：
+  /// 「连载中」→「已完结」是必然发生的事。
+  /// ⇒ 每次打开追剧 Tab 拉到新数据后，回写一次（让下次断网也能看到新状态）。
+  ///
+  /// ## 为什么只更新这三列
+  /// 剧名/海报/类别基本不变；而状态/更新日/平台会变。
+  /// 只改必要的列，减少写放大（drift 是整行 UPDATE，但语义上更清晰）。
+  Future<void> updateSubscriptionMeta({
+    required String source,
+    required String sourceId,
+    required String mediaType,
+    String? status,
+    String? lastAirDate,
+    String? platform,
+  }) async {
+    await (update(calendarSubscriptions)
+          ..where((t) =>
+              t.source.equals(source) &
+              t.sourceId.equals(sourceId) &
+              t.mediaType.equals(mediaType)))
+        .write(CalendarSubscriptionsCompanion(
+      status: status == null ? const Value.absent() : Value(status),
+      lastAirDate:
+          lastAirDate == null ? const Value.absent() : Value(lastAirDate),
+      platform: platform == null ? const Value.absent() : Value(platform),
+    ));
   }
 
   /// 全部订阅（按"最近更新日"倒序；无日期的排最后）。

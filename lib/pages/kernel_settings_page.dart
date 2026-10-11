@@ -170,14 +170,14 @@ class _ExplainCard extends StatelessWidget {
         child: Column(
           children: [
             for (final (i, r) in rules.indexed) ...[
-              if (i > 0) const Divider(height: Cf.gap4, color: Cf.border),
+              if (i > 0) Divider(height: Cf.gap4, color: Cf.border),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Expanded(
                     flex: 4,
                     child: Text(r.$1,
-                        style: const TextStyle(fontSize: 12, color: Cf.text)),
+                        style: TextStyle(fontSize: 12, color: Cf.text)),
                   ),
                   Expanded(
                     flex: 3,
@@ -197,8 +197,8 @@ class _ExplainCard extends StatelessWidget {
                 ],
               ),
             ],
-            const Divider(height: Cf.gap4, color: Cf.border),
-            const Text(
+            Divider(height: Cf.gap4, color: Cf.border),
+            Text(
               // 顺序即优先级 —— 这是实现事实，不说清用户会疑惑
               // "4K 的 RMVB 到底按哪条"。
               '规则按从上到下判断，先命中的先生效。\n'
@@ -230,9 +230,9 @@ class _LimitCard extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Icon(Icons.info_outline, size: Cf.iconSm, color: Cf.text3),
+            Icon(Icons.info_outline, size: Cf.iconSm, color: Cf.text3),
             const SizedBox(width: Cf.gap2),
-            const Expanded(
+            Expanded(
               child: Text(
                 '自动适配依据的是文件名与服务器元数据，'
                 '不是真正探测设备解码能力。\n\n'

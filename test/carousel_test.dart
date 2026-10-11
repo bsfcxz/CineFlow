@@ -113,7 +113,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
         home: MediaQuery(
           data: const MediaQueryData(textScaler: TextScaler.linear(2.0)),
-          child: const Scaffold(
+          child: Scaffold(
             body: Center(child: CfText('片名', style: Cf.pageTitle)),
           ),
         ),
@@ -127,7 +127,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
         home: MediaQuery(
           data: const MediaQueryData(textScaler: TextScaler.linear(2.0)),
-          child: const Scaffold(
+          child: Scaffold(
             body: Center(child: CfText('正文', style: Cf.body)),
           ),
         ),

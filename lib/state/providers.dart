@@ -295,6 +295,7 @@ Future<bool> toggleCalendarSubscription(
   WidgetRef ref, {
   required CalendarEntry entry,
   required String mediaType,
+  String status = '',
 }) async {
   final db = ref.read(appDbProvider);
   final now = await db.toggleSubscription(
@@ -307,6 +308,9 @@ Future<bool> toggleCalendarSubscription(
     platform: entry.platform ?? '',
     category: entry.category.name,
     lastAirDate: entry.airDate ?? '',
+    // 状态（"连载中"/"已完结"）—— 用户要求区分。
+    // 由调用方传入（日历下拉取才知道），拿不到就空串（UI 不显示标签）。
+    status: status,
   );
   // 两个 provider 都要刷（一个给"是否已订阅"的按钮状态，
   // 一个给首页/日历的订阅列表）

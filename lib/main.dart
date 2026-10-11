@@ -44,7 +44,7 @@ Future<void> main() async {
     debugPrint('[GoCore] 未加载（该平台未提供 .so），继续纯 Dart 路径');
   }
 
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+  SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
     systemNavigationBarColor: Cf.bg,

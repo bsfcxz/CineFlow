@@ -147,7 +147,7 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                         textInputAction: TextInputAction.search,
                         autofocus: widget.initialQuery == null,
                         onSubmitted: _search,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           isDense: true,
                           border: InputBorder.none,
                           hintText: '搜索影片 / 剧集 / 演员',
