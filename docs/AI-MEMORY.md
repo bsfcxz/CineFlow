@@ -2523,3 +2523,129 @@ check-dev.ps1     21 项全过
 5. 多账号聚合**已登录 2 台**了（可开始验证跨服去重）
 6. Bangumi 在本机/真机不可达（WAF 拦 TLS 指纹）
 7. `libmpv.so` 缺解码器仍需重编
+
+### 2026-10-12 · **详情页按 UI 规格重写 + 公共标签组件 + 首页对齐稿子**
+
+用户原话："上面这些我给你的 ui 设计你没有遵守哇" —— **属实**，根因见下。
+
+## 一、★ 根因：同一 App 里两套标签样式
+
+我把 `_StatusTag` / `_PlatformTag` 写成**详情页的私有类**，
+首页 hero 只能自己另写一套灰色 chip ⇒ 用户一眼看出"没遵守 UI 设计"。
+
+**修法**：抽到 `lib/widgets/media_tags.dart`（公共、公开）：
+| 组件 | 用途 |
+|---|---|
+| `CfStatusTag` | 状态标签（连载中绿+**闪烁** / 已完结灰 / 已上映橙）|
+| `CfPlatformTag` | 平台标签（腾讯蓝/爱奇艺绿/优酷青/芒果橙/B站粉/Netflix红）|
+| `CfGlassChip` | 玻璃 chip（年份/类型）|
+| `CfScoreText` | 金色评分（稿子 `.score` 无底底）|
+| `statusKindFrom()` | **三源状态归一**（Emby `Continuing` / TMDB `Returning Series` / 中文快照）|
+
+⇒ 详情页与首页 hero **import 同一个组件**。
+守卫测试断言"两处都必须 import，且详情页不得再有私有版本"。
+
+## 二、详情页按规格重写（全屏滑入，非底部弹层）
+
+用户给的规格表：
+| 类型 | Hero | 操作按钮 | 下次更新 | 信息栏 | 选集 |
+|---|---|---|---|---|---|
+| 剧集/动漫/综艺/纪录片/儿童 | ✅ | 播放+追剧 | 连载中显示 | 全 | 4 列网格 |
+| 电影 | ✅ | 播放+追剧 | ❌隐藏 | 全 | ❌隐藏 |
+
+稿子原文（`openDetail` / CSS）：
+```
+.detail-hero { height:52vh; min-height:380px }
+.detail-hero::after { gradient(to top, var(--bg) 0%, rgba(11,13,18,.4) 55%, transparent) }
+.detail-back { 36×36; radius:50%; rgba(0,0,0,.4); blur(10px) }
+.detail-hero-text h1 { font-size:26px; w800; text-shadow }
+.btn-primary   { flex:1; height:46px; border-radius:12px; gradient(brand,brand2) }
+.btn-secondary { flex:1; height:46px; border-radius:12px; rgba(255,255,255,.06);
+                 border:1px solid rgba(255,255,255,.12) }
+.btn-secondary.on { gradient(brand,brand2) }   ← 已追态也是**粉紫**，不是金色
+.ep-grid { grid-template-columns: repeat(4,1fr); gap:8px }
+.ep-item { aspect-ratio:16/9; radius:8px }
+```
+
+### ★ 我做错的地方（用户："按钮很突兀"）
+| 项 | 稿子 | 我的第一版 | 后果 |
+|---|---|---|---|
+| 按钮宽度 | **两个都 `flex:1`（等宽）** | 播放 `Expanded`、追剧按内容挤 | **一大一小** ← 突兀主因 |
+| 已追态 | 粉紫渐变 | 淡金底+金边框 | 与主题不一致 |
+| 图标 | 16×16 | 20 / 18 | 偏大 |
+
+⇒ 三个都按稿子改。守卫测试断言"两个按钮都要 `Expanded`"。
+
+### 选集折叠（用户追加要求）
+> "选集也整成和简介一样只展示3行，增加展开全部。"
+
+· 折叠 = **3 行 × 4 列 = 12 个**
+· 展开上限 **120 集**（实测《爱·回家之开心速递》**2868 集** ⇒ 4 列要铺 717 行，
+  展开也不该真铺 —— 会卡，且用户永远滚不到底）
+· 展开后如实标注"（仅显示前 120 集）"
+· 只有总数 > 12 时才给按钮（否则是**假按钮**）
+
+## 三、首页对齐稿子
+
+| 稿子 | 修前 | 修后 |
+|---|---|---|
+| `.hero-meta` = [status-tag][plat-tag][score][年份][类型] | 只有 3 个**灰 chip**（年份/⭐/类型）| 复用 `CfStatusTag`/`CfScoreText`/`CfGlassChip` |
+| `<h2>分类浏览 <em>点击查看全部</em></h2>` | 无 | `trailing: '点击查看全部 ›'` |
+| `<h2>最近更新 <em>新入库 / 新集数</em></h2>` | 「最近添加」| 「最近更新 · 新入库 / 新集数」|
+| `.section-head h2 { font-size:16px }` | 一致 | — |
+
+### ⚠️ 已知缺口：首页 hero **没有平台标签**
+`MediaItem`（列表项）**不带** `Studios` —— 它只在详情端点返回。
+⇒ 现在如实留空（**不编造**）。
+正解是"首页 hero 改用 TMDB 热播 ∩ 库内"，那时 TMDB 的 `networks` 直接给平台
+（零额外请求）。见未完成清单。
+
+### ⚠️ 我第二次犯的同一个错
+写 `item.studios` —— **`MediaItem` 没有这个字段**。
+上一轮在 Emby 详情页犯过一次（当时编译器就报错）。
+⇒ 教训：**新增字段访问前先读 `models.dart`**，不要凭印象。
+
+## 四、过程中我踩的坑（供后人避）
+
+1. **锚点不能凭记忆写**：连续 4 次 `assert count == 1` 失败，
+   全是因为我记错了注释原文（如把 `/// 海报（失败降级为占位…）`
+   记成 `/// 海报（列表里的…）`）。
+   ⇒ 正确做法：**先读文件拿到真实文本**，或用**行号**（并用"上一个非空行/下一个非空行"校验）。
+2. **替换 239 行的 `build` 会留下未配平的 `}`**：类提前闭合 ⇒
+   后续方法全掉到类外（出现"`Undefined name 'widget'/'setState'`"这类**误导性**错误）。
+   ⇒ 诊断方法：**剥离注释与字符串后的括号深度**（文件结束时应为 0；
+   我算成 -1 就是多了一个 `}`）。
+   ⚠️ 直接数 `{` `}` 会被**行内注释里的括号**骗（如
+   `cubic-bezier(0.32, 0.72, 0, 1)`）——必须剥注释。
+3. **`Cf.xxx.fontSize` 不能进 `const TextStyle`**：配色换肤后
+   字号令牌是 `static final` ⇒ 不是编译期常量 ⇒ `invalid_constant`。
+4. **门禁会抓"裸数值扩散"**：我新写的详情页用了裸 `circular(6/8/14)` 与
+   `fontSize: 12/14/17` ⇒ `design_tokens_test` 报错
+   （圆角必须 4/8/12/16；裸 fontSize 种类数 ≤11）。
+   ⇒ **新代码不得加重裸数值扩散**（改用 `Cf.radiusXs/Sm/Md` 与字号令牌）。
+
+## 本轮验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1380 All tests passed!（+9）
+check-dev.ps1     21 项全过（exit 0）
+```
+
+真机（Redmi K40，截图实证）：
+- ✅ 首页 hero：`[已完结 彩色] [2011] [Drama] [Adventure]`
+- ✅ 首页 section：`分类浏览 … 点击查看全部 ›` / `最近更新 新入库 / 新集数`
+- ✅ 6 个分类格子（图标渐变 + 名称 + 地区数）
+- ✅ 详情页 meta：`[已完结][• TVB Jade][★ 5.4][2017][家庭][喜剧][剧情]`
+- ✅ 按钮**已等宽**（`[▶ 播放 · 全 2868 集]` 与 `[☆ 追剧]` 各占一半）
+- ✅ 信息栏 5 行、简介 3 行 + 展开全部、选集 3 行 + 展开全部
+- ✅ 无崩溃
+
+## 未完成
+
+1. **首页 hero 无平台标签**（`MediaItem` 不带 `Studios`）
+2. 选集"展开"后语义树只暴露部分格子（渲染正常，但自动化验证受限）
+3. tgmeng 源已接入（252 条 / 0 失败），腾讯视频剧集仍拿不到（上游空）
+4. 首页 hero 横滑（TMDB 热播 ∩ 库内）—— 方案已确认，未实现
+5. 「已看分集」只显示剧名没集号
+6. Bangumi 不可达（WAF）；libmpv.so 缺解码器

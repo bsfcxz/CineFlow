@@ -4,6 +4,10 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+
+import '../data/calendar_client.dart';
+import '../widgets/media_tags.dart';
+import 'browse_page.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -58,7 +62,16 @@ class HomePage extends ConsumerWidget {
                 // 数据来自 `subscriptionsProvider`（drift 本地表），
                 // 且订阅时落了**完整快照**（剧名/海报/平台/更新日）
                 // ⇒ 外部源（TMDB/B站）全挂也照样显示。
-                const _MyTrackingSection(),
+                // ★ 分类浏览（用户 2026-10-12："分类浏览应该按照我给你的 ui 设计，
+              //   放在首页我的追剧上方"）
+              //
+              // ## 为什么放"我的追剧"**上方**
+              // 用户明确指定。产品上也说得通：
+              // · 分类浏览 = **探索**（发现新内容）
+              // · 我的追剧 = **跟进**（继续看已订的）
+              // 先探索再跟进，符合"打开 App 先看看有什么"的心智。
+              const _CategoryBrowseSection(),
+              const _MyTrackingSection(),
                 // ★ 「继续观看」已**移除**（用户要求）
                 //
                 // ## 为什么移除
@@ -96,7 +109,14 @@ class HomePage extends ConsumerWidget {
                   ),
                 if (d.latest.isNotEmpty)
                   CfSection(
-                    title: '最近添加',
+                    // 稿子：`<h2>最近更新 <em>新入库 / 新集数</em></h2>`
+                    //
+                    // ⚠️ 原标题「最近添加」是 Emby `/Latest` 的直译。
+                    //    改「最近更新」语义更准：实测 `/Latest` 会返回
+                    //    **老剧新集**（如 2019 的剧出了第 5 季）——
+                    //    那就是「新集数」，不只是「新入库」。
+                    title: '最近更新',
+                    trailing: '新入库 / 新集数',
                     // 不再挂「全部 ›」：媒体库页已移除（ADR 0003），
                     // 留一个点进去是"敬请期待"的入口比没有入口更糟。
                     child: PosterGrid(
@@ -340,12 +360,26 @@ class _Slide extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final api = ref.watch(embyApiProvider)!;
     final url = item.backdropUrl(api);
-    final tags = <String>[
-      if (item.productionYear != null) '${item.productionYear}',
-      if (item.communityRating != null)
-        '⭐ ${item.communityRating!.toStringAsFixed(1)}',
-      ...item.genres.take(2),
-    ];
+    // ★ hero 的 meta 行（稿子 `.hero-meta`）
+    //
+    // ## 用户 2026-10-12："上面这些我给你的 ui 设计你没有遵守"
+    // 我第一版这里只有三个**灰色 chip**（年份/⭐评分/类型）——
+    // 而稿子是 `[status-tag] [plat-tag] [score] [年份] [类型]`：
+    // · 状态标签**彩色**（连载中绿+闪烁 / 已完结灰）
+    // · 平台标签**品牌色**（腾讯蓝/爱奇艺绿/优酷青/芒果橙/B站粉）
+    // · 评分**金色 `★`** 且无边底
+    //
+    // ⇒ 全部复用 `media_tags.dart` 的公共组件（与详情页**同一套**）。
+    //    这正是"两处样式必须一致"的关键 —— 各写一套必然漂移。
+    final kind = statusKindFrom(item.status);
+    // ⚠️ 平台**暂缺**：`MediaItem`（列表项）不带 `Studios`，
+    //    它只在详情端点返回（`MediaItemDetail.studios`）。
+    //    首页轮播若为每张图都发一次详情请求，代价是 5 次额外请求/次刷新。
+    //
+    // ⇒ 现在如实留空（**不编造**）；等"首页 hero 改用 TMDB 热播交集"落地后，
+    //    TMDB 的 `networks` 会直接给出平台（那才是正解，且零额外请求）。
+    //    见 docs/AI-MEMORY.md 的未完成清单。
+    final String? platform = null;
     return GestureDetector(
       onTap: () => openMediaItem(context, item),
       child: Stack(fit: StackFit.expand, children: [
@@ -407,21 +441,20 @@ class _Slide extends ConsumerWidget {
                       shadows: [
                         Shadow(blurRadius: 20, color: Colors.black54)
                       ])),
-              if (tags.isNotEmpty) SizedBox(height: Cf.gap2),
-              Wrap(spacing: 7, runSpacing: 5, children: [
-                for (final t in tags)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 9, vertical: 2),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(Cf.radiusSm),
-                      color: const Color(0x1FFFFFFF),
-                      border:
-                          Border.all(color: const Color(0x26FFFFFF)),
-                    ),
-                    child: Text(t, style: Cf.micro.copyWith(
-                        fontWeight: FontWeight.w600, color: Cf.text)),
-                  ),
+              if (kind != null ||
+                  platform != null ||
+                  item.communityRating != null ||
+                  item.productionYear != null)
+                SizedBox(height: Cf.gap2),
+              // 稿子 `.hero-meta { display:flex; gap:8px; align-items:center; flex-wrap:wrap }`
+              Wrap(spacing: 8, runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center, children: [
+                if (kind != null) CfStatusTag(kind: kind),
+                if (platform != null) CfPlatformTag(name: platform),
+                if (item.communityRating case final r? when r > 0)
+                  CfScoreText(value: r),
+                if (item.productionYear case final y?) CfGlassChip(text: '$y'),
+                for (final g in item.genres.take(2)) CfGlassChip(text: g),
               ]),
               if (item.overview case final ov? when ov.isNotEmpty) ...[
                 SizedBox(height: Cf.gap2),
@@ -454,6 +487,114 @@ class _Slide extends ConsumerWidget {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: c));
+  }
+}
+
+/// **分类浏览**（稿子的 `.category-grid`：3 列，每格 图标+名称+计数）。
+///
+/// ## 稿子规格
+/// ```css
+/// grid-template-columns: repeat(3, 1fr); gap: 10px
+/// .cat-entry { padding: 14px 6px 12px; radius: 14px; bg: var(--card) }
+/// .cat-entry-icon { 38×38; radius: 11px; 各自渐变 }
+/// .cat-entry-text { 12px; w700; #fff }
+/// .cat-entry-count { 10px; var(--text-mute) }
+/// ```
+///
+/// ## ⚠️ 计数怎么来的（不能照抄稿子）
+/// 稿子里的 count 是 `Object.values(CONTENT).filter(...)` —— 那是它**硬编码的
+/// 17 条假数据**。真实计数要问 TMDB（每个类别一次 discover）。
+/// ⇒ 这里**不显示计数**（显示 0 或假数字都比没有更糟），
+///    改显示该类别的地区数（"5 个地区"这种真实且稳定的信息）。
+///    真正的数量在点进去之后由列表本身呈现。
+class _CategoryBrowseSection extends ConsumerWidget {
+  const _CategoryBrowseSection();
+
+  /// 稿子原文的 6 个渐变色（每类一对）。
+  static const _gradients = <BrowseCategory, (Color, Color)>{
+    BrowseCategory.series: (Color(0xFFFF4D8D), Color(0xFFA855F7)),
+    BrowseCategory.movie: (Color(0xFFF59E0B), Color(0xFFDC2626)),
+    BrowseCategory.anime: (Color(0xFF06B6D4), Color(0xFF3B82F6)),
+    BrowseCategory.variety: (Color(0xFF22C55E), Color(0xFF16A34A)),
+    BrowseCategory.documentary: (Color(0xFF0D9488), Color(0xFF0891B2)),
+    BrowseCategory.kids: (Color(0xFFFACC15), Color(0xFFF97316)),
+  };
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 复用 CfSection（'合集' 也用它）—— 保持页内标题样式一致
+    return CfSection(
+      title: '分类浏览',
+      // 稿子：`<h2>分类浏览 <em>点击查看全部</em></h2>`
+      trailing: '点击查看全部 ›',
+      onTrailing: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const BrowsePage()),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: Cf.gap4),
+        child: GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: BrowseCategory.values.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            mainAxisSpacing: Cf.gap3,
+            crossAxisSpacing: Cf.gap3,
+            // 稿子的格子是"图标 38 + 文字"的近似正方形 ⇒ 宽高比 ~1.15
+            childAspectRatio: 1.15,
+          ),
+          itemBuilder: (_, i) {
+            final c = BrowseCategory.values[i];
+            final g = _gradients[c]!;
+            return GestureDetector(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => BrowsePage(initial: c),
+                ),
+              ),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Cf.surface,
+                  borderRadius: BorderRadius.circular(Cf.radiusMd),
+                  border: Border.all(color: Cf.border),
+                ),
+                child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [g.$1, g.$2]),
+                          borderRadius: BorderRadius.circular(Cf.radiusSm),
+                        ),
+                        child: Text(c.emoji,
+                            style: const TextStyle(fontSize: Cf.iconMd)),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(c.label,
+                          style: Cf.caption.copyWith(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: Cf.text)),
+                      const SizedBox(height: 1),
+                      // 真实且稳定的信息（不编造数量，见类文档）
+                      Text('${c.regions.length} 个地区',
+                          style: Cf.micro.copyWith(
+                              fontSize: 10, color: Cf.text3)),
+                    ]),
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 }
 

@@ -42,10 +42,26 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
   /// 当前子页：0=追剧日历，1=继续观看（与参考稿的 seg-tabs 一致）。
   int _seg = 0;
 
+  /// 副标题文案（稿子："共 N 部 · 连载 N · 已完结 N"）。
+  ///
+  /// ## 三种情况
+  /// · 没订阅 ⇒ 告诉用户**去哪订阅**（空态必须可行动）
+  /// · 有订阅但状态未知 ⇒ 只报总数（**不编造**连载/已完结）
+  /// · 正常 ⇒ 三个数字都报
+  String _subtitle(List<CalendarSubscription> list) {
+    if (list.isEmpty) return '去追剧日历点星标订阅，这里会自动同步';
+    final live = list.where((s) => s.status == '连载中').length;
+    final ended = list.where((s) => s.status == '已完结').length;
+    if (live + ended == 0) return '共 ${list.length} 部 · 与追剧日历同步';
+    return '共 ${list.length} 部 · 连载 $live · 已完结 $ended';
+  }
+
   @override
   Widget build(BuildContext context) {
     final subs = ref.watch(subscriptionsProvider);
-    final subCount = subs.maybeWhen(data: (l) => l.length, orElse: () => 0);
+    final list = subs.maybeWhen(
+        data: (l) => l, orElse: () => const <CalendarSubscription>[]);
+    final subCount = list.length;
 
     return Scaffold(
       backgroundColor: Cf.bg,
@@ -59,14 +75,17 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
               child: Text('我的追剧',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
             ),
+            // ★ 统计条（稿子："共 N 部 · 连载 N · 已完结 N"）
+            //
+            // ## 为什么把"连载/已完结"分开数（而不是只报总数）
+            // 用户看「我的追剧」最想知道的是"**还有哪些在播**"——
+            // 已完结的不用再等更新。这两个数字正好回答它。
+            //
+            // 数据来自订阅表的 `status` 列（订阅时落库的快照，
+            // 打开本页时用 TMDB 的最新状态**回写**过，见 `_SubscribedCalendar`）。
             Padding(
               padding: const EdgeInsets.fromLTRB(Cf.gap4, 0, Cf.gap4, Cf.gap3),
-              child: Text(
-                subCount == 0
-                    ? '去追剧日历点星标订阅，这里会自动同步'
-                    : '已订阅 $subCount 部 · 与追剧日历同步',
-                style: Cf.caption,
-              ),
+              child: Text(_subtitle(list), style: Cf.caption),
             ),
 
             // ── 两栏分页（参考稿的 seg-tabs）──

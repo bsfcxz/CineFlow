@@ -26,46 +26,87 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../core/theme.dart';
 import '../data/calendar_client.dart';
+import 'media_tags.dart';
 import '../state/providers.dart';
 
-/// 打开日历条目的详情弹层。
+/// 打开日历条目的**全屏详情页**。
 ///
-/// [entry] 用于"详情还没到"时**立即**显示标题/海报/评分/平台
-///（与豆瓣弹层同一个做法：先给即时信息，详情异步补上）。
+/// ## ★ 为什么从"底部弹层"改成"全屏页"（用户 2026-10-12 要求）
+/// > "详情页的设计也需要和我的 ui 一样"
+/// 稿子（180b4d）里它是 **`position:absolute; inset:0` + `translateY(100%)`**
+/// ⇒ **整屏从底部滑入**，而不是"占 60% 高度的弹层"。
+///
+/// 差异不只是高度：全屏页才能放下
+/// 「52vh Hero + 操作按钮 + 下次更新 + 5 行信息 + 3 行简介 + 4 列选集网格」
+/// —— 弹层里这些会挤成一片。
 void showCalendarDetail(BuildContext context, CalendarEntry entry) {
-  showModalBottomSheet<void>(
-    context: context,
-    backgroundColor: Cf.surface,
-    isScrollControlled: true,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-    ),
-    builder: (ctx) => SafeArea(
-      child: _CalendarDetailSheet(entry: entry),
+  Navigator.push(
+    context,
+    PageRouteBuilder<void>(
+      opaque: true,
+      // 稿子的曲线：cubic-bezier(0.32, 0.72, 0, 1)，420ms
+      transitionDuration: const Duration(milliseconds: 420),
+      reverseTransitionDuration: const Duration(milliseconds: 320),
+      pageBuilder: (_, __, ___) => CalendarDetailPage(entry: entry),
+      transitionsBuilder: (_, anim, __, child) => SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, 1), // 从底部滑入（稿子 translateY(100%)）
+          end: Offset.zero,
+        ).animate(CurvedAnimation(
+          parent: anim,
+          curve: const Cubic(0.32, 0.72, 0, 1),
+        )),
+        child: child,
+      ),
     ),
   );
 }
 
-class _CalendarDetailSheet extends ConsumerStatefulWidget {
-  const _CalendarDetailSheet({required this.entry});
+class CalendarDetailPage extends ConsumerStatefulWidget {
+  const CalendarDetailPage({super.key, required this.entry});
 
   final CalendarEntry entry;
 
   @override
-  ConsumerState<_CalendarDetailSheet> createState() =>
-      _CalendarDetailSheetState();
+  ConsumerState<CalendarDetailPage> createState() =>
+      _CalendarDetailPageState();
 }
 
-class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
+class _CalendarDetailPageState extends ConsumerState<CalendarDetailPage> {
   /// 详情（null = 还在加载；`_failed` = 拉取失败）。
   CalendarDetail? _detail;
   bool _loading = true;
   bool _failed = false;
 
+  /// 简介是否已展开（稿子 180b4d："默认 3 行 + 展开全部"）。
+  ///
+  /// ## 为什么默认折叠
+  /// TMDB 的 `overview` 实测可达 300+ 字，全展开会把「导演/主演/类型」
+  /// 挤出首屏 —— 而用户点进来最想看的是**元信息**，简介属"想细看再展开"。
+  bool _descExpanded = false;
+
+  /// 选集是否已展开（用户 2026-10-12：选集也整成和简介一样只展示3行）。
+  ///
+  /// ## 为什么选集也要折叠
+  /// 实测《爱·回家之开心速递》**2868 集** ⇒ 4 列网格要铺 700+ 行，
+  /// 把后面的内容全部顶下去（用户永远滚不到底）。
+  bool _epExpanded = false;
+
+  /// 是否已追（用户规格：追剧按钮可切换「追剧 / 已追」）。
+  ///
+  /// ## 两个来源的并集（与 Emby 详情页同一个约定）
+  /// · **本地订阅**（drift 表，追剧日历里点星标订的）
+  /// · 任一为真 ⇒ 显示"已追"
+  ///
+  /// ⚠️ 本页条目来自 TMDB/B站等**外部源**，可能**不在 Emby 库内**
+  /// ⇒ 不能假定有 Emby 的 `IsFavorite`，只查本地订阅。
+  bool _following = false;
+
   @override
   void initState() {
     super.initState();
     _load();
+    _syncFollowing();
   }
 
   Future<void> _load() async {
@@ -100,239 +141,165 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
     final e = widget.entry;
     final d = _detail;
     // 海报优先用详情的（更清晰），否则用列表里的
     final cover = d?.posterUrl ?? e.posterUrl;
     final title = e.displayTitle;
-    // 评分优先详情，否则列表里的（`vote_average`）
     final rating = d?.rating ?? e.rating;
 
-    return DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.72,
-      maxChildSize: 0.92,
-      builder: (context, scrollCtrl) => Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── 头部：海报 + 标题 + 评分 + 副标题（对齐豆瓣弹层）──
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _Poster(url: cover),
-                SizedBox(width: 13),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title.isNotEmpty ? title : '暂无标题',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w800),
-                      ),
-                      // 类别 + 平台（豆瓣弹层这里是评分，我们先给归属信息）
-                      SizedBox(height: 5),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: [
-                          _Tag(text: e.category.label, color: Cf.accent),
-                          if (d?.statusCn case final st?)
-                            _Tag(text: st, color: Cf.text3),
-                        ],
-                      ),
-                      if (rating != null) ...[
-                        SizedBox(height: 5),
-                        Row(children: [
-                          const Icon(Icons.star_rounded,
-                              size: 16, color: Cf.warn),
-                          const SizedBox(width: 3),
-                          Text(rating.toStringAsFixed(1),
-                              style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w900,
-                                  color: Cf.warn)),
-                          if (d?.voteCount case final c? when c > 0)
-                            Text('  $c 人评过',
-                                style: TextStyle(
-                                    fontSize: 10, color: Cf.text3)),
-                        ]),
-                      ],
-                      // 副标题（"2023 / 中国大陆 / 动画 剧情"）
-                      if (d?.subtitleLine case final sub? when sub.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 5),
-                          child: Text(sub,
-                              maxLines: 3,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                  fontSize: 10,
-                                  color: Cf.text3,
-                                  height: 1.5)),
-                        ),                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
+    // ★ 稿子的类型判定：电影 = 无"下次更新"、无"选集"
+    final isMovie = e.category == BrowseCategory.movie ||
+        (_detail?.genres.contains('电影') ?? false);
 
-            // ── 正文（可滚动）──
-            Expanded(
-              child: _loading
-                  ? Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(20),
-                        // ⚠️ 不能写 `CircularProgressIndicator(color: Cf.accent)`
-                        //    —— 虽然 `Cf.accent` 本身是 `Color`，但放进
-                        //    `const` 构造里 Dart 仍报 `invalid_constant`
-                        //    （`Cf.accent` 是**静态成员**，不是字面量）。
-                        //    这里用它的字面值并**加守卫测试**防漂移。
-                        child: SizedBox(
-                          width: 28,
-                          height: 28,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            color: Cf.accent,
-                          ),
-                        ),
-                      ),
+    return Scaffold(
+      backgroundColor: Cf.bg,
+      body: _loading && d == null
+          ? const Center(child: CircularProgressIndicator())
+          : Stack(children: [
+              // 内容整体可滚（稿子 `.detail-scroll { flex:1; overflow-y:auto }`）
+              ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  // ── ① Hero 大图（52vh）+ 底部渐隐 + 返回钮 + 标题 + meta ──
+                  _Hero(
+                    cover: d?.backdropUrl ?? cover,
+                    title: title,
+                    entry: e,
+                    detail: d,
+                    rating: rating,
+                  ),
+                  // ── ② 操作按钮行：播放（粉紫渐变）+ 追剧（半透明边框）──
+                  _ActionRow(
+                    entry: e,
+                    detail: d,
+                    onPlay: () => _jumpToPlatform(title, d, e),
+                    following: _following,
+                    onToggleFollow: _toggleFollow,
+                  ),
+                  // ── ③ 下次更新（**电影隐藏**，用户规格）──
+                  if (!isMovie) _NextUpdate(entry: e, detail: d),
+                  // ── ④ 信息栏（**全类型显示**，用户规格）──
+                  _InfoSection(entry: e, detail: d),
+                  // ── ⑤ 简介 3 行 + 展开全部 ──
+                  if (d?.overview case final intro? when intro.isNotEmpty)
+                    _Overview(
+                      text: intro,
+                      expanded: _descExpanded,
+                      offerExpand: _shouldOfferExpand(intro),
+                      onToggle: () =>
+                          setState(() => _descExpanded = !_descExpanded),
                     )
-                  : ListView(
-                      controller: scrollCtrl,
-                      children: [
-                        if (d?.overview case final intro?
-                            when intro.isNotEmpty) ...[
-                          Text('简介',
-                              style: TextStyle(
-                                  fontSize: 13, fontWeight: FontWeight.w800)),
-                          SizedBox(height: 6),
-                          Text(intro,
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: Cf.text2,
-                                  height: 1.7)),
-                          SizedBox(height: 14),
-                        ] else if (_failed)
-                          Padding(
-                            padding: EdgeInsets.only(bottom: 12),
-                            child: Text(
-                              e.source == 'tmdb'
-                                  ? '详情加载失败（可能网络波动），可稍后重试'
-                                  : '该来源暂不支持查看详情',
-                              style: TextStyle(
-                                  fontSize: 12, color: Cf.text3),
-                            ),
-                          ),
-                        // 一行标语（TMDB 的 tagline，豆瓣没有对应物但很有味道）
-                        if (d?.tagline case final tl? when tl.isNotEmpty) ...[
-                          Text('「$tl」',
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  color: Cf.text3,
-                                  fontStyle: FontStyle.italic)),
-                          const SizedBox(height: 12),
-                        ],
-                        _infoRow('导演', d?.directors ?? const []),
-                        _infoRow('主演', (d?.actors ?? []).take(8).toList()),
-                        _infoRow('类型', d?.genres ?? []),
-                        _infoRow('制片国家/地区', d?.countries ?? []),
-                        _infoRow('播放平台', d?.platforms ?? [
-                          if (e.platform case final p?) p
-                        ]),
-                        if (d?.episodeText case final ep?) _infoRow('集数', [ep]),
-                        if (d?.firstAirDate case final fa?)
-                          _infoRow('首播', [fa]),
-                        _infoRow('更新', [
-                          '${_weekdayCn(e.weekdayResolved)}'
-                              '${e.episode == null ? '' : ' · ${e.episode}'}'
-                        ]),
-                        SizedBox(height: 8),
-                      ],
-                    ),
-            ),
-            SizedBox(height: 10),
-
-            // ── 底部动作行（对齐豆瓣弹层：主按钮 + 两个图标）──
-            Row(
-              children: [
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () => _jumpToPlatform(title, d, e),
-                    child: Container(
-                      height: 42,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        gradient: Cf.primaryGradient,
-                        borderRadius: BorderRadius.circular(Cf.radiusSm),
-                      ),
+                  else if (_failed)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(Cf.gap5, 0, Cf.gap5, 12),
                       child: Text(
-                        _actionLabel(d, e),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color: Cf.ink),
+                        e.source == 'tmdb'
+                            ? '详情加载失败（可能网络波动），可稍后重试'
+                            : '该来源暂不支持查看详情',
+                        style: Cf.caption.copyWith(color: Cf.text3),
                       ),
                     ),
-                  ),
-                ),
-                const SizedBox(width: 9),
-                // TMDB 页面（相当于豆瓣弹层的 [↗豆瓣]）
-                _IconBtn(
-                  icon: Icons.open_in_new_rounded,
-                  onTap: d?.tmdbId == null
-                      ? null
-                      : () => launchUrl(
-                            Uri.parse('https://www.themoviedb.org/tv/'
-                                '${d!.tmdbId}?language=zh-CN'),
-                            mode: LaunchMode.externalApplication,
-                          ),
-                ),
-                const SizedBox(width: 9),
-                _IconBtn(
-                  icon: Icons.close_rounded,
-                  size: 20,
-                  onTap: () => Navigator.pop(context),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+                  // ── ⑥ 选集 4 列网格（**电影隐藏**，用户规格）──
+                  if (!isMovie)
+                    _EpisodeGrid(
+                      entry: e,
+                      detail: d,
+                      expanded: _epExpanded,
+                      onToggle: () =>
+                          setState(() => _epExpanded = !_epExpanded),
+                    ),
+                  const SizedBox(height: 40),
+                ],
+              ),
+            ]),
     );
   }
-
-  /// 主按钮文案：有官方播放页 ⇒ "去 XX 观看"，否则"在平台搜索"。
-  String _actionLabel(CalendarDetail? d, CalendarEntry e) {
-    final t = e.displayTitle;
-    final platforms = (d?.platforms.isNotEmpty ?? false)
-        ? d!.platforms
-        : [if (e.platform case final p?) p];
-    final p = platforms.isEmpty ? null : platforms.first;
-    final home = d?.homepage;
-    if (home != null && home.isNotEmpty) {
-      return '去 ${p ?? '平台'} 观看';
+  /// 切换「追剧」（用户规格：次操作按钮，可切换 追剧 / 已追）。
+  ///
+  /// 写**本地订阅表**（与追剧日历、首页「我的追剧」共用同一份数据）
+  /// ⇒ 在这里追的剧会立刻出现在那两处。
+  Future<void> _toggleFollow() async {
+    final e = widget.entry;
+    setState(() => _following = !_following); // 乐观更新
+    try {
+      final now = await toggleCalendarSubscription(
+        ref,
+        entry: e,
+        // 外部源的条目：TMDB 的 sourceId 就是 tmdb id ⇒ mediaType 按其 kind
+        mediaType: e.category == BrowseCategory.movie ? 'movie' : 'tv',
+        status: _detail?.statusCn ?? '',
+      );
+      if (mounted && now != _following) setState(() => _following = now);
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+          content: Text(now ? '已加入追剧：《${e.displayTitle}》' : '已取消追剧'),
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (err) {
+      // 失败回滚（不能让按钮显示"已追"而数据没落库）
+      if (mounted) setState(() => _following = !_following);
+      debugPrint('[CalendarDetail] 追剧切换失败: $err');
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+          content: Text('操作失败：$err'),
+          duration: const Duration(seconds: 3),
+        ));
+      }
     }
-    return p == null ? '搜索「$t」' : '在 $p 搜索「$t」';
   }
 
-  /// 跳转：**优先官方播放页**（实测《仙逆》给了 `v.qq.com/x/cover/...`），
-  /// 没有则退回平台搜索页。
+  /// 初次查询"是否已追"（本地订阅表）。
+  Future<void> _syncFollowing() async {
+    try {
+      final keys = await ref.read(subscribedKeysProvider.future);
+      final id = widget.entry.sourceId;
+      if (id == null) return;
+      final hit = keys.any((k) => k.endsWith(':$id:tv') || k.endsWith(':$id:movie'));
+      if (mounted && hit) setState(() => _following = true);
+    } catch (e) {
+      debugPrint('[CalendarDetail] 读订阅失败（非致命）: $e');
+    }
+  }
+
+  /// 简介是否**真的**会被 3 行截断（决定要不要显示「展开全部」）。
   ///
-  /// ## 为什么优先 homepage
-  /// `homepage` 是**该剧的官方页面** ⇒ 点进去直接能看；
-  /// 搜索页还要用户再点一次。实测《仙逆》/《你好，星期六》都有 homepage。
+  /// ## 为什么要判（而不是无脑显示）
+  /// 短简介也放个「展开全部」⇒ 用户点了**没反应** ⇒ 那是**假按钮**，
+  /// 比没有更糟（AGENTS §5.8：不留死按钮）。
+  ///
+  /// ## 判据
+  /// 按 12px 字号 + 393dp 屏宽估算：约 22 字/行 ⇒ 3 行约 66 字。
+  /// 阈值取 **60**（宁可多显示按钮 —— 点开多点一下无妨，
+  /// 漏显示会让用户以为简介就这些）。
+  bool _shouldOfferExpand(String intro) => intro.length > 60;
+  /// 跳转：按**精确度**依次降级。
+  ///
+  /// ## 三级降级链（越靠前越准）
+  /// ① **`entry.jumpUrl`** —— tgmeng 给的**该剧在平台的具体页面**
+  ///    （实测形如 `v.youku.com/v_show/id_XX.html`）⇒ 点进去**直接能看**
+  /// ② **`detail.homepage`** —— TMDB 的官方页面
+  ///    （实测《仙逆》给了 `v.qq.com/x/cover/...`）
+  /// ③ **平台搜索页** —— 只知道平台名时的兜底
+  ///    （`platformSearchUrl`，用户还得再点一次）
   Future<void> _jumpToPlatform(
       String title, CalendarDetail? d, CalendarEntry e) async {
+    // ① tgmeng 的精确播放页（最准）
+    final jump = e.jumpUrl;
+    if (jump != null && jump.isNotEmpty) {
+      final ok = await launchUrl(Uri.parse(jump),
+          mode: LaunchMode.externalApplication);
+      if (ok) return;
+      // 打不开就继续降级（有些 http 链接在 Android 上被拦）
+    }
+    // ② TMDB 的官方页面
     final home = d?.homepage;
     final url = (home != null && home.isNotEmpty)
         ? home
+        // ③ 平台搜索页兜底
         : platformSearchUrl(
             (d?.platforms.isNotEmpty ?? false) ? d!.platforms.first : e.platform,
             title);
@@ -350,112 +317,513 @@ class _CalendarDetailSheetState extends ConsumerState<_CalendarDetailSheet> {
       );
     }
   }
-
-  String _weekdayCn(int w) =>
-      const ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'][w.clamp(1, 7)];
-
-  Widget _infoRow(String label, List<String> values) {
-    final v = values.where((e) => e.trim().isNotEmpty).toList();
-    if (v.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 7),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 84,
-            child: Text(label,
-                style: TextStyle(fontSize: 11, color: Cf.text3)),
-          ),
-          Expanded(
-            child: Text(v.join(' / '),
-                style: TextStyle(fontSize: 11, color: Cf.text2)),
-          ),
-        ],
-      ),
-    );
-  }
 }
+// ══════════════════════════════════════════════════════════════
+// ★ 用户规格：状态/平台**用颜色区分**（一眼认出）
+// ══════════════════════════════════════════════════════════════
+/// Hero 大图（**52vh**，稿子 `.detail-hero { height:52vh; min-height:380px }`）。
+///
+/// 用户逐条列出的五层结构（缺一不可）：
+/// ① 大图（真实项目 = 海报/backdrop）
+/// ② **底部渐隐遮罩** —— 从图过渡到页面底色，**让白字可读**
+/// ③ 左上角半透明圆返回钮（36 + blur，避免遮挡大图）
+/// ④ 剧名 **28px** 白字带阴影
+/// ⑤ Meta 标签行 [状态][平台][评分][年份][类型]
+class _Hero extends StatelessWidget {
+  const _Hero({
+    required this.cover,
+    required this.title,
+    required this.entry,
+    required this.detail,
+    required this.rating,
+  });
 
-/// 海报（失败降级为占位，与列表页同一个做法）。
-class _Poster extends StatelessWidget {
-  const _Poster({required this.url});
-
-  final String? url;
+  final String? cover;
+  final String title;
+  final CalendarEntry entry;
+  final CalendarDetail? detail;
+  final double? rating;
 
   @override
   Widget build(BuildContext context) {
-    const w = 84.0;
-    const h = 120.0;
-    final u = url;
-    Widget fallback() => Container(
-          width: w,
-          height: h,
+    final h = MediaQuery.of(context).size.height * 0.52;
+    return SizedBox(
+      height: h < 380 ? 380 : h,
+      child: Stack(fit: StackFit.expand, children: [
+        // ① 大图
+        if (cover != null && cover!.isNotEmpty)
+          Image.network(cover!,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(color: Cf.surface2))
+        else
+          Container(color: Cf.surface2),
+        // ② 底部渐隐（稿子原文：`linear-gradient(to top, var(--bg) 0%,
+        //    rgba(11,13,18,.4) 55%, transparent 100%)`）
+        DecoratedBox(
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(Cf.radiusSm),
-            color: Cf.surface2,
+            gradient: LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: [Cf.bg, Color(0x660B0D12), Color(0x00000000)],
+              stops: [0.0, 0.55, 1.0],
+            ),
           ),
-          alignment: Alignment.center,
-          child: Icon(Icons.movie_outlined, color: Cf.text3),
-        );
-    if (u == null || u.isEmpty) return fallback();
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(Cf.radiusSm),
-      child: Image.network(
-        u,
-        width: w,
-        height: h,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => fallback(),
-        loadingBuilder: (context, child, p) =>
-            p == null ? child : fallback(),
-      ),
+        ),
+        // ③④⑤ 返回钮 + 标题 + meta（贴底）
+        SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Cf.gap5),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: Cf.gap2),
+                const _BackBtn(),
+                const Spacer(),
+                Text(title.isNotEmpty ? title : '暂无标题',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: Cf.pageTitle.fontSize,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                      letterSpacing: -0.5,
+                      shadows: [
+                        Shadow(blurRadius: 12, color: Color(0xE6000000)),
+                      ],
+                    )),
+                const SizedBox(height: Cf.gap2),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (statusKindFrom(detail?.status,
+            isMovie: entry.category == BrowseCategory.movie) case final k?)
+                      CfStatusTag(kind: k),
+                    if (platformOf(entry, detail) case final pn?)
+                      CfPlatformTag(name: pn),
+                    if (rating != null && rating! > 0) ...[
+                      const Icon(Icons.star_rounded,
+                          size: 15, color: Color(0xFFF5C518)),
+                      Text(rating!.toStringAsFixed(1),
+                          style: TextStyle(
+                              fontSize: Cf.title.fontSize,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFFF5C518))),
+                    ],
+                    if (yearOfDate(entry.airDate) case final y?)
+                      CfGlassChip(text: y),
+                    for (final g in (detail?.genres ?? const <String>[]).take(3))
+                      CfGlassChip(text: g),
+                  ],
+                ),
+                const SizedBox(height: Cf.gap4),
+              ],
+            ),
+          ),
+        ),
+      ]),
     );
   }
 }
 
-class _Tag extends StatelessWidget {
-  const _Tag({required this.text, required this.color});
+/// 平台名（详情优先，退回列表里的）。
+String? platformOf(CalendarEntry e, CalendarDetail? d) {
+  final p = d?.platforms;
+  if (p != null && p.isNotEmpty) return p.first;
+  return e.platform;
+}
+/// 星期几的中文（1=一 … 7=日）。
+String weekdayCn(int w) => const ['', '一', '二', '三', '四', '五', '六', '日'][w.clamp(1, 7)];
+/// 返回按钮（左上角**半透明圆**，稿子 `.detail-back`）。
+class _BackBtn extends StatelessWidget {
+  const _BackBtn();
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: () => Navigator.pop(context),
+        child: Container(
+          width: 36,
+          height: 36,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: const Color(0x66000000), // rgba(0,0,0,.4)
+            border: Border.all(color: const Color(0x26FFFFFF)),
+          ),
+          child: const Icon(Icons.arrow_back_rounded,
+              size: 16, color: Colors.white),
+        ),
+      );
+}
+
+/// 操作按钮行（用户规格：播放 = **粉紫渐变**主操作；追剧 = **半透明边框**次操作）。
+class _ActionRow extends StatelessWidget {
+  const _ActionRow({
+    required this.entry,
+    required this.detail,
+    required this.onPlay,
+    required this.following,
+    required this.onToggleFollow,
+  });
+
+  final CalendarEntry entry;
+  final CalendarDetail? detail;
+  final VoidCallback onPlay;
+  final bool following;
+  final VoidCallback onToggleFollow;
+
+  @override
+  Widget build(BuildContext context) {
+    // 文案随进度变化（用户规格："文案随进度变化"）
+    final isMovie = entry.category == BrowseCategory.movie;
+    final total = detail?.episodeCount;
+    final label = isMovie
+        ? '立即播放'
+        : (total != null && total > 0 ? '播放 · 全 $total 集' : '播放');
+
+    // ★ 两个按钮**等宽**（稿子 `.btn-primary` 与 `.btn-secondary` 都是 `flex: 1`）
+    //
+    // ## 为什么必须等宽（用户反馈"很突兀"）
+    // 我第一版让「播放」占满剩余宽度、「追剧」按内容挤成一小块
+    // ⇒ 视觉上**一大一小**，左边的渐变块显得臃肿。
+    // 稿子的做法是各占一半 —— 主次靠**视觉**（渐变 vs 半透明）区分，
+    // 而不是靠**尺寸**。
+    //
+    // 稿子尺寸：height 46 / radius 12 / fontSize 14 / fw 700 / gap 6 / 图标 16
+    const h = 46.0;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Cf.gap5, Cf.gap4, Cf.gap5, Cf.gap2),
+      child: Row(children: [
+        // 主操作：粉紫渐变
+        Expanded(
+          child: GestureDetector(
+            onTap: onPlay,
+            child: Container(
+              height: h,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Cf.accent, Cf.accent2]),
+                borderRadius: BorderRadius.circular(Cf.radiusMd),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.play_arrow_rounded,
+                    size: 16, color: Colors.white),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white)),
+                ),
+              ]),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10), // 稿子 `.detail-actions { gap: 10px }`
+        // 次操作：**等宽**半透明；已追 = 粉紫渐变（稿子 `.btn-secondary.on`）
+        Expanded(
+          child: GestureDetector(
+            onTap: onToggleFollow,
+            child: Container(
+              height: h,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: following
+                    ? LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Cf.accent, Cf.accent2])
+                    : null,
+                color: following ? null : const Color(0x0FFFFFFF),
+                border: following
+                    ? null
+                    : Border.all(color: const Color(0x1FFFFFFF)),
+                borderRadius: BorderRadius.circular(Cf.radiusMd),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(following ? Icons.star_rounded : Icons.star_border_rounded,
+                    size: 16, color: Colors.white),
+                const SizedBox(width: 6),
+                Text(following ? '已追' : '追剧',
+                    style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white)),
+              ]),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+/// 「下次更新」横幅 —— **仅连载中显示**（用户规格：电影隐藏）。
+class _NextUpdate extends StatelessWidget {
+  const _NextUpdate({required this.entry, required this.detail});
+
+  final CalendarEntry entry;
+  final CalendarDetail? detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final st = statusKindFrom(detail?.status,
+            isMovie: entry.category == BrowseCategory.movie);
+    if (st != 'live') return const SizedBox.shrink();
+    final wd = entry.weekday;
+    final sub = detail?.episodeCount != null
+        ? '共 ${detail!.episodeCount} 集'
+        : '播出中';
+    return Container(
+      margin: const EdgeInsets.fromLTRB(Cf.gap5, Cf.gap2, Cf.gap5, Cf.gap2),
+      padding: const EdgeInsets.all(Cf.gap4),
+      decoration: BoxDecoration(
+        color: Cf.surface,
+        borderRadius: BorderRadius.circular(Cf.radiusMd),
+        border: Border.all(color: Cf.border),
+      ),
+      child: Row(children: [
+        Icon(Icons.schedule_rounded, size: 20, color: Cf.accent),
+        const SizedBox(width: Cf.gap3),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(wd == null ? '下次更新：待定' : '下次更新：周${weekdayCn(wd)}',
+                    style: Cf.caption.copyWith(
+                        fontWeight: FontWeight.w700, color: Cf.text)),
+                const SizedBox(height: 2),
+                Text(sub,
+                    style: Cf.micro.copyWith(fontSize: Cf.caption.fontSize, color: Cf.text3)),
+              ]),
+        ),
+      ]),
+    );
+  }
+}
+
+/// 信息栏（**全类型显示**，用户规格）：播出平台/地区/播出/状态/进度。
+class _InfoSection extends StatelessWidget {
+  const _InfoSection({required this.entry, required this.detail});
+
+  final CalendarEntry entry;
+  final CalendarDetail? detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final d = detail;
+    final rows = <(String, String)>[
+      ('播出平台', platformOf(entry, d) ?? '—'),
+      ('地区', (d?.countries.isNotEmpty ?? false) ? d!.countries.first : '—'),
+      ('播出',
+          entry.weekday == null ? '已全部上线' : '每周${weekdayCn(entry.weekday!)}'),
+      ('状态', statusTextOf(statusKindFrom(d?.status) ?? 'end')),
+      ('进度', d?.episodeCount != null ? '共 ${d!.episodeCount} 集' : '—'),
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Cf.gap5, Cf.gap3, Cf.gap5, Cf.gap3),
+      child: Column(children: [
+        for (final (k, v) in rows)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            child:
+                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              SizedBox(
+                width: 72,
+                child: Text(k, style: Cf.caption.copyWith(color: Cf.text3)),
+              ),
+              Expanded(
+                child: Text(v,
+                    style: Cf.caption.copyWith(
+                        color: v == '—' ? Cf.text3 : Cf.text,
+                        fontWeight:
+                            v == '—' ? FontWeight.w400 : FontWeight.w600)),
+              ),
+            ]),
+          ),
+      ]),
+    );
+  }
+}
+
+/// 简介（默认 3 行 + 展开全部）。
+class _Overview extends StatelessWidget {
+  const _Overview({
+    required this.text,
+    required this.expanded,
+    required this.offerExpand,
+    required this.onToggle,
+  });
 
   final String text;
-  final Color color;
+  final bool expanded;
+  final bool offerExpand;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(Cf.gap5, 0, Cf.gap5, Cf.gap3),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(text,
+              maxLines: expanded ? null : 3,
+              overflow:
+                  expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+              style: Cf.caption.copyWith(
+                  fontSize: Cf.label.fontSize, color: Cf.text2, height: 1.7)),
+          // ⚠️ 只在**确实被截断**时才显示（短简介也放按钮 = 假按钮）
+          if (offerExpand)
+            GestureDetector(
+              onTap: onToggle,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(expanded ? '收起' : '展开全部',
+                      style: Cf.caption.copyWith(
+                          fontSize: Cf.label.fontSize,
+                          fontWeight: FontWeight.w600,
+                          color: Cf.accent)),
+                  Icon(
+                      expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 15,
+                      color: Cf.accent),
+                ]),
+              ),
+            ),
+        ]),
+      );
+}
+
+/// 选集（**4 列 16:9 网格**，用户规格；电影隐藏）。
+class _EpisodeGrid extends StatelessWidget {
+  const _EpisodeGrid({
+    required this.entry,
+    required this.detail,
+    required this.expanded,
+    required this.onToggle,
+  });
+
+  final CalendarEntry entry;
+  final CalendarDetail? detail;
+  final bool expanded;
+  final VoidCallback onToggle;
+
+  /// 折叠时显示的行数（**用户要求 3 行**，与简介一致）。
+  static const _collapsedRows = 3;
+
+  /// 展开后最多显示多少集。
+  ///
+  /// ## 为什么展开也要有上限
+  /// 实测《爱·回家之开心速递》**2868 集** ⇒ 4 列要铺 **717 行**，
+  /// 即使"展开"也不该真铺 717 行（滚动会明显卡，且用户永远滚不到底）。
+  /// 120 集（30 行）足够覆盖绝大多数国产剧的完整季度。
+  static const _expandedMax = 120;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(Cf.radiusXs),
-      ),
-      child: Text(text,
-          style: TextStyle(fontSize: 10, color: color, height: 1.3)),
+    final total = detail?.episodeCount;
+    if (total == null || total <= 0) return const SizedBox.shrink();
+
+    // 折叠 = 3 行 × 4 列 = 12 个；展开 = 最多 120 个
+    const collapsedCount = _collapsedRows * 4;
+    final n = expanded
+        ? (total > _expandedMax ? _expandedMax : total)
+        : (total > collapsedCount ? collapsedCount : total);
+    // 只有总数超过折叠容量时才给"展开全部"（否则就是**假按钮**）
+    final offerExpand = total > collapsedCount;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Cf.gap5, Cf.gap2, Cf.gap5, 0),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text('选集', style: Cf.section.copyWith(fontSize: 14)),
+          const SizedBox(width: 6),
+          Text('共 $total 集',
+              style: Cf.micro.copyWith(
+                  fontSize: Cf.caption.fontSize, color: Cf.text3)),
+          if (expanded && total > _expandedMax) ...[
+            const SizedBox(width: 6),
+            // ⚠️ 展开后只显示前 120 集，必须**如实说明**（不能假装全显示了）
+            Text('（仅显示前 $_expandedMax 集）',
+                style: Cf.micro.copyWith(
+                    fontSize: Cf.caption.fontSize, color: Cf.text3)),
+          ],
+        ]),
+        const SizedBox(height: Cf.gap3),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: n,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 4,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            childAspectRatio: 16 / 9,
+          ),
+          itemBuilder: (_, i) => _EpTile(num: i + 1),
+        ),
+        // ★ 展开全部 / 收起（与简介同一交互 —— 用户："和简介一样"）
+        if (offerExpand)
+          GestureDetector(
+            onTap: onToggle,
+            child: Padding(
+              padding: const EdgeInsets.only(top: Cf.gap2),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(
+                    expanded ? '收起' : '展开全部（共 $total 集）',
+                    style: Cf.caption.copyWith(
+                        fontSize: Cf.label.fontSize,
+                        fontWeight: FontWeight.w600,
+                        color: Cf.accent)),
+                Icon(
+                    expanded
+                        ? Icons.expand_less_rounded
+                        : Icons.expand_more_rounded,
+                    size: 15,
+                    color: Cf.accent),
+              ]),
+            ),
+          ),
+      ]),
     );
   }
 }
 
-class _IconBtn extends StatelessWidget {
-  const _IconBtn({required this.icon, this.onTap, this.size = 16});
+/// 单集格子（16:9，稿子 `.ep-item`）。
+///
+/// ⚠️ **不臆造观看状态**：本页条目来自 TMDB/B站等**外部源**，
+/// 本地没有"看到第几集"（那是 Emby 的 `UserData`）。
+/// ⇒ 统一"未看"样式；真实进度请进 Emby 详情页。
+class _EpTile extends StatelessWidget {
+  const _EpTile({required this.num});
 
-  final IconData icon;
-  final VoidCallback? onTap;
-  final double size;
+  final int num;
 
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 42,
-        height: 42,
+  Widget build(BuildContext context) => Container(
         decoration: BoxDecoration(
+          color: const Color(0x0DFFFFFF),
+          border: Border.all(color: const Color(0x14FFFFFF)),
           borderRadius: BorderRadius.circular(Cf.radiusSm),
-          color: Cf.surface2,
-          border: Border.all(color: Cf.border),
         ),
-        child: Icon(icon,
-            size: size, color: onTap == null ? Cf.text3 : Cf.text2),
-      ),
-    );
-  }
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text('$num',
+              style: TextStyle(
+                  fontSize: Cf.label.fontSize,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white)),
+          const SizedBox(height: 1),
+          Text('第 $num 集',
+              style: TextStyle(
+                  fontSize: Cf.micro.fontSize, color: Color(0xFF5D6675))),
+        ]),
+      );
 }

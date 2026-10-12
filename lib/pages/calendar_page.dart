@@ -15,6 +15,8 @@
 library;
 
 import 'package:flutter/material.dart';
+
+import 'browse_page.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -177,6 +179,19 @@ class _CalendarPageState extends ConsumerState<CalendarPage> {
       appBar: AppBar(
         title: const Text('追剧日历'),
         actions: [
+          // ★ 「分类浏览」（稿子 180b4d 的分类面板）
+          //
+          // 按「类别 × 地区」浏览 TMDB 榜单（实测 24/24 组合有数据）。
+          // 与日历的区别：日历是"**某天**更新了什么"，
+          // 分类浏览是"**这个类别**现在最热的是什么"（不受日期约束）。
+          IconButton(
+            tooltip: '分类浏览（剧集/电影/动漫/综艺…）',
+            icon: const Icon(Icons.grid_view_rounded),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const BrowsePage()),
+            ),
+          ),
           IconButton(
             tooltip: 'TMDB API Key（国产剧集数据源）',
             icon: const Icon(Icons.key_rounded),
@@ -459,7 +474,12 @@ class _EntryTile extends StatelessWidget {
                           style: Cf.micro.copyWith(color: Cf.accent)),
                     // 平台 chip：**可点** → 跳该平台的搜索页
                     if (platform case final p?)
-                      _PlatformChip(platform: p, title: entry.displayTitle),
+                      _PlatformChip(
+                        platform: p,
+                        title: entry.displayTitle,
+                        // tgmeng 的精确播放页（有则优先，见 _PlatformChip 说明）
+                        jumpUrl: entry.jumpUrl,
+                      ),
                   ],
                 ),
                 if (entry.rating != null && entry.rating! > 0) ...[
@@ -502,14 +522,29 @@ class _EntryTile extends StatelessWidget {
 /// ## 为什么用 `url_launcher` 还是 `launchUrl`
 /// 本项目已有 `url_launcher`（见 pubspec）⇒ 直接用它打开外部浏览器。
 class _PlatformChip extends StatelessWidget {
-  const _PlatformChip({required this.platform, required this.title});
+  const _PlatformChip({
+    required this.platform,
+    required this.title,
+    this.jumpUrl,
+  });
 
   final String platform;
   final String title;
 
+  /// **精确播放页**（tgmeng 源给；null 时退回平台搜索页）。
+  ///
+  /// ## 为什么卡片上就要优先它
+  /// 用户点这个 chip 的意图是我要去看这部剧。
+  /// 精确页**一步到位**；搜索页还要在平台里再搜一次（可能搜不到）。
+  final String? jumpUrl;
+
   @override
   Widget build(BuildContext context) {
-    final url = platformSearchUrl(platform, title);
+    // 优先精确播放页（tgmeng）；没有才退回平台搜索页
+    final j = jumpUrl;
+    final url = (j != null && j.isNotEmpty)
+        ? j
+        : platformSearchUrl(platform, title);
     final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(

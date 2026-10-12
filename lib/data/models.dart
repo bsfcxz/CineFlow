@@ -133,6 +133,18 @@ class MediaItem {
   /// ⚠️ 与 TMDB 的状态**可能不一致**（国内剧的 TMDB 数据常滞后）。
   ///    订阅时优先用 Emby 的（用户看的是自己的库）。
   final String? status;
+
+  /// **入库时间**（Emby `DateCreated`，ISO8601）。
+  ///
+  /// ## 用途：「3 天前」这类标签
+  /// 稿子里有 `daysAgoLabel(DateAdded)`；Emby 的对应字段就是
+  /// `DateCreated`（实测该请求**早就带了**它，只是没解析 ——
+  /// `Fields=...DateCreated...` 在 `getLatest` 里）。
+  ///
+  /// ⚠️ 保持**原始字符串**（不转 DateTime）：
+  ///    Emby 给的是 UTC（形如 `2026-10-08T16:00:00.0000000Z`），
+  ///    转本地时区是 UI 的事，模型层不该替它决定。
+  final String? dateCreated;
   final Map<String, String> imageTags;
   final List<String> backdropImageTags;
   final String? parentBackdropItemId;
@@ -187,6 +199,7 @@ class MediaItem {
     this.unplayedItemCount,
     this.childCount,
     this.status,
+    this.dateCreated,
     this.imageTags = const {},
     this.backdropImageTags = const [],
     this.parentBackdropItemId,
@@ -232,6 +245,8 @@ class MediaItem {
       childCount: (j['ChildCount'] as num?)?.toInt(),
       // 连载状态：实测 Emby 的 Status（Continuing/Ended）填充率 100%
       status: j['Status'] as String?,
+      // 入库时间（「3 天前」标签用；Emby 的 DateCreated 早就在请求里了）
+      dateCreated: j['DateCreated'] as String?,
       imageTags: ((j['ImageTags'] as Map<String, dynamic>?) ?? const {})
           .cast<String, String>(),
       backdropImageTags: ((j['BackdropImageTags'] as List?) ?? const [])
