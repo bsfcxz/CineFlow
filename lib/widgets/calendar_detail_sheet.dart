@@ -223,33 +223,54 @@ class _CalendarDetailPageState extends ConsumerState<CalendarDetailPage> {
   /// ⇒ 在这里追的剧会立刻出现在那两处。
   Future<void> _toggleFollow() async {
     final e = widget.entry;
-    setState(() => _following = !_following); // 乐观更新
+    final wasFollowing = _following;
+    setState(() => _following = !wasFollowing); // 乐观更新（立即反馈）
     try {
-      final now = await toggleCalendarSubscription(
-        ref,
+      // ★ 走**公共订阅函数**（用户 2026-10-12 要求三处统一）：
+      //   先搜本地库 ⇒ 命中才写（Emby 收藏 + 本地订阅表）；
+      //   未命中 ⇒ 什么都不写，提示"订阅暂未入库"。
+      //
+      // ⚠️ `unsubscribe: wasFollowing` —— 取消**不搜库**
+      //    （已追的必须能取消，否则用户卡在"已追"出不来）。
+      final r = await subscribeExternal(
+        ref: ref,
         entry: e,
+        title: e.displayTitle,
         // 外部源的条目：TMDB 的 sourceId 就是 tmdb id ⇒ mediaType 按其 kind
         mediaType: e.category == BrowseCategory.movie ? 'movie' : 'tv',
         status: _detail?.statusCn ?? '',
+        unsubscribe: wasFollowing,
       );
-      if (mounted && now != _following) setState(() => _following = now);
-      if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
-          content: Text(now ? '已加入追剧：《${e.displayTitle}》' : '已取消追剧'),
-          duration: const Duration(seconds: 2),
-        ));
+      if (!mounted) return;
+      switch (r.outcome) {
+        case SubscribeOutcome.subscribed:
+          setState(() => _following = true);
+          _toast('已加入追剧：《${r.title}》');
+        case SubscribeOutcome.unsubscribed:
+          setState(() => _following = false);
+          _toast('已取消追剧：《${r.title}》');
+        case SubscribeOutcome.notInLibrary:
+          // 回滚乐观更新（什么都没写，按钮不能显示"已追"）
+          setState(() => _following = false);
+          _toast('订阅暂未入库：媒体库里没有《${r.title}》');
+        case SubscribeOutcome.failed:
+          setState(() => _following = wasFollowing);
+          _toast('操作失败：${r.error ?? '未知原因'}');
       }
     } catch (err) {
       // 失败回滚（不能让按钮显示"已追"而数据没落库）
-      if (mounted) setState(() => _following = !_following);
+      if (mounted) setState(() => _following = wasFollowing);
       debugPrint('[CalendarDetail] 追剧切换失败: $err');
-      if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
-          content: Text('操作失败：$err'),
-          duration: const Duration(seconds: 3),
-        ));
-      }
+      _toast('操作失败：$err');
     }
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+      content: Text(msg),
+      duration: const Duration(seconds: 3),
+    ));
   }
 
   /// 初次查询"是否已追"（本地订阅表）。

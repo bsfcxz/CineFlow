@@ -2771,3 +2771,85 @@ check-dev.ps1     21 项全过（exit 0）
 3. 首页 hero 横滑（TMDB 热播 ∩ 库内）—— 方案已确认，未实现
 4. 「已看分集」只显示剧名没集号
 5. Bangumi 不可达（WAF）；libmpv.so 缺解码器
+
+### 2026-10-12（续 2）· **日历/TMDB 详情页接入"先搜库" —— 三处订阅统一**
+
+## 做了什么
+
+把 `subscribeExternal` 扩展两个参数后，**日历/TMDB 详情页**也改走它：
+
+| 参数 | 作用 |
+|---|---|
+| `entry` | 外部源自带的条目（海报/评分/简介更全，且 `sourceId` = tmdbId）|
+| `unsubscribe` | **取消**订阅（不搜库，直接删）|
+
+### ★ 为什么"取消"要**跳过**搜库
+用户点"已追"时要取消。若取消也走"先搜库"，
+那么**库里没有的剧就永远取消不掉** —— 用户会卡在"已追"出不来。
+
+### 三处详情页最终形态
+
+| 页面 | 按钮 | 订阅路径 |
+|---|---|---|
+| Emby 详情页 | `[播放][追剧]` 等宽 482px | 条目已在库里 ⇒ 本地订阅 + Emby 收藏 |
+| 日历/TMDB 详情页 | `[播放][追剧]` 等宽 460px | **先搜库** → 命中才写；未命中提示 |
+| 豆瓣详情页 | `[在媒体库搜索][追剧]` 等宽 342px | **先搜库** → 命中才写；未命中提示 |
+
+## 真机实证（关键分支）
+
+用《后宫露营！》验证"未入库"分支：
+```
+独立核实：iLoveHD 搜「后宫露营」→ 0 条；HK-Emby → 0 条
+点击「追剧」→ 提示「订阅暂未入库：媒体库里没有《后宫露营！》」
+             按钮仍为「追剧」（**未变成"已追"**）✅
+```
+对比改动前：会直接变"已追"（库里没有却写进订阅表 ⇒
+首页「我的追剧」点进去"找不到"）。
+
+## ★ 我又写错了一条断言（值得记录）
+
+我写：
+```dart
+expect(seg.indexOf('notInLibrary'),
+       lessThan(seg.indexOf('toggleCalendarSubscription')));
+```
+加了 `unsubscribe` 取消分支后这条**失败**了 —— 因为取消分支
+**合法地**在函数很靠前的位置调用了 `toggleCalendarSubscription`
+⇒ `indexOf` 找到的是**取消**那次，不是"命中后写入"那次。
+
+**断言从"验证正确性"退化成"验证巧合"。**
+
+⇒ 正确写法：**按分支顺序**验证 ——
+```dart
+final iSearch   = seg.indexOf('aggregatedSearchProvider');
+final iNotFound = seg.indexOf('SubscribeOutcome.notInLibrary');
+final iWrite    = seg.indexOf('toggleCalendarSubscription', iNotFound); // ← 从 iNotFound 往后
+expect(iSearch, greaterThan(-1));       // ① 先搜库
+expect(iNotFound, greaterThan(iSearch));  // ② 再判"未命中"
+expect(iWrite, greaterThan(iNotFound));   // ③ 写入在"未命中 return"之后
+```
+**教训：`indexOf` 做顺序断言的前提是"该串全文唯一"。
+一旦新增了合法的第二次出现，断言就会指向错的那次。**
+
+## 验收
+
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1397 All tests passed!（+3）
+check-dev.ps1     21 项全过（exit 0）
+```
+
+真机（Redmi K40，截图/dump 实证）：
+- ✅ 日历详情页 `[播放 · 全 8 集][追剧]` 等宽各 460px（差 0）
+- ✅ **未入库分支**：《后宫露营！》点追剧 → 提示「订阅暂未入库：媒体库里没有《后宫露营！》」
+      且按钮**不变"已追"**
+- ✅ Emby 详情页 / 豆瓣详情页订阅仍正常
+- ✅ 无崩溃
+
+## 未完成（更新）
+
+1. 分类浏览的**地区标签**用 TMDB（Emby `ProductionLocations` 不可筛选、
+   `OriginalLanguage` 填充 0%；`Genres`/`Studios` 筛选精确但无"地区"维度）
+2. 首页 hero 横滑（TMDB 热播 ∩ 库内）—— 方案已确认，未实现
+3. 「已看分集」只显示剧名没集号
+4. Bangumi 不可达（WAF）；libmpv.so 缺解码器

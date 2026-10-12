@@ -308,10 +308,25 @@ void main() {
       // 未命中就 return（**在写任何东西之前**）
       expect(seg.contains('SubscribeOutcome.notInLibrary'), isTrue,
           reason: '★★★ 要有"未入库"分支');
-      final iNotFound = seg.indexOf('notInLibrary');
-      final iWrite = seg.indexOf('toggleCalendarSubscription');
-      expect(iNotFound, lessThan(iWrite),
-          reason: '★★★ 未命中的 return 必须在写入**之前**\n'
+      //
+      // ⚠️ 断言方式（我第一版写错过，记录在此）：
+      //    原写法 `expect(seg.indexOf('notInLibrary'),
+      //                  lessThan(seg.indexOf('toggleCalendarSubscription')))`
+      //    在我加了 `unsubscribe` 取消分支后**失效** ——
+      //    取消分支合法地**靠前**调用了 `toggleCalendarSubscription`，
+      //    于是 `indexOf` 找到的是**取消**那次，不是"命中后写入"那次。
+      //    ⇒ 断言退化成"验证巧合"。
+      //
+      //    **正确做法**：从"未命中 return"的位置**往后**找写入
+      //    （即验证"未命中之后才有写入"，这才是我要守的语义）。
+      final iSearch = seg.indexOf('aggregatedSearchProvider');
+      final iNotFound = seg.indexOf('SubscribeOutcome.notInLibrary');
+      final iWrite = seg.indexOf('toggleCalendarSubscription', iNotFound);
+      expect(iSearch, greaterThan(-1), reason: '★★ 要先搜库');
+      expect(iNotFound, greaterThan(iSearch),
+          reason: '★★★ 搜库之后才判断"未命中"');
+      expect(iWrite, greaterThan(iNotFound),
+          reason: '★★★ 写入必须在"未命中 return"**之后**\n'
               '    （否则库里没有的剧也会进「我的追剧」，点进去"找不到"）');
     });
 
@@ -349,6 +364,52 @@ void main() {
       final c = code('lib/state/providers.dart');
       expect(c.contains('aggregatedSearchProvider'), isTrue,
           reason: '★★ 用户有多台服务器 ⇒ 只搜一台会误报"未入库"');
+    });
+  });
+
+  group('★★★ 三处详情页的订阅都走"先搜库"（用户明确要求）', () {
+    test('★★★ 日历/TMDB 详情页也走 subscribeExternal（不再直接写）', () {
+      // ## 为什么这条重要
+      // 原来日历详情页**直接** `toggleCalendarSubscription`
+      // ⇒ 库里**没有**的剧也能订阅 ⇒ 首页「我的追剧」点进去"找不到"。
+      // 用户要求："先搜索本地库是否有…没有的话提示，订阅暂未入库。"
+      final c = code('lib/widgets/calendar_detail_sheet.dart');
+      expect(c.contains('subscribeExternal('), isTrue,
+          reason: '★★★ 必须走公共订阅函数（内含"先搜库"）');
+      // 取消路径不搜库（`unsubscribe: wasFollowing`）
+      expect(c.contains('unsubscribe:'), isTrue,
+          reason: '★★ 已追的必须能取消（取消不需要先搜库）');
+      // 未入库要回滚乐观更新（按钮不能停在"已追"）
+      expect(c.contains('SubscribeOutcome.notInLibrary'), isTrue);
+    });
+
+    test('★★★ 三处详情页都用同一个订阅函数（不能各写一套）', () {
+      // 用户两次报"按钮没了/样式不一样"的根因就是"各写一套"。
+      // ⇒ 订阅逻辑同理：三处都必须走 `subscribeExternal`。
+      for (final f in ['lib/pages/detail_page.dart',
+                       'lib/widgets/calendar_detail_sheet.dart',
+                       'lib/widgets/douban_detail_sheet.dart']) {
+        final c = code(f);
+        final uses = c.contains('subscribeExternal(');
+        // Emby 详情页走的是"本地订阅 + toggleFavorite"（条目已在库里，
+        // 无需搜库）；豆瓣与日历页走 subscribeExternal。
+        final isEmbyPage = f.contains('detail_page.dart');
+        expect(uses || isEmbyPage, isTrue,
+            reason: '★★★ $f 必须走统一订阅路径');
+      }
+    });
+
+    test('★★ 取消订阅不搜库（否则用户会卡在"已追")', () {
+      final seg = slice('lib/state/providers.dart',
+          'Future<SubscribeResult> subscribeExternal',
+          'CalendarCategory _categoryFor(');
+      expect(seg.contains('unsubscribe'), isTrue,
+          reason: '★★ 要有取消开关');
+      // 取消分支必须在"搜库"之前
+      final iCancel = seg.indexOf('if (unsubscribe');
+      final iSearch = seg.indexOf('aggregatedSearchProvider');
+      expect(iCancel, lessThan(iSearch),
+          reason: '★★ 取消要在搜库**之前**返回（不然库里没有就取消不了）');
     });
   });
 

@@ -269,6 +269,11 @@ class SubscribeResult {
 ///   （只能 `AnyProviderIdEquals`，实测不覆盖全部条目）
 /// ⇒ 标题搜索 + **首条即认**（用户点的是具体某部剧，搜出来第一条通常就是）。
 ///    若需要更精确，可后续加"二次确认"弹窗。
+///
+/// ## 传 [entry] 的情况（日历/TMDB 详情页）
+/// 那两处的条目**自带海报/评分/简介**（比搜出来的 Emby 条目更全），
+/// 且 `sourceId` 就是 tmdbId ⇒ **订阅表用它**，身份更稳。
+/// 但"是否在库里"仍然要搜（那是本函数的核心价值）。
 Future<SubscribeResult> subscribeExternal({
   required WidgetRef ref,
   required String title,
@@ -279,10 +284,35 @@ Future<SubscribeResult> subscribeExternal({
   double? rating,
   String? posterUrl,
   String? summary,
+  /// 外部源自带的条目（有则用它写订阅表，保留海报/评分/简介）。
+  CalendarEntry? entry,
+  /// 是否**取消**订阅（true = 取消）。
+  ///
+  /// ## 为什么需要这个开关
+  /// 用户点"已追"时要**取消**。而取消**不需要**"先搜库"
+  ///（库里有没有都该能取消 —— 否则用户会卡在"已追"出不来）。
+  bool unsubscribe = false,
 }) async {
   final t = title.trim();
   if (t.isEmpty) {
     return const SubscribeResult(SubscribeOutcome.failed, error: '标题为空');
+  }
+
+  // ★ 取消路径：不搜库、直接删（已追的必须能取消）
+  if (unsubscribe && entry != null) {
+    try {
+      final now = await toggleCalendarSubscription(
+        ref,
+        entry: entry,
+        mediaType: mediaType,
+        status: status ?? '',
+      );
+      return SubscribeResult(
+          now ? SubscribeOutcome.subscribed : SubscribeOutcome.unsubscribed,
+          title: entry.displayTitle);
+    } catch (e) {
+      return SubscribeResult(SubscribeOutcome.failed, title: t, error: '$e');
+    }
   }
 
   // ① 先搜本地库
@@ -312,7 +342,8 @@ Future<SubscribeResult> subscribeExternal({
   // ② 命中 ⇒ 写 Emby 收藏 + 本地订阅表
   try {
     final tmdbId = hit.providerIds['tmdb'];
-    final subEntry = CalendarEntry(
+    // ★ 有外部源的 entry 就用它（海报/评分/简介更全，且 sourceId = tmdbId）
+    final subEntry = entry ?? CalendarEntry(
       title: hit.name,
       titleCn: hit.name,
       source: (tmdbId != null && tmdbId.isNotEmpty) ? 'tmdb' : 'emby',
