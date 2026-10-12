@@ -663,6 +663,198 @@ class EmbyProvider implements MediaProvider {
         .toList();
   }
 
+  /// **某剧的库内分集**（首播日 → 本地周几）。
+  ///
+  /// ⚠️ 时区：服务端给 UTC（`...T16:00:00Z` 表示北京次日 0 点）
+  ///    ⇒ 必须 `toLocal()` 再取 `weekday`，否则剧会放错一天。
+  @override
+  Future<List<LibraryEpisode>> getSeriesEpisodes(String seriesId) async {
+    final out = <LibraryEpisode>[];
+    if (seriesId.isEmpty) return out;
+    try {
+      final d = _ok(await _dio.get('/Shows/$seriesId/Episodes',
+          queryParameters: {
+            'UserId': session.user.id,
+            'Fields': 'PremiereDate',
+            'EnableImages': false,
+          }));
+      for (final j in _itemsList(d)) {
+        final raw = j['PremiereDate'] as String?;
+        if (raw == null || raw.isEmpty) continue;
+        final dt = DateTime.tryParse(raw);
+        if (dt == null) continue;
+        out.add(LibraryEpisode(
+          seriesId: seriesId,
+          seriesName: '',
+          season: (j['ParentIndexNumber'] as num?)?.toInt(),
+          episode: (j['IndexNumber'] as num?)?.toInt(),
+          // ★ UTC → 本地（不转会把"午夜首播"算到前一天）
+          weekday: dt.toLocal().weekday,
+        ));
+      }
+    } catch (e) {
+      debugPrint('[Library] 剧 $seriesId 分集失败: $e');
+    }
+    return out;
+  }
+
+  /// `tmdbId → SeriesId`（1 个请求）。
+  ///
+  /// ⚠️ 必须显式带 `Fields=ProviderIds` —— 真机实测：不带它时
+  ///    `providerIds['tmdb']` 恒空 ⇒ 追剧周历"库内命中 0/21"。
+  @override
+  Future<Map<String, String>> mapSeriesTmdbToId() async {
+    final out = <String, String>{};
+    try {
+      final d = _ok(await _dio.get('/Users/${session.user.id}/Items',
+          queryParameters: {
+            'IncludeItemTypes': 'Series',
+            'Recursive': true,
+            'Limit': 5000,
+            'Fields': 'ProviderIds',
+            'EnableImages': false,
+          }));
+      for (final j in _itemsList(d)) {
+        final ids = j['ProviderIds'];
+        final id = j['Id'];
+        if (ids is! Map || id is! String) continue;
+        // ★★ **键名必须转小写**（真实事故）
+        //
+        // Emby 原始 JSON 的键是 `Tmdb`（大写 T）：
+        // ```json
+        // "ProviderIds": {"Tmdb": "296018", "Imdb": "tt..."}
+        // ```
+        // 直接读 `ids['tmdb']` ⇒ **恒为 null** ⇒ 映射 0 条
+        // ⇒ 追剧周历"库内命中 0/21"（真机日志定位）。
+        //
+        // `models.dart` 的 `_parseProviderIds()` 就是转小写处理的；
+        // 这里**绕过了 `MediaItem` 直接读原始 JSON** ⇒ 得自己做同样的事。
+        final tmdb = ids.entries
+            .where((e) => e.key.toString().trim().toLowerCase() == 'tmdb')
+            .map((e) => e.value?.toString().trim() ?? '')
+            .where((v) => v.isNotEmpty)
+            .firstOrNull;
+        if (tmdb != null) out[tmdb] = id;
+      }
+    } catch (e) {
+      debugPrint('[Library] tmdb→SeriesId 映射失败: $e');
+    }
+    debugPrint('[Library] tmdb→SeriesId 映射 ${out.length} 条');
+    return out;
+  }
+
+  /// **全库本周分集**（1 个请求）—— 实测见 `MediaProvider.getLibraryWeek`。
+  ///
+  /// ## 端点与参数（实测可用）
+  /// ```
+  /// /Items?IncludeItemTypes=Episode&Recursive=true
+  ///   &MinPremiereDate=yyyy-MM-dd&MaxPremiereDate=yyyy-MM-dd
+  ///   &Fields=PremiereDate,SeriesName,ParentIndexNumber,IndexNumber
+  /// ```
+  ///
+  /// ## ★★ 时区处理（真机数据驱动）
+  /// 服务端给的是 **UTC**（`...T00:00:00.0000000Z` 或 `...T16:00:00.0000000Z`）。
+  /// `16:00Z` 在 UTC 是当天，在**北京是次日 00:00** —— 那是"午夜首播"的常见写法。
+  /// ⇒ `DateTime.parse(...).toLocal()` 之后再取 `weekday`。
+  /// 不转的话周历会把剧放错一天（例：北京周一 → 被算成周日）。
+  @override
+  Future<Map<String, List<LibraryEpisode>>> getLibraryWeek(
+      {DateTime? weekStart}) async {
+    final now = DateTime.now();
+    final base = DateTime(now.year, now.month, now.day)
+        .subtract(Duration(days: now.weekday - 1));
+    final monday = weekStart == null
+        ? base
+        : DateTime(weekStart.year, weekStart.month, weekStart.day)
+            .subtract(Duration(days: weekStart.weekday - 1));
+    final sunday = monday.add(const Duration(days: 6));
+    String d(DateTime x) =>
+        '${x.year.toString().padLeft(4, '0')}-'
+        '${x.month.toString().padLeft(2, '0')}-'
+        '${x.day.toString().padLeft(2, '0')}';
+
+    final out = <String, List<LibraryEpisode>>{};
+    try {
+      final res = _ok(await _dio.get('/Items', queryParameters: {
+        'UserId': session.user.id,
+        'IncludeItemTypes': 'Episode',
+        'Recursive': true,
+        'Limit': 500,
+        'MinPremiereDate': d(monday),
+        'MaxPremiereDate': d(sunday),
+        'Fields': 'PremiereDate,SeriesName,ParentIndexNumber,IndexNumber',
+        'EnableImages': false,
+      }));
+      for (final j in _itemsList(res)) {
+        final sid = j['SeriesId'] as String?;
+        final raw = j['PremiereDate'] as String?;
+        if (sid == null || sid.isEmpty || raw == null || raw.isEmpty) continue;
+        final dt = DateTime.tryParse(raw);
+        if (dt == null) continue;
+        // ★ UTC → 本地（不转会把"午夜首播"算到前一天）
+        final local = dt.toLocal();
+        (out[sid] ??= []).add(LibraryEpisode(
+          seriesId: sid,
+          seriesName: (j['SeriesName'] as String?) ?? '',
+          season: (j['ParentIndexNumber'] as num?)?.toInt(),
+          episode: (j['IndexNumber'] as num?)?.toInt(),
+          weekday: local.weekday,
+        ));
+      }
+    } catch (e) {
+      debugPrint('[Library] 本周分集失败: $e');
+    }
+    debugPrint('[Library] 本周分集 ${out.length} 部剧'
+        '（${d(monday)}..${d(sunday)}）');
+    return out;
+  }
+
+  /// **取库内 tmdb id 集合**（首页热播交集用）。
+  ///
+  /// ## 实测（2026-10-12）
+  /// ```
+  /// iLoveHD  剧集 1745 个 / 电影 1575 个（4.8s）
+  /// HK-Emby  剧集 4998 个 / 电影 4982 个（1.5s）
+  /// ```
+  /// ⇒ `Fields=ProviderIds` + `EnableImages=false` 是关键：
+  ///    不带 `EnableImages=false` 时服务端会拼出几千条图片 URL，
+  ///    响应体大数倍（实测慢 3 倍以上）。
+  @override
+  Future<Set<String>> collectProviderIds({
+    required String providerKey,
+    String includeTypes = 'Series,Movie',
+    int limit = 5000,
+  }) async {
+    final out = <String>{};
+    // ⚠️ 逐类型查（服务端对 `IncludeItemTypes=Series,Movie` 的
+    //    `ProviderIds` 返回**不稳定** —— 实测混查时电影侧经常为空）
+    for (final t in includeTypes.split(',')) {
+      final d = _ok(await _dio.get('/Users/${session.user.id}/Items',
+          queryParameters: {
+            'IncludeItemTypes': t.trim(),
+            'Recursive': true,
+            'Limit': limit,
+            'Fields': 'ProviderIds',
+            // ★ 少拼几千条图片 URL（实测快 3 倍以上）
+            'EnableImages': false,
+          }));
+      for (final j in _itemsList(d)) {
+        final ids = j['ProviderIds'];
+        if (ids is! Map) continue;
+        // ⚠️ 同样要**转小写比对**（Emby 键是 `Tmdb`；调用方传的是小写）
+        final v = ids.entries
+            .where((e) =>
+                e.key.toString().trim().toLowerCase() ==
+                providerKey.toLowerCase())
+            .map((e) => e.value?.toString().trim() ?? '')
+            .where((x) => x.isNotEmpty)
+            .firstOrNull;
+        if (v != null) out.add(v);
+      }
+    }
+    return out;
+  }
+
   /// 即将上线（用户要求第二批第 7 项：追剧日历）。
   ///
   /// ## 端点依据（官方 Go SDK `api_tv_shows_service.go`）

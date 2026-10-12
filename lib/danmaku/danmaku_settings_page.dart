@@ -58,11 +58,30 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
   @override
   void initState() {
     super.initState();
-    final c = ref.read(danmakuConfigProvider).value ?? const DanmakuConfig();
-    _base = TextEditingController(text: c.baseUrl);
-    _appId = TextEditingController(text: c.appId);
-    _appSecret = TextEditingController(text: c.appSecret);
-    _blocked = TextEditingController(text: c.blockedWords.join(' '));
+    // ★ `danmakuConfigProvider` 是 **AsyncNotifierProvider**
+    //   （异步从 secure_storage 读）⇒ 读 `.value` 在未就绪时是 null。
+    //
+    // ## 为什么不能简单写 `await`（我第一版就这么写错了）
+    // `initState` **不是 async**（返回类型是 void）；改成 `async` 会
+    // 违反 `State.initState` 的契约（Dart 允许 `void` + async，
+    // 但那样"读完才建控制器"会让首帧拿到 null 控制器）。
+    //
+    // ## 正确做法：同步建空控制器 + 就绪后**回填**
+    // · 先把控制器建出来（永不为 null）
+    // · provider 就绪后把真实值填进去
+    // · **只在为空时填**，不覆盖用户已经敲进去的内容
+    final c0 = ref.read(danmakuConfigProvider).value;
+    _base = TextEditingController(text: c0?.baseUrl ?? '');
+    _appId = TextEditingController(text: c0?.appId ?? '');
+    _appSecret = TextEditingController(text: c0?.appSecret ?? '');
+    _blocked = TextEditingController(text: c0?.blockedWords.join(' ') ?? '');
+    ref.read(danmakuConfigProvider.future).then((c) {
+      if (!mounted) return;
+      if (_base.text.isEmpty) _base.text = c.baseUrl;
+      if (_appId.text.isEmpty) _appId.text = c.appId;
+      if (_appSecret.text.isEmpty) _appSecret.text = c.appSecret;
+      if (_blocked.text.isEmpty) _blocked.text = c.blockedWords.join(' ');
+    });
   }
 
   @override
@@ -81,7 +100,8 @@ class _DanmakuSettingsPageState extends ConsumerState<DanmakuSettingsPage> {
   /// 不能纠正的给出中文原因并拒绝保存。
   Future<void> _save() async {
     final notifier = ref.read(danmakuConfigProvider.notifier);
-    final cur = ref.read(danmakuConfigProvider).value ?? const DanmakuConfig();
+    // ★ 同上：读 `.value` 会拿到默认值 ⇒ `cur.kind` 判错 ⇒ 走错分支。
+    final cur = await ref.read(danmakuConfigProvider.future);
 
     var base = _base.text;
     if (cur.kind == DanmakuProviderKind.selfHosted) {

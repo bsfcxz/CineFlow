@@ -487,6 +487,16 @@ abstract final class Cf {
   // 需要更弱就用颜色令牌（text2/text3）表达，而不是再切 0.5px。
   static final pageTitle = TextStyle(
       fontSize: 20, fontWeight: FontWeight.w700, color: text, height: 1.25);
+
+  /// **页面大标题**（26px）—— 稿子 `.track-title` 的规格。
+  ///
+  /// ## 为什么单独立一档（而不是用 `pageTitle` 的 20）
+  /// 稿子明确写 `.track-title { font-size:26px; w800 }`，而 20 明显更小。
+  /// AGENTS §6.4.1 的纪律是"要新档位就**改令牌表**，别就地写裸值"
+  /// ⇒ 加在这里，而不是在页面里写 `fontSize: 26`。
+  static final headline = TextStyle(
+      fontSize: 26, fontWeight: FontWeight.w800, color: text, height: 1.2,
+      letterSpacing: -0.5);
   static final section = TextStyle(
       fontSize: 16, fontWeight: FontWeight.w600, color: text, height: 1.3);
   static final title = TextStyle(

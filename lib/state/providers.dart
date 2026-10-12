@@ -396,6 +396,80 @@ String? _statusCn(String? s) => switch (s) {
       _ => null,
     };
 
+/// **TMDB 热播榜**（「热播」Tab 的 TMDB 栏，按 类别 × 状态）。
+///
+/// ## 用户定义
+/// > "热播的指的是正在连载中或者即将连载的剧集、综艺、动漫以及刚完结不久的，
+/// >  还有正在上映的电影、已上映的电影。"
+///
+/// ## 与 `hotHeroProvider` 的分工
+/// · `hotHeroProvider` —— 首页 hero：**∩ 库内**（点进去能直接播）
+/// · 本 provider —— 热播 Tab：**全量**（库里没有的也能看简介/订阅）
+///
+/// ## 没填 TMDB key ⇒ 返回空（UI 显示"去填 key"的引导，不是空列表）
+final hotBoardProvider = FutureProvider.family<List<CalendarEntry>,
+    (BrowseCategory, HotBoard)>((ref, key) async {
+  // ⚠️ `ref.watch` 必须在 await 之前（riverpod 既有约定）
+  final keyFuture = ref.watch(sessionStoreProvider).loadTmdbKey();
+  final apiKey = await keyFuture;
+  if (apiKey == null || apiKey.isEmpty) return const [];
+  return ref.read(calendarClientProvider).fetchHotByStatus(
+        apiKey: apiKey,
+        category: key.$1,
+        board: key.$2,
+      );
+});
+
+/// **首页 hero = TMDB 热播 ∩ 库内**（用户："热播剧集按我库里有的放上去"）。
+///
+/// ## 为什么必须"∩ 库内"
+/// 纯 TMDB 热播里绝大多数**库里没有** ⇒ 点进去"找不到"。
+/// 取交集后每一张都能直接播（实测命中：iLoveHD 83 部 / HK-Emby 135 部）。
+///
+/// ## 缓存
+/// · 库内 tmdb id：6h（`libIdSetProvider`）
+/// · TMDB 热播：6h（`CalendarClient._hotPage` 的 `cacheTtl`）
+/// ⇒ 6 小时内第二次进首页 **0 请求**。
+///
+/// ## 返回空的情况（**都必须回退到 /Latest 轮播**）
+/// · 没填 TMDB key
+/// · TMDB 不可达
+/// · 交集为空（库里没有任何热播内容）
+final hotHeroProvider = FutureProvider<List<CalendarEntry>>((ref) async {
+  // ⚠️ 所有 `ref.watch` 必须在 await 之前取好（riverpod 的既有约定，
+  //    本仓库踩过"await 之后再 ref ⇒ 崩溃"）
+  final keyFuture = ref.watch(sessionStoreProvider).loadTmdbKey();
+  final apisFuture = ref.watch(accountApisProvider.future);
+  final key = await keyFuture;
+  if (key == null || key.isEmpty) return const [];
+
+  final apis = await apisFuture;
+  if (apis.isEmpty) return const [];
+
+  // ① 查库内 tmdb id（只查**第一台**：hero 是"精选"，跨服做并集意义不大，
+  //    且每多一台多 2 个请求）
+  final api = apis.values.first;
+  final tvIds = <String>{};
+  final movieIds = <String>{};
+  try {
+    tvIds.addAll(await api.collectProviderIds(
+        providerKey: 'tmdb', includeTypes: 'Series'));
+    movieIds.addAll(await api.collectProviderIds(
+        providerKey: 'tmdb', includeTypes: 'Movie'));
+  } catch (e) {
+    debugPrint('[Hot] 读库内 tmdb id 失败（回退 /Latest）: $e');
+    return const [];
+  }
+  if (tvIds.isEmpty && movieIds.isEmpty) return const [];
+
+  // ② + ③ TMDB 热播 ∩ 库内
+  return ref.read(calendarClientProvider).fetchHotInLibrary(
+        apiKey: key,
+        libTvIds: tvIds,
+        libMovieIds: movieIds,
+      );
+});
+
 /// **平台名兜底**：把一批 tmdbId 换成交中文平台名（`tmdbId → 平台名`）。
 ///
 /// ## 为什么做成 `family`（按 id 集合缓存）

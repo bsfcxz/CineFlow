@@ -154,7 +154,26 @@ class FakeMediaProvider implements MediaProvider {
       const ItemPage(items: [], total: 0);
 
   @override
+  Future<Map<String, List<LibraryEpisode>>> getLibraryWeek(
+          {DateTime? weekStart}) async =>
+      const {};
+
+  @override
+  Future<Map<String, String>> mapSeriesTmdbToId() async => const {};
+
+  @override
+  Future<List<LibraryEpisode>> getSeriesEpisodes(String seriesId) async =>
+      const [];
+  @override
   Future<List<String>> getGenres({String? parentId}) async => const [];
+
+  @override
+  Future<Set<String>> collectProviderIds({
+    required String providerKey,
+    String includeTypes = 'Series,Movie',
+    int limit = 5000,
+  }) async =>
+      const {};
 
   @override
   Future<(int, int)?> getYearRange({

@@ -285,6 +285,17 @@ MediaProvider _api() => _FakeApi();
 
 class _FakeApi implements MediaProvider {
   @override
+  Future<Map<String, List<LibraryEpisode>>> getLibraryWeek(
+          {DateTime? weekStart}) async =>
+      const {};
+
+  @override
+  Future<Map<String, String>> mapSeriesTmdbToId() async => const {};
+
+  @override
+  Future<List<LibraryEpisode>> getSeriesEpisodes(String seriesId) async =>
+      const [];
+  @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('分组测试不应调用 API');
 }

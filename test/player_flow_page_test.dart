@@ -56,8 +56,8 @@ class FakeKernel extends PlayerKernel {
     _stateController.add(s);
   }
 
-  @override
   String get engine => 'fake';
+
   @override
   String? get viewType => null;
   @override

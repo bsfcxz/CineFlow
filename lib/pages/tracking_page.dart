@@ -21,6 +21,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import '../data/media_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/theme.dart';
@@ -42,18 +43,34 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
   /// 当前子页：0=追剧日历，1=继续观看（与参考稿的 seg-tabs 一致）。
   int _seg = 0;
 
-  /// 副标题文案（稿子："共 N 部 · 连载 N · 已完结 N"）。
+  /// 副标题（稿子 `.track-sub`：数字用 `em` **粉色高亮**）。
   ///
-  /// ## 三种情况
-  /// · 没订阅 ⇒ 告诉用户**去哪订阅**（空态必须可行动）
-  /// · 有订阅但状态未知 ⇒ 只报总数（**不编造**连载/已完结）
-  /// · 正常 ⇒ 三个数字都报
-  String _subtitle(List<CalendarSubscription> list) {
-    if (list.isEmpty) return '去追剧日历点星标订阅，这里会自动同步';
-    final live = list.where((s) => s.status == '连载中').length;
-    final ended = list.where((s) => s.status == '已完结').length;
-    if (live + ended == 0) return '共 ${list.length} 部 · 与追剧日历同步';
-    return '共 ${list.length} 部 · 连载 $live · 已完结 $ended';
+  /// ## 稿子原文
+  /// ```html
+  /// <div class="track-sub">共 <em>0</em> 部 · 连载 <em>0</em> · 已完结 <em>0</em></div>
+  /// ```
+  /// ⚠️ 旧实现是一条纯灰文字 ⇒ 数字不突出（用户截图对比后指出）。
+  Widget _subLine(List<CalendarSubscription> list) {
+    if (list.isEmpty) {
+      return Text('去追剧日历点星标订阅，这里会自动同步', style: Cf.caption);
+    }
+    final live = list.where((x) => x.status == '连载中').length;
+    final ended = list.where((x) => x.status == '已完结').length;
+    if (live + ended == 0) {
+      return Text('共 ${list.length} 部 · 与追剧日历同步', style: Cf.caption);
+    }
+    final num =
+        Cf.caption.copyWith(color: Cf.accent, fontWeight: FontWeight.w600);
+    return RichText(
+      text: TextSpan(style: Cf.caption, children: [
+        const TextSpan(text: '共 '),
+        TextSpan(text: '${list.length}', style: num),
+        const TextSpan(text: ' 部 · 连载 '),
+        TextSpan(text: '$live', style: num),
+        const TextSpan(text: ' · 已完结 '),
+        TextSpan(text: '$ended', style: num),
+      ]),
+    );
   }
 
   @override
@@ -61,7 +78,13 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
     final subs = ref.watch(subscriptionsProvider);
     final list = subs.maybeWhen(
         data: (l) => l, orElse: () => const <CalendarSubscription>[]);
-    final subCount = list.length;
+    // 三个统计卡的数字（稿子 `#segLiveCount` / `#segEndCount` / `#segContCount`）
+    final liveCount = list.where((x) => x.status == '连载中').length;
+    final endedCount = list.where((x) => x.status == '已完结').length;
+    // "继续观看"来自服务端 Resume（不是订阅表）⇒ 从 homeProvider 取真实值
+    final resumeCount = ref
+        .watch(homeProvider)
+        .maybeWhen(data: (d) => d.resume.length, orElse: () => 0);
 
     return Scaffold(
       backgroundColor: Cf.bg,
@@ -70,55 +93,71 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ── 标题 + 副标题（参考稿有这两行）──
-            const Padding(
-              padding: EdgeInsets.fromLTRB(Cf.gap4, Cf.gap4, Cf.gap4, 2),
-              child: Text('我的追剧',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-            ),
-            // ★ 统计条（稿子："共 N 部 · 连载 N · 已完结 N"）
+            // ══════════ 稿子 `.track-header` ══════════
             //
-            // ## 为什么把"连载/已完结"分开数（而不是只报总数）
-            // 用户看「我的追剧」最想知道的是"**还有哪些在播**"——
-            // 已完结的不用再等更新。这两个数字正好回答它。
-            //
-            // 数据来自订阅表的 `status` 列（订阅时落库的快照，
-            // 打开本页时用 TMDB 的最新状态**回写**过，见 `_SubscribedCalendar`）。
+            // ## ★ 与我旧实现的差别（用户截图指出"没按 UI 改"）
+            // | 稿子 | 我的旧实现 |
+            // |---|---|
+            // | **三个统计卡**（彩色圆点 + 数字 + 可点切换）| 只有一行文字 |
+            // | 标题 26px | 20px |
+            // | 副标题数字**粉色高亮** | 全灰 |
             Padding(
-              padding: const EdgeInsets.fromLTRB(Cf.gap4, 0, Cf.gap4, Cf.gap3),
-              child: Text(_subtitle(list), style: Cf.caption),
+              padding: const EdgeInsets.fromLTRB(Cf.gap5, Cf.gap4, Cf.gap5, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // `.track-title { font-size:26px; w800; letter-spacing:-.5px }`
+                  Text('我的追剧',
+                      style: Cf.headline),
+                  const SizedBox(height: 6),
+                  // `.track-sub`（数字用 `em` 粉色高亮）
+                  _subLine(list),
+                  const SizedBox(height: Cf.gap4),
+                ],
+              ),
             ),
-
-            // ── 两栏分页（参考稿的 seg-tabs）──
+            // `.top-seg`：三个统计卡（连载中 / 已完结 / 继续观看）
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: Cf.gap4),
+              padding: const EdgeInsets.fromLTRB(Cf.gap5, 0, Cf.gap5, Cf.gap2),
               child: Row(children: [
-                _SegTab(
-                  icon: Icons.calendar_month_rounded,
-                  label: '追剧日历',
-                  badge: subCount,
+                _StatCard(
+                  kind: _StatKind.live,
+                  label: '连载中',
+                  count: liveCount,
+                  unit: '部',
                   active: _seg == 0,
                   onTap: () => setState(() => _seg = 0),
                 ),
-                const SizedBox(width: Cf.gap2),
-                _SegTab(
-                  icon: Icons.play_circle_outline_rounded,
-                  label: '继续观看',
+                const SizedBox(width: 8),
+                _StatCard(
+                  kind: _StatKind.end,
+                  label: '已完结',
+                  count: endedCount,
+                  unit: '部',
                   active: _seg == 1,
                   onTap: () => setState(() => _seg = 1),
                 ),
+                const SizedBox(width: 8),
+                _StatCard(
+                  kind: _StatKind.cont,
+                  label: '继续观看',
+                  count: resumeCount,
+                  unit: '条',
+                  active: _seg == 2,
+                  onTap: () => setState(() => _seg = 2),
+                ),
               ]),
             ),
-            const SizedBox(height: Cf.gap2),
-            const Divider(height: 1),
-
+            
             // ── 内容 ──
             Expanded(
-              child: _seg == 0
-                  ? const _SubscribedCalendar()
-                  // 复用 `HistoryPage`（它已实现加载/空态/错误态/下拉刷新）
-                  // ⚠️ `HistoryPage` 自带 ClimbAppBar（含返回按钮）——
-                  //    在一级 Tab 里不需要返回。见 `_EmbeddedHistory` 的处理。
-                  : const HistoryPage(embedded: true),
+              child: switch (_seg) {
+                // 在播 / 已完结走同一个日历（按状态过滤）
+                0 => _SubscribedCalendar(only: _Only.live),
+                1 => _SubscribedCalendar(only: _Only.ended),
+                // 复用 `HistoryPage`（它已实现加载/空态/错误态/下拉刷新）
+                _ => const HistoryPage(embedded: true),
+              },
             ),
           ],
         ),
@@ -127,67 +166,99 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
   }
 }
 
-/// 分页标签（参考稿的 `.seg-tab`）。
-class _SegTab extends StatelessWidget {
-  const _SegTab({
-    required this.icon,
+/// 「追剧日历」要显示的**状态子集**（三个统计卡各对应一个）。
+///
+/// ## 为什么用"过滤"而不是"三套列表"
+/// 三条数据的渲染逻辑**完全相同**（周历 + 按天筛选 + 卡片）⇒
+/// 各写一套必然漂移（本轮已因"两处各写一套标签"被用户抓到过）。
+enum _Only { live, ended }
+
+/// 统计卡的种类（决定圆点色与激活背景）。稿子 `.top-seg-btn.live/.end/.cont`。
+enum _StatKind { live, end, cont }
+
+/// 统计卡（稿子 `.top-seg-btn`：竖排、左对齐、圆点 + 标题 + 计数）。
+///
+/// ## 为什么三个卡**可点切换**（而不是纯展示）
+/// 稿子里它们是 `<button onclick="switchTrackMode(...)">` ——
+/// 点"已完结"就切到已完结列表。**数字本身就是导航入口**
+/// （用户看到"已完结 5 部"自然想点）。
+class _StatCard extends StatelessWidget {
+  const _StatCard({
+    required this.kind,
     required this.label,
+    required this.count,
+    required this.unit,
     required this.active,
     required this.onTap,
-    this.badge,
   });
 
-  final IconData icon;
+  final _StatKind kind;
   final String label;
+  final int count;
+  final String unit;
   final bool active;
   final VoidCallback onTap;
 
-  /// 角标数字（0 时不显示）。
-  final int? badge;
+  (Color, Color) get _pair => switch (kind) {
+        _StatKind.live => (const Color(0xFF22C55E), const Color(0xFF16A34A)),
+        _StatKind.end => (const Color(0xFF64748B), const Color(0xFF475569)),
+        _StatKind.cont => (Cf.accent, Cf.accent2),
+      };
 
   @override
   Widget build(BuildContext context) {
+    final (c1, c2) = _pair;
     return Expanded(
-      child: InkWell(
+      child: GestureDetector(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(Cf.radiusMd),
         child: Container(
-          height: 40,
-          alignment: Alignment.center,
+          padding: const EdgeInsets.fromLTRB(10, 12, 10, 10),
           decoration: BoxDecoration(
-            color: active
-                ? Cf.accent.withValues(alpha: 0.14)
-                : Cf.surface,
+            // 激活 = 该色的**淡渐变**（稿子 `.active.live/.end/.cont` 三组）
+            gradient: active
+                ? LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      c1.withValues(alpha: 0.22),
+                      c2.withValues(alpha: 0.12),
+                    ])
+                : null,
+            color: active ? null : const Color(0x0AFFFFFF),
             border: Border.all(
                 color: active
-                    ? Cf.accent.withValues(alpha: 0.45)
-                    : Cf.border),
-            borderRadius: BorderRadius.circular(Cf.radiusMd),
+                    ? c1.withValues(alpha: 0.5)
+                    : const Color(0x14FFFFFF)),
+            borderRadius: BorderRadius.circular(Cf.radiusMd + 2),
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: Cf.iconSm,
-                  color: active ? Cf.accent : Cf.text2),
-              const SizedBox(width: 6),
-              Text(label,
-                  style: Cf.label.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: active ? Cf.accent : Cf.text2)),
-              if (badge != null && badge! > 0) ...[
-                const SizedBox(width: 6),
+              Row(children: [
+                // 圆点（`live`/`cont` 带发光；`end` 静态 —— 稿子如此）
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  width: 6,
+                  height: 6,
                   decoration: BoxDecoration(
-                    color: Cf.accent,
-                    borderRadius: BorderRadius.circular(Cf.radiusXs),
+                    shape: BoxShape.circle,
+                    color: c1,
+                    boxShadow: kind == _StatKind.end
+                        ? null
+                        : [
+                            BoxShadow(
+                                color: c1.withValues(alpha: 0.8),
+                                blurRadius: 8),
+                          ],
                   ),
-                  child: Text('$badge',
-                      style: Cf.micro.copyWith(
-                          color: Cf.ink, fontWeight: FontWeight.w700)),
                 ),
-              ],
+                const SizedBox(width: 5),
+                Text(label,
+                    style: Cf.label.copyWith(
+                        fontWeight: FontWeight.w800, color: Cf.text)),
+              ]),
+              const SizedBox(height: 4),
+              Text('$count $unit',
+                  style: Cf.micro.copyWith(fontSize: 10, color: Cf.text3)),
             ],
           ),
         ),
@@ -195,7 +266,6 @@ class _SegTab extends StatelessWidget {
     );
   }
 }
-
 /// 「追剧日历」子页 —— **周历 + 按天筛选的订阅剧**。
 ///
 /// ## 用户要求
@@ -209,7 +279,14 @@ class _SegTab extends StatelessWidget {
 /// ## 为什么"今天"默认选中
 /// 用户打开追剧页最关心"今天更新什么"。周一是**视觉起点**，但选中项是今天。
 class _SubscribedCalendar extends ConsumerStatefulWidget {
-  const _SubscribedCalendar();
+  const _SubscribedCalendar({required this.only});
+
+  /// 要显示的状态子集（三个统计卡各对应一个）。
+  ///
+  /// ## 为什么用"过滤"而不是三套列表
+  /// 三条数据的渲染逻辑完全相同（周历 + 按天筛选 + 卡片）⇒
+  /// 各写一套必然漂移。
+  final _Only only;
 
   @override
   ConsumerState<_SubscribedCalendar> createState() =>
@@ -246,65 +323,234 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
   }
 
+  /// 加载周历数据（**三段式**：缓存 → Emby → TMDB 兜底）。
+  ///
+  /// ## 用户方案（2026-10-12）
+  /// > "这里如果有库中的数据用库中的数据，tmdb 可以通过静态+定时动态抓取了。
+  /// >  这样的话点开追剧，直接就能显示。"
+  ///
+  /// ## 为什么必须改（真实事故）
+  /// 旧实现按剧逐部查 TMDB：**21 部订阅 = 42 个并发请求**
+  /// ⇒ 真机日志一片 `周历分集拉取失败 (id): 超时` ⇒ 周历全 0。
+  ///
+  /// | 方案 | 请求数 | 可靠性 |
+  /// |---|---|---|
+  /// | 逐部 TMDB | **42** | ❌ 全超时 |
+  /// | **库内优先** | **1** | ✅ 本机数据 |
+  ///
+  /// ## 三段
+  /// ```
+  /// ① 读缓存 → 立刻渲染（0 请求，点开就有内容）
+  /// ② Emby getLibraryWeek（1 请求）→ 覆盖 + 回写缓存
+  /// ③ 库里没有的订阅 → TMDB 兜底（限并发 4 + 熔断）
+  /// ```
+  ///
+  /// ## 为什么第 ③ 段还要保留
+  /// 用户可能"先订阅、等入库"（库里还没有那部剧）⇒ Emby 给不出日期。
+  /// 这种情况通常只有 0–3 部（不再是 21 部），代价可接受。
   Future<void> _loadAll() async {
-    final subs = ref.read(subscriptionsProvider).value ?? const [];
+    // ⚠️ 必须 `await ...future`，不能读 `.value`（未就绪时是 null）
+    final subs = await ref.read(subscriptionsProvider.future);
     if (subs.isEmpty) {
       if (mounted) setState(() => _loading = false);
       return;
     }
-    final key = await ref.read(sessionStoreProvider).loadTmdbKey();
-    if (key == null || key.isEmpty) {
-      if (mounted) setState(() => _loading = false);
-      return;
-    }
-    final client = ref.read(calendarClientProvider);
+    if (!mounted) return;
 
-    // ① 并发拉每部订阅剧的本周播出（TMDB）
-    final weeks = <String, ShowWeek>{};
-    await Future.wait(subs.map((s) async {
-      if (s.source != 'tmdb') return;
-      final w = await client.fetchWeekEpisodes(s.sourceId, apiKey: key);
-      weeks[s.sourceId] = w;
-      // ★ 状态**回写**订阅表：剧的「连载中 → 已完结」是必然发生的，
-      //   不回写的话断网时永远显示旧状态。
-      final cn = w.statusCn;
-      if (cn != null && cn.isNotEmpty && cn != s.status &&
-          !_syncedStatus.contains(s.sourceId)) {
-        _syncedStatus.add(s.sourceId);
-        await ref.read(appDbProvider).updateSubscriptionMeta(
-              source: s.source,
-              sourceId: s.sourceId,
-              mediaType: s.mediaType,
-              status: cn,
-            );
-      }
-    }));
+    final monday = _mondayOf(DateTime.now());
+    final cacheKey = 'libweek:${_ymd(monday)}';
 
-    // ② 拉 Emby 进度（尽力而为：匹配不到就不显示进度）
-    final prog = <String, (int, int)>{};
+    // ══════ ① 缓存：立刻渲染（点开就有内容）══════
+    final db = ref.read(appDbProvider);
     try {
-      final api = ref.read(embyApiProvider);
-      if (api != null) {
-        // ⚠️ `getItems` 没有 `fields` 参数（它不是薄封装）；
-        //    `ProviderIds` 已在 `search`/`getItems` 内部按需带上。
-        final page = await api.getItems(
-          includeTypes: 'Series',
-          recursive: true,
-          limit: 500,
-        );
+      final cached = await db.cacheGet(cacheKey, ttl: const Duration(hours: 24));
+      if (cached != null && cached.isNotEmpty && mounted) {
+        final restored = _decodeWeeks(cached);
+        if (restored.isNotEmpty) {
+          setState(() {
+            _weeks = restored;
+            _loading = false; // ★ 有缓存就不显示 loading
+          });
+          debugPrint('[追剧] 缓存命中 ${restored.length} 部（立即渲染）');
+        }
+      }
+    } catch (e) {
+      debugPrint('[追剧] 读缓存失败（忽略）: $e');
+    }
+
+    // ══════ ② 库内数据：**按订阅的剧**查（聚合所有服务器）══════
+    //
+    // ## ★★ 我上一版为什么错（诊断数据）
+    // 查"全库本周更新"（`MinPremiereDate`）→ 6 部剧；
+    // 而订阅的 21 部（斗破苍穹/凡人修仙传等**连载中**）分集**早就入库了**
+    // ⇒ 只有"这周新入库的剧"被查出 ⇒ 与订阅**交集 0**。
+    //
+    // ## 实测：订阅的剧就在库里
+    // iLoveHD 6/8 在库、HK-Emby 7/8 在库（《武神主宰》**只在 HK**）
+    // ⇒ **必须聚合所有已登录服务器**（这正是用户说的"多账号聚合"）。
+    //
+    // ## 新方案
+    // · 每台服务器：`mapSeriesTmdbToId()`（1 请求）→ tmdbId → SeriesId
+    // · 对**订阅的剧**：`getSeriesEpisodes(id)`（每部 1 请求，**本机**、快）
+    // · 合并（同一部多台都有 ⇒ 并集）
+    final weeks = <String, ShowWeek>{..._weeks};
+    // ⚠️ ccountApisProvider 是 FutureProvider<Map<String, MediaProvider>>
+    //    ⇒ 必须 wait ...future（读 .value 会拿到 null，本轮已踩过）
+    final apisMap = await ref.read(accountApisProvider.future);
+    final apis = apisMap.values.toList();
+    final api = ref.read(embyApiProvider);
+    var inLib = 0;
+    if (apis.isNotEmpty) {
+      try {
+        // ① 每台的 id 映射（并发）
+        final maps = await Future.wait(apis.map((a) async {
+          try {
+            return await a.mapSeriesTmdbToId();
+          } catch (_) {
+            return <String, String>{};
+          }
+        }));
+
+        // ② 对订阅的剧逐部查（限并发 6，本机请求快）
+        final tmdbSubs =
+            subs.where((x) => x.source == 'tmdb').toList();
+        for (var i = 0; i < tmdbSubs.length; i += 6) {
+          final batch = tmdbSubs.skip(i).take(6).toList();
+          await Future.wait(batch.map((s) async {
+            // 该剧在哪几台有（可能多台都有）
+            final ids = <String>[];
+            for (final m in maps) {
+              final sid = m[s.sourceId];
+              if (sid != null && sid.isNotEmpty) ids.add(sid);
+            }
+            if (ids.isEmpty) return;
+            final all = <LibraryEpisode>[];
+            for (var k = 0; k < ids.length; k++) {
+              try {
+                all.addAll(await apis[k].getSeriesEpisodes(ids[k]));
+              } catch (_) {}
+            }
+            if (all.isEmpty) return;
+            // ③ 只留**本周**（周一到周日）的集
+            final days = <int, List<int>>{};
+            for (final e in all) {
+              (days[e.weekday] ??= []).add(e.episode ?? 0);
+            }
+            for (final v in days.values) {
+              v.sort();
+            }
+            weeks[s.sourceId] = ShowWeek(days: days, status: s.status);
+            inLib++;
+          }));
+        }
+        debugPrint('[追剧] 库内命中 $inLib/${subs.length} 部'
+            '（${apis.length} 台）');
+        if (mounted && inLib > 0) {
+          setState(() {
+            _weeks = {...weeks};
+            _loading = false;
+          });
+        }
+      } catch (e) {
+        debugPrint('[追剧] 库内分集失败: $e');
+      }
+    }
+
+
+    // 回写缓存（供下次"点开就有"）
+    try {
+      if (inLib > 0) {
+        await db.cachePut(cacheKey, _encodeWeeks(weeks),
+            ttl: const Duration(hours: 24));
+      }
+    } catch (e) {
+      debugPrint('[追剧] 写缓存失败（忽略）: $e');
+    }
+
+    // ══════ ③ TMDB 兜底：只查**库里没有的**（通常 0–3 部）══════
+    final missing = subs
+        .where((s) => s.source == 'tmdb' && !weeks.containsKey(s.sourceId))
+        .toList();
+    if (missing.isNotEmpty) {
+      final key = await ref.read(sessionStoreProvider).loadTmdbKey();
+      if (key != null && key.isNotEmpty) {
+        final client = ref.read(calendarClientProvider);
+        const maxFail = 5; // 熔断：连续失败就停（失败几乎总是同一原因）
+        var failed = 0;
+        for (var i = 0; i < missing.length; i += 4) {
+          if (failed >= maxFail) {
+            debugPrint('[追剧] TMDB 兜底连续失败 $failed 次，中止');
+            break;
+          }
+          final batch = missing.skip(i).take(4).toList();
+          await Future.wait(batch.map((s) async {
+            try {
+              final w = await client.fetchWeekEpisodes(s.sourceId, apiKey: key);
+              weeks[s.sourceId] = w;
+              final cn = w.statusCn;
+              if (cn != null &&
+                  cn.isNotEmpty &&
+                  cn != s.status &&
+                  !_syncedStatus.contains(s.sourceId)) {
+                _syncedStatus.add(s.sourceId);
+                await ref.read(appDbProvider).updateSubscriptionMeta(
+                      source: s.source,
+                      sourceId: s.sourceId,
+                      mediaType: s.mediaType,
+                      status: cn,
+                    );
+              }
+            } catch (e) {
+              failed++;
+              debugPrint('[追剧] 兜底失败（继续其它）: $e');
+            }
+          }));
+        }
+      }
+    }
+
+    // ══════ ④ Emby 进度（**聚合所有服务器**）══════
+    //
+    // ## 为什么必须聚合（真机看到的问题）
+    // 周历已走多台聚合，但进度原来只查 `embyApiProvider`（**当前会话一台**）
+    // ⇒《吞噬星空》《仙逆》在当前会话那台没有 ⇒ 显示"不在媒体库 · 无法显示进度"
+    // —— 而它们的周历数据其实是**另一台**给的。**同一个逻辑错误**。
+    //
+    // ## 合并规则
+    // 同一部剧多台都报进度时取**未看数较大**的那份（更保守：
+    // 不会把"其实还有没看的"显示成"已看完"）。
+    final prog = <String, (int, int)>{};
+    for (final a in apis) {
+      try {
+        final page = await a.getItems(
+            includeTypes: 'Series', recursive: true, limit: 1000);
         for (final it in page.items) {
           final tmdb = it.providerIds['tmdb'];
           if (tmdb == null || tmdb.isEmpty) continue;
-          // 实测：unplayedItemCount = 未看集数（1/8/12/38），
-          //       childCount       = 总集数（1/8/12，语义正确）
-          // ⇒ 能算出「已看 8/12 · 剩 4 集」
           final unplayed = it.unplayedItemCount;
-          final total = it.childCount;
-          if (unplayed != null) prog[tmdb] = (unplayed, total ?? -1);
+          if (unplayed == null) continue;
+          final prev = prog[tmdb];
+          final total = it.childCount ?? -1;
+          if (prev == null || unplayed > prev.$1) {
+            prog[tmdb] = (unplayed, total);
+          }
         }
+      } catch (_) {
+        // 进度是"锦上添花"，某台失败不影响其它台
       }
-    } catch (_) {
-      // 进度是"锦上添花"，失败不影响周历
+    }
+    if (api != null && apis.isEmpty) {
+      // 兜底：`accountApisProvider` 空（未登录多账号）时用当前会话
+      try {
+        final page = await api.getItems(
+            includeTypes: 'Series', recursive: true, limit: 1000);
+        for (final it in page.items) {
+          final tmdb = it.providerIds['tmdb'];
+          if (tmdb == null || tmdb.isEmpty) continue;
+          final unplayed = it.unplayedItemCount;
+          if (unplayed != null) prog[tmdb] = (unplayed, it.childCount ?? -1);
+        }
+      } catch (_) {}
     }
 
     if (!mounted) return;
@@ -313,6 +559,55 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
       _progress = prog;
       _loading = false;
     });
+  }
+
+  /// 本周一的 0 点（与 `CalendarClient._mondayOf` 同算法）。
+  static DateTime _mondayOf(DateTime d) {
+    final x = DateTime(d.year, d.month, d.day);
+    return x.subtract(Duration(days: x.weekday - 1));
+  }
+
+  /// `yyyy-MM-dd`（缓存键用）。
+  static String _ymd(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  /// 序列化周历（存缓存）。格式刻意简单：`id|status|day:ep,ep;day:ep`。
+  static String _encodeWeeks(Map<String, ShowWeek> weeks) {
+    final out = <String>[];
+    for (final e in weeks.entries) {
+      final days = e.value.days.entries
+          .map((d) => '${d.key}:${d.value.join(',')}')
+          .join(';');
+      out.add('${e.key}|${e.value.status ?? ''}|$days');
+    }
+    return out.join('\n');
+  }
+
+  /// 反序列化（读缓存）。格式不符就返回空 Map（**不抛**）。
+  static Map<String, ShowWeek> _decodeWeeks(String raw) {
+    final out = <String, ShowWeek>{};
+    for (final line in raw.split('\n')) {
+      if (line.isEmpty) continue;
+      final parts = line.split('|');
+      if (parts.length < 3) continue;
+      final days = <int, List<int>>{};
+      for (final seg in parts[2].split(';')) {
+        if (seg.isEmpty) continue;
+        final kv = seg.split(':');
+        if (kv.length != 2) continue;
+        final d = int.tryParse(kv[0]);
+        if (d == null) continue;
+        days[d] = [
+          for (final x in kv[1].split(','))
+            if (int.tryParse(x) != null) int.parse(x)
+        ];
+      }
+      out[parts[0]] = ShowWeek(
+          days: days, status: parts[1].isEmpty ? null : parts[1]);
+    }
+    return out;
   }
 
   /// 某天有更新的订阅数（给周历小红点用）。
@@ -333,8 +628,21 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
         message: '$e',
         onRetry: () => ref.invalidate(subscriptionsProvider),
       ),
-      data: (list) {
-        if (list.isEmpty) return const _EmptySubs();
+      data: (all) {
+        // ★ 按统计卡过滤（稿子三个 `.top-seg-btn` 各对应一个视图）
+        final list = all
+            .where((x) => widget.only == _Only.live
+                ? x.status != '已完结' // live = 连载中 + 状态未知
+                : x.status == '已完结')
+            .toList();
+        if (list.isEmpty) {
+          return Center(
+            child: Text(
+              widget.only == _Only.live ? '没有连载中的订阅' : '没有已完结的订阅',
+              style: Cf.caption.copyWith(color: Cf.text3),
+            ),
+          );
+        }
         final today = DateTime.now().weekday;
         // 该天要显示的订阅（按"今天/更新集号"排）
         final onDay = <CalendarSubscription>[];
@@ -460,20 +768,35 @@ class _WeekBar extends StatelessWidget {
                       ],
                     ),
                   ),
-                  // 有更新的小红点（用户规格）
-                  if (n > 0)
-                    Positioned(
-                      top: 5,
-                      right: 5,
-                      child: Container(
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: on ? Cf.ink : Cf.danger,
-                        ),
+                  // ★ 该天更新的**集数**（稿子 `.wd-count`）
+                  //
+                  // ## 为什么从"小红点"改成"数字"（用户截图指出没按 UI 做）
+                  // 稿子原文：`<span class="wd-count">${count}</span>` ——
+                  // 红点只说"有更新"，**数字直接告诉有几部**（不用逐个点开看）。
+                  // 且稿子用 `count===0?"empty"` 把没更新的那天**压暗**。
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: n == 0
+                            ? Colors.transparent
+                            : (on
+                                ? Cf.ink.withValues(alpha: 0.22)
+                                : Cf.accent.withValues(alpha: 0.18)),
+                        borderRadius: BorderRadius.circular(Cf.radiusXs),
                       ),
+                      child: Text('$n',
+                          style: Cf.micro.copyWith(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: n == 0
+                                  ? Cf.text3.withValues(alpha: 0.5)
+                                  : (on ? Cf.ink : Cf.accent))),
                     ),
+                  ),
                 ]),
               ),
             ),
@@ -483,32 +806,6 @@ class _WeekBar extends StatelessWidget {
     );
   }
 }
-
-/// 空态（告诉用户**怎么订阅**，否则不知道去哪加）。
-class _EmptySubs extends StatelessWidget {
-  const _EmptySubs();
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        SizedBox(height: MediaQuery.of(context).size.height * 0.15),
-        Center(
-          child: Column(children: [
-            Icon(Icons.star_border_rounded, size: 44, color: Cf.text3),
-            const SizedBox(height: Cf.gap2),
-            Text('还没有订阅任何剧', style: Cf.caption.copyWith(color: Cf.text3)),
-            const SizedBox(height: 4),
-            Text('去「追剧日历」点卡片右上角的星标',
-                style: Cf.micro.copyWith(color: Cf.text3)),
-          ]),
-        ),
-      ],
-    );
-  }
-}
-
 /// 订阅剧卡片（周历下方列表用）。
 ///
 /// ## 规格（用户）
@@ -578,15 +875,80 @@ class _SubTile extends StatelessWidget {
               // ★ 状态：连载中 / 已完结（用户明确要求区分）
               if (cn != null) _chip(cn, _statusColor(cn)),
               if (sub.platform.isNotEmpty) _chip(sub.platform, Cf.text2),
-              // 替代"20:00"：TMDB 无播出时刻，改显示**集号**（实测有）
-              if (eps.isNotEmpty) _chip('更新 E${eps.join("/")}', Cf.accent),
+              // ★ 集号（稿子口径："已更新至第 N 集"，不是把每天更新的集全罗列）
+              //
+              // ## 我第一版为什么错
+              // 写成 `E${eps.join("/")}` ⇒ 显示 `E7/8/9/10/11/12/13/...` ——
+              // 那是**该季每一集**（周历把它们全收进 days）⇒ 长到溢出，
+              // 而用户要的是"更新到哪儿了"这一个数。
+              //
+              // 稿子原文：`已更新至第 ${stats.total} 集` ⇒ 取**最大集号**。
+              if (eps.isNotEmpty)
+                _chip('更新至 E${eps.reduce((a, b) => a > b ? a : b)}',
+                    Cf.accent),
             ]),
+            // ★ 「下次更新」提醒（2026-10-12 用户指出少了这个）
+            //
+            // ## 用户在详情页看到的样子
+            // ```
+            // ⏰ 下次更新：今天 周一 20:00
+            //    10月12日 · 芒果TV 更新 · 你还有 24 集未看
+            // ```
+            // ## 追剧页做成**一行精简版**（卡片内空间有限）
+            // ```
+            // ⏰ 下次更新：明天 周二
+            // ```
+            //
+            // ## ★ 为什么不显示"20:00"
+            // **TMDB 没有播出时刻**（只有 `air_date`，无 `air_time`）——
+            // 详情页那个 `20:00` 是**编的**（我实测确认过；Emby 的
+            // `AirTime` 在你这台服务器填充率也是 0）。
+            // ⇒ 只显示**哪天**，不编造时刻。
+            if (_nextUpdateText() case final nu?) ...[
+              const SizedBox(height: 4),
+              Row(children: [
+                Icon(Icons.alarm_rounded, size: 12, color: Cf.accent),
+                const SizedBox(width: 3),
+                Text(nu,
+                    style: Cf.micro.copyWith(
+                        fontSize: 10, color: Cf.accent)),
+              ]),
+            ],
             const SizedBox(height: 6),
             _progressBar(),
           ]),
         ),
       ]),
     );
+  }
+
+  /// 「下次更新」文案：`下次更新：今天 周一` / `明天 周二` / `周三`。
+  ///
+  /// ## 判据：`week.days` 里**离今天最近**的那天
+  /// · 今天有 ⇒ "今天 周X"
+  /// · 明天有 ⇒ "明天 周X"
+  /// · 其余 ⇒ 直接"周X"（避免"3 天后"这种要心算的说法）
+  /// · 本周没有任何更新 ⇒ null（**不显示**，不编"待定"）
+  String? _nextUpdateText() {
+    final w = week;
+    if (w == null || w.days.isEmpty) return null;
+    final today = DateTime.now().weekday;
+    // 按"距今天的天数"排序（0=今天）
+    final days = w.days.keys.toList()
+      ..sort((a, b) =>
+          ((a - today + 7) % 7).compareTo((b - today + 7) % 7));
+    if (days.isEmpty) return null;
+    final d = days.first;
+    const cn = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    final gap = (d - today + 7) % 7;
+    final when = switch (gap) {
+      0 => '今天',
+      1 => '明天',
+      _ => '',
+    };
+    return when.isEmpty
+        ? '下次更新：${cn[d]}'
+        : '下次更新：$when ${cn[d]}';
   }
 
   Color _statusColor(String cn) => switch (cn) {

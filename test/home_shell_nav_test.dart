@@ -147,7 +147,7 @@ void main() {
       await _pumpShell(tester, const Size(2400 / _deviceDpr, 1080 / _deviceDpr));
 
       // 三个 Tab 的 label 都是中文名，应能按语义找到
-      for (final name in ['首页', '排行榜', '我的']) {
+      for (final name in ['首页', '热播', '我的']) {
         expect(find.bySemanticsLabel(name), findsWidgets,
             reason: '读屏找不到「$name」—— 侧栏缺 label 语义');
       }

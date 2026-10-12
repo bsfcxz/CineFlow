@@ -25,6 +25,15 @@ String code(String path) {
   return out.join('\n');
 }
 
+/// 剥掉**整行注释**（断言不得被注释满足 —— VERIFICATION-DISCIPLINE §1）。
+///
+/// ⚠️ `code()` 是"读文件 + 剥注释"二合一；全仓扫描时我已把文件内容读进来了
+/// ⇒ 需要这个**纯函数**版本（对已有字符串剥注释）。
+String stripComments(String text) => text.split('\n').where((l) {
+      final t = l.trim();
+      return !t.startsWith('//') && !t.startsWith('*');
+    }).join('\n');
+
 /// 取从 `from` 到 `to` 之间的源码切片（**用方法名作双锚**）。
 ///
 /// ## 为什么不拍一个固定长度（实测教训）
@@ -367,6 +376,173 @@ void main() {
     });
   });
 
+  group('★★★ 异步 provider 禁止读 .value（本轮真 bug）', () {
+    test('★★★ `_loadAll` 必须 await `subscriptionsProvider.future`', () {
+      // ## 用户报障
+      // > "追剧这个底栏中的内容怎么没有了"
+      //
+      // ## 根因
+      // ```dart
+      // final subs = ref.read(subscriptionsProvider).value ?? const [];
+      // ```
+      // `subscriptionsProvider` 是 **FutureProvider**（异步查 drift），
+      // 而 `_loadAll` 在 `addPostFrameCallback` 里跑 ⇒ 那一刻查询还没回来
+      // ⇒ `.value` 是 null ⇒ `?? const []` ⇒ **直接 return**。
+      // ⇒ `_weeks`/`_progress` 永远空 ⇒ 周历恒 0、列表恒空。
+      //
+      // ## 为什么统计卡看着正常（掩盖了 bug）
+      // 统计卡走 `build` 里的 `ref.watch(...)`（会等、会重建）；
+      // 而这里用 `ref.read`（一次性、不等）⇒ **两条路径不一致**。
+      final c = code('lib/pages/tracking_page.dart');
+      expect(c.contains('await ref.read(subscriptionsProvider.future)'), isTrue,
+          reason: '★★★ 必须等 Future 完成');
+      expect(c.contains('ref.read(subscriptionsProvider).value'), isFalse,
+          reason: '★★★ 这是那个 bug 的写法');
+    });
+
+    test('★★★ 弹幕配置必须 await（否则用户配置被显示成默认值）', () {
+      // `danmakuConfigProvider` 是 AsyncNotifierProvider（异步读 secure_storage）
+      // ⇒ 读 `.value` 未就绪时是 null ⇒ `?? 默认值` ⇒
+      //   **设置页把用户已保存的配置显示成默认**（保存后会真覆盖回去）。
+      final c = code('lib/danmaku/danmaku_settings_page.dart');
+      expect(c.contains('await ref.read(danmakuConfigProvider.future)'), isTrue,
+          reason: '★★★ _save 里必须等（否则 kind 判错、走错分支）');
+      // initState 不能 await ⇒ 用"先空后回填"
+      expect(c.contains('danmakuConfigProvider.future).then'), isTrue,
+          reason: '★★ initState 用 then 回填（不能 await）');
+    });
+
+    test('★★★ 播放器加载弹幕必须 await（否则静默不加载）', () {
+      final c = code('lib/player/player_page.dart');
+      expect(c.contains('await ref.read(danmakuConfigProvider.future)'), isTrue,
+          reason: '★★★ `.value` 为 null 会 return ⇒ 用户以为"这片没弹幕"');
+    });
+
+    test('★★ 全仓不得再有"在异步 provider 上 read(...).value"', () {
+      // 扫描 lib/ 全部 dart（**排除注释**，避免被说明文字误伤）
+      final dir = Directory('lib');
+      final bad = <String>[];
+      final asyncProvs = [
+        'subscriptionsProvider', 'subscribedKeysProvider',
+        'calendarWeekProvider', 'homeProvider', 'accountsProvider',
+        'accountApisProvider', 'sessionProvider', 'hotBoardProvider',
+        'hotHeroProvider', 'doubanRankingsProvider', 'doubanDetailProvider',
+      ];
+      for (final f in dir.listSync(recursive: true)) {
+        if (f is! File || !f.path.endsWith('.dart')) continue;
+        final lines = stripComments(f.readAsStringSync()).split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          final l = lines[i];
+          for (final pv in asyncProvs) {
+            if (l.contains('ref.read($pv)') && l.contains('.value')) {
+              bad.add('${f.path}:${i + 1}');
+            }
+          }
+        }
+      }
+      expect(bad, isEmpty,
+          reason: '★★★ 异步 provider 上读 .value 拿到的是 null（未就绪），\n'
+              '    `?? 默认值` 会把"还没加载"伪装成"空结果" ⇒ **静默失效**。\n'
+              '    请用 `await ref.read(p.future)`。越界处：\n${bad.join('\n')}');
+    });
+  });
+
+  group('★★★ 「热播」Tab（用户：豆瓣保持现状 + 新增 TMDB）', () {
+    test('★★★ 底栏是「热播」而非「排行榜」', () {
+      final c = code('lib/pages/home_shell.dart');
+      expect(c.contains("'热播'"), isTrue,
+          reason: '★★★ 用户 2026-10-12："底栏排行榜改为热播"');
+      expect(c.contains("'排行榜'"), isFalse,
+          reason: '★★★ 旧名不该残留');
+    });
+
+    test('★★★ 两个来源都在（豆瓣保持现状 + TMDB 新增）', () {
+      final c = code('lib/pages/rank_page.dart');
+      // 用户："豆瓣的还是保持现状分类…新增一个 tmdb 的"
+      expect(c.contains('enum _Source'), isTrue, reason: '★★★ 来源切换');
+      expect(c.contains("douban('豆瓣')"), isTrue);
+      expect(c.contains("tmdb('TMDB')"), isTrue);
+      // 豆瓣那栏仍走 DoubanGroup + DoubanCatalog（**没被改动**）
+      expect(c.contains('DoubanGroup.values'), isTrue,
+          reason: '★★★ 豆瓣分类保持现状（三组）');
+      expect(c.contains('DoubanCatalog.categories'), isTrue,
+          reason: '★★★ 豆瓣的 20 个榜单原样');
+      // TMDB 那栏走 hotBoardProvider
+      expect(c.contains('hotBoardProvider'), isTrue);
+    });
+
+    test('★★★ 电影与剧集的状态榜单**必须不同**（真实差异）', () {
+      final c = code('lib/pages/rank_page.dart');
+      // 电影没有"在播/完结"（TMDB 的 with_status 是剧集专有）
+      // ⇒ 电影只能 [正在上映][即将上映]
+      expect(c.contains('_boardsFor'), isTrue, reason: '★★★ 榜单按类别区分');
+      expect(c.contains('HotBoard.showing'), isTrue, reason: '★ 电影的"正在上映"');
+      expect(c.contains('HotBoard.recentEnded'), isTrue,
+          reason: '★ 剧集的"刚完结"');
+    });
+
+    test('★★ TMDB 栏的 hotBoardProvider 要按 (类别, 状态) 缓存', () {
+      final c = code('lib/state/providers.dart');
+      expect(c.contains('hotBoardProvider'), isTrue);
+      // family 键是 (BrowseCategory, HotBoard) record
+      expect(c.contains('(BrowseCategory, HotBoard)'), isTrue,
+          reason: '★★ 两个维度都要进键，否则切状态拿到旧数据');
+    });
+  });
+
+  group('★★★ 追剧页按稿子重做（用户截图指出"没按 UI 改"）', () {
+    test('★★★ 三个统计卡（连载中/已完结/继续观看）', () {
+      final c = code('lib/pages/tracking_page.dart');
+      // 稿子 `.top-seg-btn` × 3
+      expect(c.contains('class _StatCard'), isTrue,
+          reason: '★★★ 稿子的统计卡（旧实现只有一行文字）');
+      expect(c.contains('enum _StatKind'), isTrue);
+      for (final k in ["'连载中'", "'已完结'", "'继续观看'"]) {
+        expect(c.contains(k), isTrue, reason: '★★ 缺统计卡 $k');
+      }
+      expect(c.contains('_StatKind.cont'), isTrue);
+    });
+
+    test('★★★ 统计卡的圆点三色（稿子 .live/.end/.cont）', () {
+      final c = code('lib/pages/tracking_page.dart');
+      expect(c.contains('0xFF22C55E'), isTrue, reason: '★ live 绿');
+      expect(c.contains('0xFF64748B'), isTrue, reason: '★ end 灰');
+      // cont 用主题色（粉）
+      expect(c.contains('_StatKind.cont => (Cf.accent'), isTrue);
+    });
+
+    test('★★★ 周历每格显示**集数数字**（稿子 .wd-count）', () {
+      final c = code('lib/pages/tracking_page.dart');
+      // ⚠️ 锚点**不能是注释** —— code() 会剥注释（我踩过两次）。
+      //    用**代码锚**：稿子 .wd-count 渲染的是数字（不是小红点）。
+      expect(c.contains('countOn(wd)'), isTrue,
+          reason: '★★★ 稿子用 countOn(wd) 取该天更新数');
+      expect(c.contains('fontWeight: FontWeight.w800'),
+          isTrue, reason: '★ 数字用粗体（稿子 .wd-count 视觉权重高）');
+      // 旧的小红点（danger 色的圆点）必须已消失
+      expect(c.contains('Cf.danger,\n                            shape'), isFalse,
+          reason: '★★ 小红点写法应已删除');
+      expect(
+          c.contains('color: on ? Cf.ink : Cf.danger'), isFalse,
+          reason: '★★ 小红点的颜色表达式应已删除');
+    });
+
+    test('★★ 三个统计卡是**按状态过滤**同一份数据（不是三套列表）', () {
+      final c = code('lib/pages/tracking_page.dart');
+      expect(c.contains('enum _Only'), isTrue);
+      expect(c.contains('widget.only == _Only.live'), isTrue,
+          reason: '★★ 过滤而不是各写一套（避免漂移）');
+    });
+
+    test('★★★ 标题 26px 用**令牌**（不是裸值）', () {
+      final t = code('lib/core/theme.dart');
+      expect(t.contains('static final headline = TextStyle('), isTrue,
+          reason: '★★★ 稿子 `.track-title { font-size:26px }` ⇒ 加令牌');
+      final c = code('lib/pages/tracking_page.dart');
+      expect(c.contains('Cf.headline'), isTrue, reason: '★★ 页面用令牌');
+    });
+  });
+
   group('★★★ 三处详情页的订阅都走"先搜库"（用户明确要求）', () {
     test('★★★ 日历/TMDB 详情页也走 subscribeExternal（不再直接写）', () {
       // ## 为什么这条重要
@@ -594,10 +770,13 @@ void main() {
   group('★★ 三项小改进（稿子 180b4d）', () {
     test('★★ 追剧统计条「共 N 部 · 连载 N · 已完结 N」', () {
       final c = code('lib/pages/tracking_page.dart');
-      expect(c.contains(r'共 $' + '{list.length} 部'), isTrue,
-          reason: '★★ 稿子的统计条');
-      expect(c.contains('连载 \$live'), isTrue);
-      expect(c.contains('已完结 \$ended'), isTrue);
+      // ⚠️ 统计条从"一条纯灰文字"改成了 **RichText**（稿子 `.track-sub`
+      //    的数字要**粉色高亮**）⇒ 断言写法跟着改，但**语义不放松**：
+      //    仍然要报"总数 / 连载 / 已完结"三个数字。
+      expect(c.contains("TextSpan(text: '\${list.length}', style: num)"),
+          isTrue, reason: '★★ 稿子的统计条（数字粉色高亮）');
+      expect(c.contains("TextSpan(text: '\$live', style: num)"), isTrue);
+      expect(c.contains("TextSpan(text: '\$ended', style: num)"), isTrue);
       // ⚠️ 状态未知时**不编造**（否则会显示"连载 0 · 已完结 0"误导）
       expect(c.contains('if (live + ended == 0)'), isTrue,
           reason: '★★ 状态未知时只报总数');

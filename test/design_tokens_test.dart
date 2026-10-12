@@ -101,6 +101,17 @@ void main() {
       final sizes = <String>{};
       final re = RegExp(r'fontSize:\s*([0-9]+(?:\.[0-9]+)?)');
       for (final f in _dartFiles()) {
+        // ⚠️ **排除 `theme.dart`**（令牌定义处）——
+        //    那里必然出现裸 `fontSize`（否则令牌无从定义），
+        //    把它算进"裸值种类"在语义上是错的。
+        //
+        //    ## 真实假失败（2026-10-12）
+        //    我按稿子 `.track-title { font-size:26px }` 加了
+        //    `Cf.headline`（26px）**令牌**、页面改用 `Cf.headline` ——
+        //    这**正是本条测试希望的做法**，却让计数 11 → 12 ⇒ 测试变红。
+        //    ⇒ 排除令牌定义处；**阈值不放松**（仍 11），
+        //      所以"页面里新增裸值"照样会被抓住。
+        if (f.path.endsWith('theme.dart')) continue;
         final t = _stripLineComments(f.readAsStringSync());
         for (final m in re.allMatches(t)) {
           sizes.add(m.group(1)!);

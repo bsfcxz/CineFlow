@@ -114,6 +114,32 @@ enum BrowseCategory {
   final String emoji;
 }
 
+/// **热播榜的"状态"维度**（用户 2026-10-12 定义）。
+///
+/// > "热播的指的是正在连载中或者即将连载的剧集、综艺、动漫以及刚完结不久的，
+/// >  还有正在上映的电影、已上映的电影。"
+///
+/// ## 为什么剧集与电影用**不同**的榜单集合
+/// TMDB 的 `with_status` 是**剧集专有**（`Returning Series`/`Ended`…）；
+/// 电影没有"在播/完结"的概念 ⇒ 只能靠 `primary_release_date` 窗口。
+/// ⇒ 枚举里保留 4 个值，但**电影只用 showing / upcoming**。
+enum HotBoard {
+  /// 在播（剧集/综艺/动漫）—— `with_status=0`
+  airing('在播'),
+
+  /// 将播 —— `with_status=1|2`（Planned | In Production）
+  upcoming('即将播出'),
+
+  /// 刚完结 —— `with_status=3` + 近 N 天
+  recentEnded('刚完结'),
+
+  /// 正在上映（电影）—— `primary_release_date` 近 30 天
+  showing('正在上映');
+
+  const HotBoard(this.label);
+  final String label;
+}
+
 /// **地区筛选**（稿子里的 `国产/港台/日韩/欧美` 等）。
 ///
 /// ## ★★ 两个实测得出的要点
@@ -1254,6 +1280,299 @@ class CalendarClient {
   ///   ⇒ 我们用 `first_air_date` 的星期兜底（≥ 有胜于无）。
   ///
   /// 好处：TMDB 的**中文译名与海报质量**最好，可补 Bangumi 缺的欧美剧。
+  /// **TMDB 热播榜（按"状态"维度）** —— 「热播」Tab 的 TMDB 栏。
+  ///
+  /// ## 用户定义（2026-10-12）
+  /// > "热播的指的是正在连载中或者即将连载的剧集、综艺、动漫以及刚完结不久的，
+  /// >  还有正在上映的电影、已上映的电影。"
+  ///
+  /// ⇒ **按状态筛，不是按热度排**。
+  ///
+  /// ## ★ 实测：`with_status` 确实生效
+  /// 判据用 `total_results`（**不是** `len(results)` —— 后者恒为页大小 20，
+  /// 看不出差别，我第一版就差点因此误判"参数无效"）：
+  /// ```
+  /// 基线      20001    with_status=0 在播 18652
+  /// =1 将播     163    =2 制作中   765
+  /// =3 已完结 13624    =4 被砍      28
+  /// ```
+  ///
+  /// ## 榜单定义（[group] → [board]）
+  /// | 分组 | 榜单 | 参数 |
+  /// |---|---|---|
+  /// | 剧集/综艺/动漫 | `airing` 在播 | `with_status=0` |
+  /// | 同上 | `upcoming` 将播 | `with_status=1,2` |
+  /// | 同上 | `recentEnded` 刚完结 | `with_status=3` + 近 [endedDays] 天 |
+  /// | 电影 | `showing` 正在上映 | `primary_release_date` 近 30 天 |
+  /// | 电影 | `upcoming` 即将上映 | 未来 30 天 |
+  ///
+  /// ## 缓存
+  /// 键 `hotb:<kind>:<genre>:<board>:<page>`，TTL = `cacheTtl`（6h）。
+  Future<List<CalendarEntry>> fetchHotByStatus({
+    required String apiKey,
+    required BrowseCategory category,
+    required HotBoard board,
+    int pages = 2,
+    int endedDays = 90,
+    int limit = 40,
+  }) async {
+    final kind = category.kind;
+    final gid = category.genreId ?? '';
+    final collected = <CalendarEntry>[];
+    final today = DateTime.now();
+
+    for (var page = 1; page <= pages; page++) {
+      final params = <String, dynamic>{
+        'api_key': apiKey,
+        'language': 'zh-CN',
+        'sort_by': 'popularity.desc',
+        'page': '$page',
+        // 国产为主（用户在中国）
+        'with_original_language': 'zh',
+      };
+      if (gid.isNotEmpty) params['with_genres'] = gid;
+
+      // ── 按分组/榜单拼参数 ──
+      if (kind == 'movie') {
+        // 电影：用**日期窗口**（TMDB 电影没有 with_status 的有用取值）
+        final iso = (DateTime d) => d.toIso8601String().substring(0, 10);
+        switch (board) {
+          case HotBoard.showing:
+            params['primary_release_date.gte'] =
+                iso(today.subtract(const Duration(days: 30)));
+            params['primary_release_date.lte'] = iso(today);
+          case HotBoard.upcoming:
+            params['primary_release_date.gte'] = iso(today);
+            params['primary_release_date.lte'] =
+                iso(today.add(const Duration(days: 30)));
+          default:
+            // 电影没有"在播/刚完结" ⇒ 退回"近 180 天已上映"
+            params['primary_release_date.gte'] =
+                iso(today.subtract(const Duration(days: 180)));
+            params['primary_release_date.lte'] = iso(today);
+        }
+      } else {
+        // 剧集/综艺/动漫：用 with_status
+        switch (board) {
+          case HotBoard.airing:
+            params['with_status'] = '0'; // Returning Series
+          case HotBoard.upcoming:
+            params['with_status'] = '1|2'; // Planned | In Production
+          case HotBoard.recentEnded:
+            params['with_status'] = '3'; // Ended
+            params['air_date.gte'] =
+                today.subtract(Duration(days: endedDays)).toIso8601String()
+                    .substring(0, 10);
+          default:
+            params['with_status'] = '0';
+        }
+      }
+
+      final list = await _discoverPage(
+          apiKey: apiKey, kind: kind, params: params,
+          cacheKey: 'hotb:$kind:$gid:${board.name}:$page');
+      for (final it in list) {
+        final name =
+            (it['name'] as String?) ?? (it['title'] as String?) ?? '';
+        if (name.isEmpty) continue;
+        collected.add(CalendarEntry(
+          title: name,
+          titleCn: name,
+          airDate: (it['first_air_date'] as String?) ??
+              (it['release_date'] as String?),
+          // 热播榜没有"周几更新"语义 ⇒ 不冒充"今天更新"
+          weekday: null,
+          posterUrl: it['poster_path'] == null
+              ? null
+              : 'https://image.tmdb.org/t/p/w300${it['poster_path']}',
+          rating: (it['vote_average'] as num?)?.toDouble(),
+          summary: it['overview'] as String?,
+          popularity: (it['popularity'] as num?)?.toDouble(),
+          category: _categoryOfBrowse(category),
+          source: 'tmdb',
+          sourceId: '${it['id']}',
+        ));
+      }
+    }
+    // 跨页可能重复（TMDB 分页有少量重叠）⇒ 按 sourceId 去重
+    final seen = <String>{};
+    final out = <CalendarEntry>[];
+    for (final e in collected) {
+      final k = e.sourceId ?? e.title;
+      if (seen.add(k)) out.add(e);
+    }
+    return out.length > limit ? out.sublist(0, limit) : out;
+  }
+
+  /// `discover` 的单页（带缓存；失败返回空，不抛）。
+  Future<List<Map<String, dynamic>>> _discoverPage({
+    required String apiKey,
+    required String kind,
+    required Map<String, dynamic> params,
+    required String cacheKey,
+  }) async {
+    try {
+      final cached = await cache?.get(cacheKey);
+      String body;
+      if (cached != null && cached.isNotEmpty) {
+        body = cached;
+      } else {
+        final r = await _dio.get<String>(
+          'https://api.themoviedb.org/3/discover/$kind',
+          queryParameters: params,
+          options: Options(
+              responseType: ResponseType.plain,
+              headers: {'User-Agent': _ua},
+              receiveTimeout: const Duration(seconds: 12)),
+        );
+        if (r.statusCode != 200 || r.data == null) return const [];
+        body = r.data!;
+        await cache?.put(cacheKey, body, ttl: cacheTtl);
+      }
+      final j = jsonDecode(body);
+      if (j is! Map) return const [];
+      return [
+        for (final x in (j['results'] as List? ?? const []))
+          if (x is Map<String, dynamic>) x
+      ];
+    } catch (e) {
+      debugPrint('[Calendar] 热播榜页失败（跳过）: ${_friendly(e)}');
+      return const [];
+    }
+  }
+
+  /// **TMDB 热播 ∩ 库内**（首页 hero 的数据源）。
+  ///
+  /// ## 为什么是"交集"（用户原话："热播剧集按我库里有的放上去"）
+  /// 纯 TMDB 热播里**绝大多数你库里没有** ⇒ 点进去"找不到"。
+  /// 取交集后每一张都能直接播。
+  ///
+  /// ## 实测命中（2026-10-12，两台服务器）
+  /// | 服务器 | 热播剧 | 综艺 | 动漫 | 电影 | 合计 |
+  /// |---|---|---|---|---|---|
+  /// | iLoveHD | 40 | 6 | 24 | 13 | **83** |
+  /// | HK-Emby | 42 | 34 | 43 | 16 | **135** |
+  /// 命中样本：《仙逆》《凡人修仙传》《明星大侦探》《奔跑吧》
+  ///
+  /// ## ⚠️ 为什么"库内 id"从参数传入（而不是这里自己查库）
+  /// 本类是**纯 TMDB 客户端**（不依赖 Emby）。自己去查库会让两个数据层耦合，
+  /// 也违反 `MediaProvider` 抽象约定。⇒ 由调用方查好传进来。
+  ///
+  /// ## 缓存
+  /// 每个"类别 × 页"一条 `hot:<kind>:<genreId>:<page>`，TTL = `cacheTtl`（6h）
+  /// ⇒ 6 小时内第二次进首页 **0 请求**（首次 12 个请求 ≈ 12s）。
+  ///
+  /// 返回：按 TMDB `popularity` 降序，**只含库内有的**。
+  Future<List<CalendarEntry>> fetchHotInLibrary({
+    required String apiKey,
+    required Set<String> libTvIds,
+    required Set<String> libMovieIds,
+    int pages = 3,
+    int limit = 30,
+  }) async {
+    // 四个类别（与"分类浏览"共用同一套 genre 映射）
+    const cats = <(BrowseCategory, String, String)>[
+      (BrowseCategory.series, 'tv', '18'),
+      (BrowseCategory.variety, 'tv', '10764|10767'),
+      (BrowseCategory.anime, 'tv', '16'),
+      // 电影走 discover/movie（无 genre 过滤 ⇒ 全部热播电影）
+      (BrowseCategory.movie, 'movie', ''),
+    ];
+
+    final collected = <CalendarEntry>[];
+    for (final (cat, kind, gid) in cats) {
+      final lib = kind == 'tv' ? libTvIds : libMovieIds;
+      if (lib.isEmpty) continue;
+      // 逐页并发取
+      final pagesData = await Future.wait(
+        List.generate(pages, (i) => _hotPage(
+              apiKey: apiKey, kind: kind, genreId: gid, page: i + 1)),
+      );
+      for (final list in pagesData) {
+        for (final it in list) {
+          final id = '${it['id']}';
+          // ★ 交集：库里没有的**直接跳过**（否则点进去"找不到"）
+          if (!lib.contains(id)) continue;
+          collected.add(CalendarEntry(
+            title: (it['name'] as String?) ??
+                (it['title'] as String?) ??
+                '',
+            titleCn: (it['name'] as String?) ?? (it['title'] as String?),
+            // 热播没有"更新日"语义 ⇒ 不冒充"今天更新"
+            airDate: (it['first_air_date'] as String?) ??
+                (it['release_date'] as String?),
+            weekday: null,
+            posterUrl: it['poster_path'] == null
+                ? null
+                : 'https://image.tmdb.org/t/p/w500${it['poster_path']}',
+            // 首页 hero 用 backdrop（大图）
+            rating: (it['vote_average'] as num?)?.toDouble(),
+            summary: it['overview'] as String?,
+            popularity: (it['popularity'] as num?)?.toDouble(),
+            // BrowseCategory → CalendarCategory（复用已有映射）
+            category: _categoryOfBrowse(cat),
+            source: 'tmdb',
+            sourceId: id,
+          ));
+        }
+      }
+    }
+    // 按热度降序（跨类别统一排序 —— 用户要"按热度显示"）
+    collected.sort((a, b) =>
+        (b.popularity ?? 0).compareTo(a.popularity ?? 0));
+    return collected.length > limit
+        ? collected.sublist(0, limit)
+        : collected;
+  }
+
+  /// 取 TMDB 热播的一页（带缓存）。
+  Future<List<Map<String, dynamic>>> _hotPage({
+    required String apiKey,
+    required String kind,
+    required String genreId,
+    required int page,
+  }) async {
+    final cacheKey = 'hot:$kind:$genreId:$page';
+    try {
+      final cached = await cache?.get(cacheKey);
+      String body;
+      if (cached != null && cached.isNotEmpty) {
+        body = cached;
+      } else {
+        final params = <String, dynamic>{
+          'api_key': apiKey,
+          'language': 'zh-CN',
+          'sort_by': 'popularity.desc',
+          'page': '$page',
+          // ★ 国产为主（用户在中国；实测加它命中率显著提高）
+          'with_original_language': 'zh',
+        };
+        if (genreId.isNotEmpty) params['with_genres'] = genreId;
+        final r = await _dio.get<String>(
+          'https://api.themoviedb.org/3/discover/$kind',
+          queryParameters: params,
+          options: Options(
+              responseType: ResponseType.plain,
+              headers: {'User-Agent': _ua},
+              // 与分类浏览同一个理由：dio 默认不超时
+              receiveTimeout: const Duration(seconds: 12)),
+        );
+        if (r.statusCode != 200 || r.data == null) return const [];
+        body = r.data!;
+        await cache?.put(cacheKey, body, ttl: cacheTtl);
+      }
+      final j = jsonDecode(body);
+      if (j is! Map) return const [];
+      return [
+        for (final x in (j['results'] as List? ?? const []))
+          if (x is Map<String, dynamic>) x
+      ];
+    } catch (e) {
+      debugPrint('[Calendar] 热播页失败（跳过）: ${_friendly(e)}');
+      return const [];
+    }
+  }
+
   /// **批量取平台名**（`tmdbId → 中文平台名`），用于首页 hero 的兜底。
   ///
   /// ## 使用场景（用户 2026-10-12）
@@ -1845,8 +2164,14 @@ class CalendarClient {
         final r1 = await _dio.get<String>(
           'https://api.themoviedb.org/3/tv/$tmdbId',
           queryParameters: {'api_key': apiKey, 'language': 'zh-CN'},
-          options: Options(responseType: ResponseType.plain,
-              headers: {'User-Agent': _ua}),
+          options: Options(
+              responseType: ResponseType.plain,
+              headers: {'User-Agent': _ua},
+              // ★ 必须显式设超时（**真实事故**）：21 部订阅并发时，
+              //   不设超时的请求会全部挂住 ⇒ 真机日志一片
+              //   `周历分集拉取失败 (id): 超时` ⇒ 周历全 0。
+              sendTimeout: const Duration(seconds: 8),
+              receiveTimeout: const Duration(seconds: 10)),
         );
         if (r1.statusCode != 200 || r1.data == null) {
           return const ShowWeek();
@@ -1866,8 +2191,12 @@ class CalendarClient {
             'language': 'zh-CN',
             'append_to_response': 'season/$sn',
           },
-          options: Options(responseType: ResponseType.plain,
-              headers: {'User-Agent': _ua}),
+          options: Options(
+              responseType: ResponseType.plain,
+              headers: {'User-Agent': _ua},
+              // ★ 与 r1 同理：不设超时会让并发请求全部挂住
+              sendTimeout: const Duration(seconds: 8),
+              receiveTimeout: const Duration(seconds: 10)),
         );
         if (r2.statusCode != 200 || r2.data == null) {
           return ShowWeek(status: st);

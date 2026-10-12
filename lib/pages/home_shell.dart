@@ -233,7 +233,9 @@ const _tabItems = <_TabItem>[
   // ★ 「追剧」在首页**右侧**（用户要求，对齐参考稿的 4 Tab）
   //   图标用 event_note（日历+条目）—— 参考稿底栏就是这个形状
   _TabItem(Icons.event_note_outlined, Icons.event_note_rounded, '追剧'),
-  _TabItem(Icons.leaderboard_outlined, Icons.leaderboard_rounded, '排行榜'),
+  // ★ 「排行榜」→「热播」（用户 2026-10-12：豆瓣榜保持现状 + 新增 TMDB 榜）
+      //   图标换 whatshot（火焰）—— 表达"现在什么火"，比排行榜柱状图更贴
+      _TabItem(Icons.whatshot_outlined, Icons.whatshot_rounded, '热播'),
   _TabItem(Icons.person_outline_rounded, Icons.person_rounded, '我的'),
 ];
 

@@ -19,7 +19,6 @@ import '../pan115/pan115_browser_page.dart';
 import '../pan115/pan115_store.dart';
 import '../state/providers.dart';
 import 'account_manager_page.dart';
-import 'calendar_page.dart';
 
 /// 观看统计（TotalRecordCount 查询，Counts 端点部分服务器不可用）
 class _Stats {
@@ -176,32 +175,16 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
               //
               // ⚠️ `getPlaylists` / `getPlaylistItems` 仍在 provider 上
               //    （将来若要放回，位置在「服务端」类目下）。
-              _SettingItem(
-                icon: Icons.event_available_rounded,
-                color: const Color(0xFF0984E3),
-                title: '追剧日历',
-                // ★★ 2026-10-11 改为**真正的周视图日历**（多源聚合）
-                //
-                // ## 改之前是什么（用户要求重构）
-                // 只是把 Emby 的 `/Shows/Upcoming` 套进通用列表页
-                //（`ServerListPage` + `loader: api.getUpcoming`）——
-                // 数据只来自**当前那一台 Emby**，且没有周一到周日的视图。
-                //
-                // ## 改之后（按用户"聚焦国内"的要求调整过）
-                // `CalendarPage`：周一~周日横向选择条 + 每天更新列表。
-                // 数据源：
-                // · **TMDB**（主力）—— `discover/tv` 按 `air_date` 逐天查
-                //   国产剧；实测每天 20 条 `lang=zh`
-                // · **B站**（补充）—— 仅番剧/国创（**动漫**）；
-                //   实测 B站**没有国产真人剧**
-                // · ~~TVmaze~~ 已按用户要求删除
-                // · 腾讯/爱奇艺/优酷**不做**（实测接口返回空壳/风控）
-                sub: '周一~周日 · 国产剧集 / 动漫更新（TMDB + B站）',
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const CalendarPage()),
-                ),
-              ),
+              // ★ 「追剧日历」入口**已移除**（用户 2026-10-12）
+              //
+              // ## 为什么移除
+              // 它的 TMDB 全量周历**已并入「热播」Tab 的 TMDB 栏**
+              //（作为一个"更新日历"榜单）—— 同一内容两处入口会让用户困惑。
+              //
+              // ⚠️ 页面本身（`CalendarPage`）**保留**：
+              //    · 用户订阅的"周几更新"走 `fetchWeekEpisodes(tmdbId)`
+              //      （按 tmdbId 查该剧自己的播出日）⇒ **不依赖**这个全量周历
+              //    · 热播 Tab 会以"更新日历"榜的形式复用它
               _SettingItem(
                 icon: Icons.tune_rounded,
                 color: const Color(0xFF6C5CE7),

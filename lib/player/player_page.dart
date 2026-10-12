@@ -652,8 +652,13 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   /// 注意 `_danmakuError` 与"没有弹幕"是两回事：前者要提示，
   /// 后者（`items` 为空但无 error）静默即可——大多数冷门片确实没弹幕。
   Future<void> _loadDanmaku() async {
-    final cfg = ref.read(danmakuConfigProvider).value;
-    if (cfg == null || !cfg.isUsable) {
+    // ★ 必须 await `.future`：读 `.value` 时若 provider 未就绪，
+    //   `cfg == null` ⇒ 下面 `return` ⇒ **静默不加载弹幕**
+    //   （用户会以为"这部片没弹幕"，而不是"配置还没读完"）。
+    final cfg = await ref.read(danmakuConfigProvider.future);
+    // ⚠️ .future **不会**返回 null（类型是非空 DanmakuConfig）
+    //    ⇒ 原来的 cfg == null 是恒假条件（编译器会警告）。
+    if (!cfg.isUsable) {
       // 没配置源：不是错误，静默（设置页会引导用户去配）
       if (mounted) setState(() => _danmakuLoading = false);
       return;

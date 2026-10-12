@@ -83,6 +83,17 @@ class _FakeProvider implements MediaProvider {
   /// 生产实现：`EmbyProvider.reportSearched`
   ///（`POST /Users/{uid}/SearchedItems/`）。
   @override
+  Future<Map<String, List<LibraryEpisode>>> getLibraryWeek(
+          {DateTime? weekStart}) async =>
+      const {};
+
+  @override
+  Future<Map<String, String>> mapSeriesTmdbToId() async => const {};
+
+  @override
+  Future<List<LibraryEpisode>> getSeriesEpisodes(String seriesId) async =>
+      const [];
+  @override
   void reportSearched(String query) {}
 
   /// 清空服务端历史 —— 测试替身：no-op。

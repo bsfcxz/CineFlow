@@ -522,7 +522,15 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   /// 若要保持首页不变，需要把 `(serverId, itemId)` 复合标识穿透
   /// 详情页/播放路由/上报三层 —— 风险远大于收益（且语义更绕）。
   Future<void> _openHit(AggregatedHit hit) async {
-    final cur = ref.read(sessionProvider).value;
+    // ★ 必须 `await ...future`（`sessionProvider` 是 **AsyncNotifierProvider**）
+    //
+    // ## 读 `.value` 的后果（比"低风险"更微妙）
+    // 未就绪时 `.value` 是 null ⇒ `same = false` ⇒ **无条件走 switchTo**。
+    // 平时那只是"多切一次服务器"（看似无害），但：
+    // · `switchTo` 会 `invalidate(embyApiProvider)` ⇒ 多一次全量重连
+    // · 若用户**正在这台**上操作，等于白切一次（首屏请求重发）
+    // ⇒ 用 `.future` 拿到真实会话，语义才正确（"同一台就不切"）。
+    final cur = await ref.read(sessionProvider.future);
     final same = cur != null &&
         cur.serverUrl == hit.session.serverUrl &&
         cur.user.id == hit.session.user.id;

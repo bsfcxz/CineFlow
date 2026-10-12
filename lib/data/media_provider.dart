@@ -32,6 +32,64 @@ abstract interface class MediaProvider {
   /// TotalRecordCount 2035→823，返回条目确实都含「动作」；`Years=2024` → 67；
   /// 二者组合 → 19，符合交集语义）。
   /// **必须走服务端**：客户端复筛只作用于已加载页，分页下结果会不完整。
+  /// **某剧在库内的分集首播日**（追剧周历的**正解**）。
+  ///
+  /// ## 为什么不能用"全库本周更新"（我上一版的错误）
+  /// `MinPremiereDate/MaxPremiereDate` 筛的是"**本周首播入库的集**"。
+  /// 实测：你的库本周只有 **6 部**新剧入库，而订阅的 21 部是**连载中**
+  ///（分集早就入库了）⇒ 两者交集 0。
+  /// ⇒ 必须**按订阅的剧**去查它自己的分集。
+  ///
+  /// ## 返回
+  /// `(季, 集, 本地时区周几)` 列表（该剧全部有 `PremiereDate` 的集）。
+  /// 失败返回空列表（**不抛**：周历允许部分剧缺失）。
+  Future<List<LibraryEpisode>> getSeriesEpisodes(String seriesId);
+
+  /// **`tmdbId → Emby SeriesId`** 映射（1 个请求）。
+  ///
+  /// ## 为什么需要
+  /// `getLibraryWeek` 返回的 key 是 Emby 的 **`SeriesId`**（内部 id），
+  /// 而订阅表存的是 **tmdbId** ⇒ 必须有一次映射。
+  ///
+  /// ⚠️ **不能**用 `getItems()` 来映射 —— 它的 `Fields` **不含 `ProviderIds`**
+  ///    ⇒ `providerIds['tmdb']` 恒空 ⇒ 映射结果为空（真机实测 `库内命中 0/21`）。
+  ///    必须显式请求 `Fields=ProviderIds`（与 `collectProviderIds` 同款参数）。
+  Future<Map<String, String>> mapSeriesTmdbToId();
+
+  /// **全库本周分集**（1 个请求）—— 追剧周历的主数据源。
+  ///
+  /// ## 为什么需要它（用户思路 + 实测驱动）
+  /// > "如果有库中的数据用库中的数据…这样的话点开追剧，直接就能显示。"
+  ///
+  /// 旧实现按剧逐个查 TMDB：**21 部订阅 = 42 个请求** ⇒ 全部超时 ⇒ 周历全 0。
+  /// 本方法**一次请求**返回"全库本周有哪几集要播"，与订阅数**无关**。
+  ///
+  /// ## 实测（两台服务器，本周）
+  /// iLoveHD → 9 条 · HK-Emby → 11 条，每条含
+  /// `SeriesName` + `ParentIndexNumber`(季) + `IndexNumber`(集) + `PremiereDate`。
+  ///
+  /// ## 返回
+  /// `(seriesId → 该剧本周的分集列表)`，每项 `(season, episode, weekday)`。
+  /// `weekday` 已按**本地时区**折算（见实现里的时区说明）。
+  Future<Map<String, List<LibraryEpisode>>> getLibraryWeek({DateTime? weekStart});
+
+  /// **取库内条目的外部 id 集合**（`tmdbId` 集合，按类型分）。
+  ///
+  /// ## 为什么需要它（首页热播交集）
+  /// 用户要求"热播剧集按我库里有的放上去" ⇒ 必须知道"库里有哪些 tmdb id"。
+  ///
+  /// ## 为什么不复用 `getItems`
+  /// `getItems` 的 `Fields` 是写死的（**不含** `ProviderIds`）
+  /// ⇒ 拿不到 tmdb id。而首页要的是 5000 条的精简列表
+  ///（只 id，不带海报/简介）⇒ 单开一个方法**更快也更省**。
+  ///
+  /// ⚠️ 实现方需自己处理"服务器不返回 ProviderIds"的情况（返回空集合，不抛）。
+  Future<Set<String>> collectProviderIds({
+    required String providerKey,
+    String includeTypes = 'Series,Movie',
+    int limit = 5000,
+  });
+
   Future<ItemPage> getItems({
     String? parentId,
     String includeTypes = 'Movie,Series',
@@ -324,6 +382,31 @@ abstract final class ProgressEvent {
   static const qualityChange = 'QualityChange';
   static const subtitleOffsetChange = 'SubtitleOffsetChange';
   static const playbackRateChange = 'PlaybackRateChange';
+}
+
+/// 库内一集（追剧周历用）。
+///
+/// 只要 UI 需要的三样：季、集、**本地时区的周几**。
+class LibraryEpisode {
+  const LibraryEpisode({
+    required this.seriesId,
+    required this.seriesName,
+    required this.season,
+    required this.episode,
+    required this.weekday,
+  });
+
+  final String seriesId;
+  final String seriesName;
+  final int? season;
+  final int? episode;
+
+  /// **本地时区**的周几（1=周一 … 7=周日）。
+  ///
+  /// ⚠️ 必须由服务端 UTC 时间**转本地**后计算 —— 否则
+  /// `2024-12-22T16:00:00Z`（北京 12-23 周一）会被算成周日。
+  /// 时区折算在实现里做，UI 直接用。
+  final int weekday;
 }
 
 /// 一次可执行的播放会话

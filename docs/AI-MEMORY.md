@@ -2853,3 +2853,208 @@ check-dev.ps1     21 项全过（exit 0）
 2. 首页 hero 横滑（TMDB 热播 ∩ 库内）—— 方案已确认，未实现
 3. 「已看分集」只显示剧名没集号
 4. Bangumi 不可达（WAF）；libmpv.so 缺解码器
+
+---
+
+# 2026-10-12 · 底栏「排行榜」→「热播」+ TMDB 榜 + 追剧页按稿重做 + **库内优先**（大轮）
+
+## 一、用户需求（本轮，按时间）
+
+1. "底栏排行榜改为热播-将我的中的追剧日历从 tmdb 获取的数据移动到热播中。你觉得怎么样"
+2. "热播的指的是正在连载中或者即将连载的剧集、综艺、动漫以及刚完结不久的，
+   还有正在上映的电影、已上映的电影。然后可以从豆瓣和 tmdb 2 个维度来获取"
+3. "豆瓣的还是保持现状分类…新增一个 tmdb 的"
+4. "这儿没按照我给的 ui 改"（附追剧页截图 + 稿子 180b4d）
+5. "增加加载中的这个"（骨架屏）
+6. **"追剧这个底栏中的内容怎么没有了"**（报障 → 挖出 7 个 bug）
+7. "这里如果有库中的数据用库中的数据，tmdb 可以通过静态+定时动态抓取了。
+   这样的话点开追剧，直接就能显示。"
+8. "连载的剧集还少了这个提醒"（附详情页「下次更新」截图）
+
+## 二、★ 实测数据（本轮新增，都带判据）
+
+### TMDB `with_status` **确实生效**（这是"状态维度"的基础）
+
+★ **判据必须是 `total_results`，不是 `len(results)`**
+—— 后者恒为页大小 20，看不出差别（我第一版差点因此误判"参数无效"）：
+```
+基线（不带状态）        total_results = 20001
+with_status=0 在播      total_results = 18652   ✅ 不同 ⇒ 生效
+with_status=1 计划将播   total_results = 163
+with_status=2 制作中     total_results = 765
+with_status=3 已完结     total_results = 13624
+with_status=4 被砍       total_results = 28
+```
+电影侧用日期窗口："近 30 天上映" 20 条 / "未来 30 天将映" 20 条。
+
+### 豆瓣榜单：**17 可用 / 14 不可用**（逐个实测）
+
+```
+✅ movie_showing(影院热映 30) / movie_latest(497) / movie_hot / movie_high_score
+   / movie_weekly_best / movie_classic / movie_top250
+   tv_hot(204) / tv_chinese_best_weekly / tv_global_best_weekly
+   tv_domestic / tv_american / tv_japanese / tv_korean
+   tv_variety_show(综艺 60) / tv_documentary / tv_animation(37)
+❌ **anime_japan / anime_japan_top / anime_domestic / anime_domestic_hot
+   / anime_domestic_latest / anime_japan_latest / anime_top 全部 404**
+   （猜的 id：tv_latest / movie_coming / variety_show 等也 404）
+```
+⇒ **豆瓣没有"动漫"维度**（`tv_animation` 是"动画剧集"不是番剧）。
+
+### Emby「本周更新」端点的**两个不同语义**（关键区分）
+
+```
+① /Items?MinPremiereDate&MaxPremiereDate（筛"本周**新入库**的集"）
+   iLoveHD 9 条 / HK-Emby 11 条 —— 一次请求、与订阅数无关
+   ⚠️ 但它筛的是"**这周新入库的剧**"，不是"我订阅的剧这周更新"
+② /Shows/{SeriesId}/Episodes?Fields=PremiereDate（**该剧全部集的首播日**）
+   ← **这才是"这部剧周几更新"的正解**
+```
+
+### ★★ 「全库本周更新」与「订阅」**交集为 0**（诊断实证）
+
+```
+查全库本周更新 → 6 部剧：326378, 336950, 296018, 292173, 294446, 326382
+订阅的 21 部   → 273263, 236534, 110181, 1423191, 281233, …
+                 ↑ 零交集
+```
+原因：订阅的《斗破苍穹》《凡人修仙传》**连载中**，分集早就入库了
+⇒ 只有"这周新入库的剧"被查出 ⇒ 交集 0。
+**⇒ 必须按订阅的剧去查它自己的分集。**
+
+### 订阅的剧**就在库里**（聚合两台的实测）
+
+```
+iLoveHD  6/8 在库（都市古仙医/牧神记/完美世界/斗破苍穹/凡人修仙传…）
+HK-Emby  7/8 在库（多一部《武神主宰》← **只在 HK**）
+⇒ 单查一台会漏 ⇒ **多服务器聚合必需**
+```
+
+### ★ 时区坑（Emby `PremiereDate` 是 UTC）
+
+```
+iLoveHD  2026-09-28T00:00:00.0000000Z
+HK-Emby  2024-12-22T16:00:00.0000000Z   ← 16:00Z = 北京次日 00:00
+```
+⇒ 必须 `DateTime.parse(...).toLocal()` 再取 `weekday`。
+不转的话：北京周一会被算成周日（**错得很隐蔽**）。
+
+## 三、★ 七个真 bug（按因果链，全部真机复现 + 修复验证）
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 周历**全 0** | `ref.read(subscriptionsProvider).value` 在 FutureProvider 未就绪时是 null ⇒ `?? const []` ⇒ 直接 return | `await ref.read(p.future)` |
+| 2 | 仍全 0 | 21 部 × 2 = **42 个并发 TMDB 请求全超时**（`_dio.get` 没设超时） | `receiveTimeout 10s` + 限并发 4 + 熔断 5 |
+| 3 | 库内**命中 0/21** | Emby 原始 JSON 的键是 **`Tmdb`（大写 T）**，我读小写 `tmdb` | 统一 `toLowerCase()` |
+| 4 | 命中仍 0 | 查"全库本周更新"筛的是**本周新入库的剧**，与订阅无交集 | 改**按订阅的剧**查分集 |
+| 5 | 只查一台 | `embyApiProvider` 是单服务器，漏掉另一台 | `accountApisProvider` **聚合 2 台** → **14/21** |
+| 6 | 集号串成 `E7/8/9/10/…` | 把该季所有集 join 了 | 取最大集号「更新至 EN」 |
+| 7 | 缺「下次更新」提醒 | — | 加「今天 周一 / 明天 周二」 |
+
+### ★★ 同一模式的**一类** bug（已加全仓守卫）
+
+`ref.read(<异步 provider>).value` —— **`ref.watch` 会等、`ref.read` 不等**：
+
+| 位置 | 后果 |
+|---|---|
+| `tracking_page:326` | 用户报障的直接原因（周历全 0）|
+| `danmaku_settings_page:61` | **用户已保存的配置被显示成默认值**（保存后会真覆盖回去！）|
+| `danmaku_settings_page:88` | `_save()` 里 `cur.kind` 判错 ⇒ 走错分支 |
+| `player_page:655` | `cfg == null` ⇒ **静默不加载弹幕**（用户以为"这片没弹幕"）|
+| `search_page:525` | `same=false` ⇒ 每次点搜索结果都白切一次服务器 |
+
+**守卫**：`test/browse_category_test.dart` 扫描 `lib/` 全部 dart，
+禁止 `ref.read(<异步 provider>)` 与 `.value` 同行出现（剥注释后判定）。
+
+## 四、实现（新增/改动）
+
+### 数据层
+- `calendar_client.dart`：`fetchHotByStatus({category, board, ...})` + `HotBoard` 枚举
+  （airing/upcoming/recentEnded/showing）；`fetchWeekEpisodes` 两处请求加超时；
+  `_discoverPage` 通用单页（带缓存，键 `hotb:<kind>:<genreId>:<board>:<page>`）
+- `media_provider.dart`（抽象）：`getLibraryWeek`、`mapSeriesTmdbToId`、`getSeriesEpisodes`
+  + `LibraryEpisode` 数据类（含 `weekday`，**已折算本地时区**）
+- `emby_provider.dart`：三个方法实现 + `collectProviderIds` 键名转小写
+- `state/providers.dart`：`hotBoardProvider`（family 键 `(BrowseCategory, HotBoard)`）
+
+### 页面
+- `pages/rank_page.dart`：「排行榜」→「热播」，顶层加 `_Source` **来源两栏**
+  （豆瓣 / TMDB）。**豆瓣栏一行未改**（`DoubanGroup` + `DoubanCatalog` 原样）。
+  TMDB 栏：类别 chips（`BrowseCategory`）+ 状态 chips（`_boardsFor`：
+  **电影只有 [正在上映][即将上映]**，因为 TMDB 的 `with_status` 是剧集专有）
+- `widgets/hot_skeleton.dart`（新）：骨架屏 + 扫光动画（首屏 12 请求 ≈12s）
+- `pages/tracking_page.dart`：**三统计卡**（`_StatCard`/`_StatKind`/
+  `_Only` 过滤）+ 周历集数数字 + 「下次更新」行
+- `pages/home_shell.dart`：底栏「排行榜」→「热播」（图标 `whatshot`）
+- `pages/profile_page.dart`：删「追剧日历」入口（能力并入热播）
+- `core/theme.dart`：加 `Cf.headline`（26px，稿子 `.track-title`）
+
+### `_loadAll` 三段式（用户方案）
+```
+① 读 drift 缓存（键 `libweek:<monday>`，复用 douban_caches 表 ⇒ **零 schema 迁移**）
+   → 立刻渲染（点开就有内容）
+② 聚合所有服务器：mapSeriesTmdbToId（每台 1 请求）
+   → 对**订阅的剧** getSeriesEpisodes（每部 1 请求，本机、快）
+   → 合并 → 只留本周 → ShowWeek
+③ 库里没有的订阅 → TMDB 兜底（限并发 4 + 熔断 5）
+④ Emby 进度（**也已聚合所有服务器**，取未看数较大者）
+```
+
+## 五、真机验证（Redmi K40 / <device>）
+
+```
+底栏：首页 | 追剧 | 热播🔥 | 我的                    ✅
+
+热播页：热播 TMDB 榜单
+        [豆瓣][TMDB]                                ✅ 来源两栏
+        豆瓣栏 [电影][电视剧][动漫] + 20 个榜单原样    ✅
+        TMDB 栏 [剧集][电影][动漫][综艺][纪录片]
+                [在播][即将播出][刚完结]              ✅
+                仙逆 8.3 / 凡人修仙传 8.4 / 斗破苍穹 8.0  ✅ 3 列海报网格
+
+追剧页：我的追剧 / 共 21 部 · 连载 15 · 已完结 4
+        [● 连载中 15 部][● 已完结 4 部][● 继续观看 7 条]  ✅ 三统计卡
+        周一 4 / 周二 5 / 周三 6 / 周四 4 / 周五 5 / 周六 8 / 周日 12  ✅
+        吞噬星空 | 连载中 | 更新至 E239 | 下次更新：今天 周一   ✅
+        仙逆     | 连载中 | 更新至 E188 | 下次更新：今天 周一   ✅
+```
+
+诊断日志（修复过程）：
+```
+[Library] 本周分集 6 部剧
+[Library] tmdb→SeriesId 映射 1746 条 / 4995 条（两台）
+[追剧·诊断] 交集=6 → 库内命中 0/21      ← 错（查全库）
+[追剧] 库内命中 14/21 部（2 台）         ← 对（按订阅查 + 聚合）
+```
+
+## 六、验证门禁
+
+```
+flutter analyze     0 error / 0 warning
+flutter test        +1410 全绿
+scripts/check-dev   21 项全过
+```
+
+## 七、我犯的错（如实记录）
+
+1. **`git checkout` 回滚过头** —— 想撤销一处小改动，把整个 tracking_page 的
+   头部工作全丢了，只能重做。⇒ 教训：撤销前先看 `git diff` 确认范围。
+2. **替换范围算错** —— 换"小红点"时选了 495..585 行，把 `_WeekBar` 签名一起删了
+   （29 个错误）。⇒ 教训：**按内容定位，不用固定行号**。
+3. **锚点用注释** —— 第 3 次踩：`code()` 会剥注释，`/// xxx` 作锚必然失败。
+4. **`ref.read(...).value`** —— 一次犯了 5 处（见 §三）。
+5. **`ProviderIds` 键名大小写** —— 绕过了 `MediaItem`（它会转小写）直接读原始 JSON。
+6. **`accountApisProvider` 用法错** —— 它是 `FutureProvider<Map>`，我当普通 List 用。
+7. **思路错一次** —— 用"全库本周更新"取交集（应为"按订阅的剧查"），
+   靠**诊断日志**（而不是继续读代码猜）定位到。
+
+## 八、未完成 / 待确认
+
+1. 详情页曾显示 `下次更新：今天 周一 20:00` —— **审核后确认当前代码已是
+   `下次更新：周X`**（无时刻）。TMDB **没有播出时刻**（无 `air_time`），
+   若要时刻只能接 Emby `AirTime`（实测这台填充率 0）。
+2. 分类浏览的**地区标签**仍用 TMDB（Emby `ProductionLocations` 不可筛、
+   `OriginalLanguage` 填充 0%）。
+3. 首页 hero 横滑（TMDB 热播 ∩ 库内）—— `hotHeroProvider` 已写，UI 未接。
+4. Bangumi 不可达（WAF TLS 指纹）；`libmpv.so` 缺 `pgssub`/`truehd` 等解码器。
+5. 22+ 提交未推送（**tag / Release 需用户当轮明确同意**）。
