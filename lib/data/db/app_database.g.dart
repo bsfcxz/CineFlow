@@ -1421,6 +1421,424 @@ class CalendarSubscriptionsCompanion
   }
 }
 
+class $AnimeTimelinesTable extends AnimeTimelines
+    with TableInfo<$AnimeTimelinesTable, AnimeTimeline> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $AnimeTimelinesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _titleMeta = const VerificationMeta('title');
+  @override
+  late final GeneratedColumn<String> title = GeneratedColumn<String>(
+    'title',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _platformMeta = const VerificationMeta(
+    'platform',
+  );
+  @override
+  late final GeneratedColumn<String> platform = GeneratedColumn<String>(
+    'platform',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('bilibili'),
+  );
+  static const VerificationMeta _weekdayMeta = const VerificationMeta(
+    'weekday',
+  );
+  @override
+  late final GeneratedColumn<int> weekday = GeneratedColumn<int>(
+    'weekday',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _airTimeMeta = const VerificationMeta(
+    'airTime',
+  );
+  @override
+  late final GeneratedColumn<String> airTime = GeneratedColumn<String>(
+    'air_time',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
+  static const VerificationMeta _sourceIdMeta = const VerificationMeta(
+    'sourceId',
+  );
+  @override
+  late final GeneratedColumn<String> sourceId = GeneratedColumn<String>(
+    'source_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<int> updatedAt = GeneratedColumn<int>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    title,
+    platform,
+    weekday,
+    airTime,
+    sourceId,
+    updatedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'anime_timelines';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<AnimeTimeline> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('title')) {
+      context.handle(
+        _titleMeta,
+        title.isAcceptableOrUnknown(data['title']!, _titleMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_titleMeta);
+    }
+    if (data.containsKey('platform')) {
+      context.handle(
+        _platformMeta,
+        platform.isAcceptableOrUnknown(data['platform']!, _platformMeta),
+      );
+    }
+    if (data.containsKey('weekday')) {
+      context.handle(
+        _weekdayMeta,
+        weekday.isAcceptableOrUnknown(data['weekday']!, _weekdayMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_weekdayMeta);
+    }
+    if (data.containsKey('air_time')) {
+      context.handle(
+        _airTimeMeta,
+        airTime.isAcceptableOrUnknown(data['air_time']!, _airTimeMeta),
+      );
+    }
+    if (data.containsKey('source_id')) {
+      context.handle(
+        _sourceIdMeta,
+        sourceId.isAcceptableOrUnknown(data['source_id']!, _sourceIdMeta),
+      );
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {title, platform};
+  @override
+  AnimeTimeline map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return AnimeTimeline(
+      title: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}title'],
+      )!,
+      platform: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}platform'],
+      )!,
+      weekday: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}weekday'],
+      )!,
+      airTime: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}air_time'],
+      )!,
+      sourceId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source_id'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}updated_at'],
+      )!,
+    );
+  }
+
+  @override
+  $AnimeTimelinesTable createAlias(String alias) {
+    return $AnimeTimelinesTable(attachedDatabase, alias);
+  }
+}
+
+class AnimeTimeline extends DataClass implements Insertable<AnimeTimeline> {
+  /// 剧名（B站原文；匹配订阅时用）。
+  final String title;
+
+  /// 平台（当前只有 `bilibili`）。
+  final String platform;
+
+  /// 周几（1=周一 … 7=周日）。
+  final int weekday;
+
+  /// 更新时刻（`HH:mm`）。
+  final String airTime;
+
+  /// 源内 id（B站 `season_id`，可用于跳转）。
+  final String sourceId;
+
+  /// 索引时间（毫秒；用于 TTL 判断 —— 时刻极少变，可长缓存）。
+  final int updatedAt;
+  const AnimeTimeline({
+    required this.title,
+    required this.platform,
+    required this.weekday,
+    required this.airTime,
+    required this.sourceId,
+    required this.updatedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['title'] = Variable<String>(title);
+    map['platform'] = Variable<String>(platform);
+    map['weekday'] = Variable<int>(weekday);
+    map['air_time'] = Variable<String>(airTime);
+    map['source_id'] = Variable<String>(sourceId);
+    map['updated_at'] = Variable<int>(updatedAt);
+    return map;
+  }
+
+  AnimeTimelinesCompanion toCompanion(bool nullToAbsent) {
+    return AnimeTimelinesCompanion(
+      title: Value(title),
+      platform: Value(platform),
+      weekday: Value(weekday),
+      airTime: Value(airTime),
+      sourceId: Value(sourceId),
+      updatedAt: Value(updatedAt),
+    );
+  }
+
+  factory AnimeTimeline.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return AnimeTimeline(
+      title: serializer.fromJson<String>(json['title']),
+      platform: serializer.fromJson<String>(json['platform']),
+      weekday: serializer.fromJson<int>(json['weekday']),
+      airTime: serializer.fromJson<String>(json['airTime']),
+      sourceId: serializer.fromJson<String>(json['sourceId']),
+      updatedAt: serializer.fromJson<int>(json['updatedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'title': serializer.toJson<String>(title),
+      'platform': serializer.toJson<String>(platform),
+      'weekday': serializer.toJson<int>(weekday),
+      'airTime': serializer.toJson<String>(airTime),
+      'sourceId': serializer.toJson<String>(sourceId),
+      'updatedAt': serializer.toJson<int>(updatedAt),
+    };
+  }
+
+  AnimeTimeline copyWith({
+    String? title,
+    String? platform,
+    int? weekday,
+    String? airTime,
+    String? sourceId,
+    int? updatedAt,
+  }) => AnimeTimeline(
+    title: title ?? this.title,
+    platform: platform ?? this.platform,
+    weekday: weekday ?? this.weekday,
+    airTime: airTime ?? this.airTime,
+    sourceId: sourceId ?? this.sourceId,
+    updatedAt: updatedAt ?? this.updatedAt,
+  );
+  AnimeTimeline copyWithCompanion(AnimeTimelinesCompanion data) {
+    return AnimeTimeline(
+      title: data.title.present ? data.title.value : this.title,
+      platform: data.platform.present ? data.platform.value : this.platform,
+      weekday: data.weekday.present ? data.weekday.value : this.weekday,
+      airTime: data.airTime.present ? data.airTime.value : this.airTime,
+      sourceId: data.sourceId.present ? data.sourceId.value : this.sourceId,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AnimeTimeline(')
+          ..write('title: $title, ')
+          ..write('platform: $platform, ')
+          ..write('weekday: $weekday, ')
+          ..write('airTime: $airTime, ')
+          ..write('sourceId: $sourceId, ')
+          ..write('updatedAt: $updatedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(title, platform, weekday, airTime, sourceId, updatedAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is AnimeTimeline &&
+          other.title == this.title &&
+          other.platform == this.platform &&
+          other.weekday == this.weekday &&
+          other.airTime == this.airTime &&
+          other.sourceId == this.sourceId &&
+          other.updatedAt == this.updatedAt);
+}
+
+class AnimeTimelinesCompanion extends UpdateCompanion<AnimeTimeline> {
+  final Value<String> title;
+  final Value<String> platform;
+  final Value<int> weekday;
+  final Value<String> airTime;
+  final Value<String> sourceId;
+  final Value<int> updatedAt;
+  final Value<int> rowid;
+  const AnimeTimelinesCompanion({
+    this.title = const Value.absent(),
+    this.platform = const Value.absent(),
+    this.weekday = const Value.absent(),
+    this.airTime = const Value.absent(),
+    this.sourceId = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  AnimeTimelinesCompanion.insert({
+    required String title,
+    this.platform = const Value.absent(),
+    required int weekday,
+    this.airTime = const Value.absent(),
+    this.sourceId = const Value.absent(),
+    required int updatedAt,
+    this.rowid = const Value.absent(),
+  }) : title = Value(title),
+       weekday = Value(weekday),
+       updatedAt = Value(updatedAt);
+  static Insertable<AnimeTimeline> custom({
+    Expression<String>? title,
+    Expression<String>? platform,
+    Expression<int>? weekday,
+    Expression<String>? airTime,
+    Expression<String>? sourceId,
+    Expression<int>? updatedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (title != null) 'title': title,
+      if (platform != null) 'platform': platform,
+      if (weekday != null) 'weekday': weekday,
+      if (airTime != null) 'air_time': airTime,
+      if (sourceId != null) 'source_id': sourceId,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  AnimeTimelinesCompanion copyWith({
+    Value<String>? title,
+    Value<String>? platform,
+    Value<int>? weekday,
+    Value<String>? airTime,
+    Value<String>? sourceId,
+    Value<int>? updatedAt,
+    Value<int>? rowid,
+  }) {
+    return AnimeTimelinesCompanion(
+      title: title ?? this.title,
+      platform: platform ?? this.platform,
+      weekday: weekday ?? this.weekday,
+      airTime: airTime ?? this.airTime,
+      sourceId: sourceId ?? this.sourceId,
+      updatedAt: updatedAt ?? this.updatedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (title.present) {
+      map['title'] = Variable<String>(title.value);
+    }
+    if (platform.present) {
+      map['platform'] = Variable<String>(platform.value);
+    }
+    if (weekday.present) {
+      map['weekday'] = Variable<int>(weekday.value);
+    }
+    if (airTime.present) {
+      map['air_time'] = Variable<String>(airTime.value);
+    }
+    if (sourceId.present) {
+      map['source_id'] = Variable<String>(sourceId.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<int>(updatedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AnimeTimelinesCompanion(')
+          ..write('title: $title, ')
+          ..write('platform: $platform, ')
+          ..write('weekday: $weekday, ')
+          ..write('airTime: $airTime, ')
+          ..write('sourceId: $sourceId, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -1428,6 +1846,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $PlayHistoriesTable playHistories = $PlayHistoriesTable(this);
   late final $CalendarSubscriptionsTable calendarSubscriptions =
       $CalendarSubscriptionsTable(this);
+  late final $AnimeTimelinesTable animeTimelines = $AnimeTimelinesTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -1436,6 +1855,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     doubanCaches,
     playHistories,
     calendarSubscriptions,
+    animeTimelines,
   ];
 }
 
@@ -2180,6 +2600,227 @@ typedef $$CalendarSubscriptionsTableProcessedTableManager =
       CalendarSubscription,
       PrefetchHooks Function()
     >;
+typedef $$AnimeTimelinesTableCreateCompanionBuilder =
+    AnimeTimelinesCompanion Function({
+      required String title,
+      Value<String> platform,
+      required int weekday,
+      Value<String> airTime,
+      Value<String> sourceId,
+      required int updatedAt,
+      Value<int> rowid,
+    });
+typedef $$AnimeTimelinesTableUpdateCompanionBuilder =
+    AnimeTimelinesCompanion Function({
+      Value<String> title,
+      Value<String> platform,
+      Value<int> weekday,
+      Value<String> airTime,
+      Value<String> sourceId,
+      Value<int> updatedAt,
+      Value<int> rowid,
+    });
+
+class $$AnimeTimelinesTableFilterComposer
+    extends Composer<_$AppDatabase, $AnimeTimelinesTable> {
+  $$AnimeTimelinesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get title => $composableBuilder(
+    column: $table.title,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get platform => $composableBuilder(
+    column: $table.platform,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get weekday => $composableBuilder(
+    column: $table.weekday,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get airTime => $composableBuilder(
+    column: $table.airTime,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get sourceId => $composableBuilder(
+    column: $table.sourceId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$AnimeTimelinesTableOrderingComposer
+    extends Composer<_$AppDatabase, $AnimeTimelinesTable> {
+  $$AnimeTimelinesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get title => $composableBuilder(
+    column: $table.title,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get platform => $composableBuilder(
+    column: $table.platform,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get weekday => $composableBuilder(
+    column: $table.weekday,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get airTime => $composableBuilder(
+    column: $table.airTime,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get sourceId => $composableBuilder(
+    column: $table.sourceId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$AnimeTimelinesTableAnnotationComposer
+    extends Composer<_$AppDatabase, $AnimeTimelinesTable> {
+  $$AnimeTimelinesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get title =>
+      $composableBuilder(column: $table.title, builder: (column) => column);
+
+  GeneratedColumn<String> get platform =>
+      $composableBuilder(column: $table.platform, builder: (column) => column);
+
+  GeneratedColumn<int> get weekday =>
+      $composableBuilder(column: $table.weekday, builder: (column) => column);
+
+  GeneratedColumn<String> get airTime =>
+      $composableBuilder(column: $table.airTime, builder: (column) => column);
+
+  GeneratedColumn<String> get sourceId =>
+      $composableBuilder(column: $table.sourceId, builder: (column) => column);
+
+  GeneratedColumn<int> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+}
+
+class $$AnimeTimelinesTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $AnimeTimelinesTable,
+          AnimeTimeline,
+          $$AnimeTimelinesTableFilterComposer,
+          $$AnimeTimelinesTableOrderingComposer,
+          $$AnimeTimelinesTableAnnotationComposer,
+          $$AnimeTimelinesTableCreateCompanionBuilder,
+          $$AnimeTimelinesTableUpdateCompanionBuilder,
+          (
+            AnimeTimeline,
+            BaseReferences<_$AppDatabase, $AnimeTimelinesTable, AnimeTimeline>,
+          ),
+          AnimeTimeline,
+          PrefetchHooks Function()
+        > {
+  $$AnimeTimelinesTableTableManager(
+    _$AppDatabase db,
+    $AnimeTimelinesTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$AnimeTimelinesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$AnimeTimelinesTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$AnimeTimelinesTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> title = const Value.absent(),
+                Value<String> platform = const Value.absent(),
+                Value<int> weekday = const Value.absent(),
+                Value<String> airTime = const Value.absent(),
+                Value<String> sourceId = const Value.absent(),
+                Value<int> updatedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => AnimeTimelinesCompanion(
+                title: title,
+                platform: platform,
+                weekday: weekday,
+                airTime: airTime,
+                sourceId: sourceId,
+                updatedAt: updatedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String title,
+                Value<String> platform = const Value.absent(),
+                required int weekday,
+                Value<String> airTime = const Value.absent(),
+                Value<String> sourceId = const Value.absent(),
+                required int updatedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => AnimeTimelinesCompanion.insert(
+                title: title,
+                platform: platform,
+                weekday: weekday,
+                airTime: airTime,
+                sourceId: sourceId,
+                updatedAt: updatedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$AnimeTimelinesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $AnimeTimelinesTable,
+      AnimeTimeline,
+      $$AnimeTimelinesTableFilterComposer,
+      $$AnimeTimelinesTableOrderingComposer,
+      $$AnimeTimelinesTableAnnotationComposer,
+      $$AnimeTimelinesTableCreateCompanionBuilder,
+      $$AnimeTimelinesTableUpdateCompanionBuilder,
+      (
+        AnimeTimeline,
+        BaseReferences<_$AppDatabase, $AnimeTimelinesTable, AnimeTimeline>,
+      ),
+      AnimeTimeline,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -2190,4 +2831,6 @@ class $AppDatabaseManager {
       $$PlayHistoriesTableTableManager(_db, _db.playHistories);
   $$CalendarSubscriptionsTableTableManager get calendarSubscriptions =>
       $$CalendarSubscriptionsTableTableManager(_db, _db.calendarSubscriptions);
+  $$AnimeTimelinesTableTableManager get animeTimelines =>
+      $$AnimeTimelinesTableTableManager(_db, _db.animeTimelines);
 }

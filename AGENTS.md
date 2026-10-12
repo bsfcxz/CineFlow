@@ -446,86 +446,53 @@ MCP `flutter` 服务器提供等价的封装工具：`devices` / `run_app` / `ru
 - **凭据一律不入库**（官方第 7 节也要求开源客户端不硬编码 AppSecret）：
   由用户在设置页填写、存 `flutter_secure_storage`；仓库里**连占位符都不放**。
 
-### 6.8 115 网盘（2026-10 新增，`lib/pan115/` + `go/internal/pan115/`）
+### 6.8 115 网盘（`lib/pan115/` + `go/internal/pan115/`）
 
-> ⚠️ **本模块走的是 115 的「非公开 webapi 接口」**（用户明确选择 115driver 路线）。
-> 这可能违反 115 服务条款，且**有账号风控风险**。已在 ADR 0007 记录，
-> 并在登录页向用户显著提示。**改动前先读 ADR 0007。**
+> ⚠️ **走的是 115 的「非公开 webapi 接口」**（用户明确选择 115driver 路线），
+> 可能违反服务条款且**有账号风控风险**，登录页已显著提示。
+>
+> ★ **全部坑与实测依据见 [`docs/lessons/115-pan-webapi-pitfalls.md`](docs/lessons/115-pan-webapi-pitfalls.md)**
+> 与 [`docs/decisions/0007-pan115-webapi-route.md`](docs/decisions/0007-pan115-webapi-route.md)
+> ——**改动前必读**。这里只留四条最致命的：
 
-#### 路线与许可（最容易搞错的前提）
-- 115 有**两套互不相通**的接口：官方开放平台 `proapi.115.com/open/*`（需申请 AppId）
-  vs 逆向 webapi（cookie）。**本项目走 webapi**，别混用两边的字段名。
-- `SheltonZhu/115driver` 实测 **MIT**（GitHub API 误报 NOASSERTION，
-  因其 LICENSE 前段有作者反对 AlistGo 的立场声明；正文是标准 MIT）。
-- 同类聚合网盘播放器多为 **GPL-3.0** 或无源码发布：**绝不可抄代码**，
-  仅可提取其公开文档中的协议事实。
+1. **UA 绑定**：取直链的 UA 必须与播放时**逐字节一致**（CDN 强绑定）；
+   且 `Set-Cookie`（`download_token`）必须合并进播放请求。
+   两者都**不在 URL 里** ⇒ 只把 URL 交给播放器必然 **403**，现象是"地址取到了但播不了"。
+   ⇒ `Pan115Playback` 把 url 与 headers 绑在**同一类型**，Go 侧 `playbackHeaders()` 是唯一产出点。
+2. **m115 不是对称加解密**：全流程只有公开指数 e、没有私钥 d，`Encode`/`Decode`
+   服务**相反方向**，`Decode(Encode(x,k),k)` **不还原原文**。
+   **谁把它"修成"往返可逆，谁就在引入 bug。**
+3. **限速是账号安全**（不是性能）：全局 **2 请求/秒、严格串行**，限流放 `do()` 里
+   （放各业务方法必然漏加）。上游有 WebDAV 挂 115 扫库被 **418 WAF** 的实例，
+   维护者明确警告并发"**有封号风险**"。
+4. **凭据四项（UID/CID/SEID/KID）等价于登录态**：只进 `flutter_secure_storage`，
+   **绝不入库/打日志**；退出登录要**同时清存储与 Go 内存会话**。
 
-#### 端点选择（实测驱动，不是照抄）
-- **`webapi.115.com/files` 会被 WAF 拦**，但**拦截是条件式的**：
-  仅当「path 恰为 `/files`」+「有查询串」+「**无名为 `UID` 的 cookie**」才返回 405。
-  UA / Referer / Origin **全部无关**（换 4 种 UA、加全套浏览器头都无效）。
-  → 生产环境总是带 cookie，故它其实可用；但**仍不用它作主力**（判定可能随 IP/地域变化）。
-- **文件列表首选 `aps.115.com/natsort/files.php`**（实测 WAF 免疫）；
-  次选 `http://web.api.115.com/files`（**注意是 http**，https 那套被另一层 WAF 拦）。
-- **`aps` 必须带 `format=json`**，否则可能返回非 JSON。
-- 按后缀筛媒体应走 **`webapi.115.com/files/search`**（实测未被拦，`type=4` 视频）。
+### 6.9 🔴 用户数据不可恢复：永不 `uninstall` / `pm clear`（2026-10-12 真实事故）
 
-#### ★ UA 绑定（本模块最容易静默失败的地方）
-**取直链时的 UA 必须与播放时逐字节一致** —— 115 的 CDN 与取址 UA **强绑定**。
-上游证据：`SheltonZhu/115driver` issue #80 原文"CDN 链接与默认 UA 强绑定"
-（起因是 resty 强制注入默认 UA，破坏了空 UA 取址）。
-且取地址响应的 **`Set-Cookie`（`download_token`）必须合并进播放请求**。
-两者都**不在 URL 里** → 只把 URL 交给播放器必然 403，现象是
-"地址取到了但播不了"，极难排查。
-→ 因此 `Pan115Playback` 把 **url 与 headers 绑在同一类型**，不给"只拿 URL"的机会；
-Go 侧 `playbackHeaders()` 是**唯一产出点**。
+> **完整经过与流程教训见 [`docs/lessons/2026-10-12-uninstall-wiped-user-data.md`](docs/lessons/2026-10-12-uninstall-wiped-user-data.md)**
+> （为什么外移：本文件有 65536 字节指令预算，写全会挤掉 §12）。
 
-#### ★ m115 不是对称加解密（别"修好"它）
-取直链的请求体要加密、响应体要解密，但：
-> **全流程只有公开指数 e，没有私钥 d**。`Encode` 与 `Decode` 服务的是
-> **两个相反方向，共用 e 但不是彼此的逆**。`Decode(Encode(x,k),k)` **不还原原文**。
-> 这是上游的既定设计（签名式混淆，非保密方案）。
+**事故**：为"用 `run-as` 看设备 SQLite"而执行 `adb uninstall com.cineflow.app`
+⇒ **清空 App 全部本地数据**（21 部订阅 / 登录凭据 / 全部缓存），**不可恢复**。
 
-**若有人以为这是 bug 并试图改成往返可逆，那才是引入 bug。**
-算法要点：RSA **1024 位** / PKCS#1 v1.5 / 每块 **≤117 字节**；
-16 字节随机 key 前置；反转作用范围是**整个明文区**；`deriveKey` 的索引 4 与 12 都是硬编码。
+**为什么会上当**（不是"手滑"）：
+`adb install -r` 失败时报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（只提签名冲突，
+**不提"卸载会清数据"**）；`uninstall` 读起来像"移除程序"却**同时删 `/data/data/<pkg>`**；
+我此前专门避开 `pm clear`，却对 `uninstall` 放松 —— **同一后果，两个名字**。
 
-#### 限速（账号安全，不是性能优化）
-上游有**与本项目几乎一致的实例**：WebDAV 挂 115 给 Emby 扫库 → **HTTP 418 WAF**；
-维护者明确警告并发"**有封号风险**"。
-→ 全局 **2 请求/秒、严格串行**，且限流放在 `do()` 里
-（**放各业务方法必然会在新增方法时漏加**）。**绝不并发翻页。**
+**铁律**：
+1. **绝不 `adb uninstall` / `pm clear`。** 需要 debug 包时**先问用户**。
+2. **要看设备 DB**：`adb exec-out run-as <pkg> cat …/cineflow.sqlite > backup.sqlite`
+   （仅 debug 包可 `run-as`；**不要**用 PowerShell `>` 重定向，会写成 UTF-16）。
+3. **首选不用设备 DB**：把同样的代码路径跑在 `flutter test`（drift 内存库）里断言
+   —— **这才是本仓库既有做法**，也是当时该选的路。
+4. **报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` ⇒ 停下来问用户**，不要自作决定。
+5. 不可恢复的数据都在 `app_flutter/`：`cineflow.sqlite`（订阅/历史/缓存）、
+   Keystore 里的登录凭据。
 
-#### 其他必知的坑
-- **文件 vs 目录看 `fid` 是否为空**，不是 `ico`（`ico` 是类型图标，语义不稳定）；
-  且两者 `t` 字段的解析方式不同（目录 = Unix 秒，文件 = `"2006-01-02 15:04"` 无时区）。
-- **字段类型不稳定**：115 在同一字段混用字符串与数字，**同一字段在不同条目上也可能不同**
-  （目录 `s` 是数字、文件 `s` 是字符串）→ 必须用宽容类型；大整数要走 `json.Number`
-  保精度（文件大小可超 2^53）。
-- **`state` 字段有两种编码**：二维码体系是数字 `1`，webapi 是布尔 `true`
-  → 用 `*bool` 接数字会**整体解析失败导致登录不通**。
-- **`errno` 与 `errNo` 两种拼写都用过**，要同时查、取非 0。
-- **业务错误全包在 HTTP 200 里**（`state:false` + `errno`）→
-  只看状态码会把"未登录"当成"网盘为空"。
-- **分页必须用服务端回显的 offset**，不能本地累加：服务端可能截断 limit，
-  本地累加会**静默跳过内容**。
-- **取直链的 `data` 是加密串**，不是明文 `pickcode=xxx`；
-  解密后是**以文件 ID 为键的 map**，路径 `data.<fileId>.url.url`（两层 url）。
-  另外 `url` 可能是 `false`/`null`/空串 —— 那是"文件不可播"的正常表示，不是数据损坏。
-- **登录前必须轮询到 `status==2`**：真实但未确认的 uid 调 login 会返回
-  `40101017 老乡验证失败`，**与非法 uid 的响应一模一样**，会误导用户。
-- **错误码要分类**：`99`/`990001`/`40101032`/`40101035`/`40101037` 等属**必须重新登录**
-  → 立即停止重试（继续重试会加重风控，上游点名"后台常驻程序尤其要实现"）。
-  `50028`/`10010` 属**需要会员** → 应给出可行动提示而非笼统失败。
-- **二维码图片有现成端点**（`qrcodeapi.115.com/api/1.0/mac/1.0/qrcode?uid=`，
-  实测返回 `image/png`）→ **无需引入二维码生成库**。
-- **状态轮询是长轮询**（实测单次约 **30 秒**才返回，未扫码时 `data` 为空对象 `{}`）
-  → HTTP 超时必须 > 30s；**不要用固定短间隔轮询**（会堆叠并发长请求）。
-  Dart 侧 `GoCore.invokeAsync` 因此在**独立 isolate** 执行，否则 UI 会冻住。
-- **凭据四项（UID/CID/SEID/KID）等价于登录态**：只进 `flutter_secure_storage`，
-  **绝不入库/打日志**；退出登录要**同时清存储与 Go 内存会话**。
-- **`aps.115.com` 登录成功后的响应形状仍未观测**（无真实账号）→
-  联调时**先打日志确认形状**，不符则回退 `http://web.api.115.com/files`。
+> **一句话**：凡名字含"卸载/清空/重建/drop"的命令，**先假设它会毁掉用户数据**，
+> 直到证明不是。执行前必须能回答"影响哪些路径 / 最坏丢什么 / 丢了能否恢复"。
 
 ---
 
@@ -675,6 +642,7 @@ Go 侧 `playbackHeaders()` 是**唯一产出点**。
 
 | 禁止 | 原因 |
 |---|---|
+| 🔴 **`adb uninstall <pkg>`**（以及 `pm clear <pkg>`） | **会清空 App 全部本地数据**：登录凭据、用户订阅、播放历史缓存。**这是用户数据，不可恢复**。见 §6.9 |
 | **跑 `dart format`**（全库或目录级） | 会改动 24/26 文件，制造数千行无关 diff（§6.4） |
 | 在 `build.gradle.kts` 加 `ndk.abiFilters` | 与 `--split-per-abi` 的 splits 配置互斥，构建直接失败 |
 | 删除 `authHeader` 里的 `Version` | 服务端会 500（§6.1） |

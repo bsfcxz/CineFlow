@@ -140,16 +140,69 @@ class CalendarSubscriptions extends Table {
 
 /// 应用数据库。
 ///
+/// **动漫更新时刻表**（定期索引 B站时间表；见 `CalendarClient.indexAnimeTimeline`）。
+///
+/// ## ★ 为什么需要这张表（用户建议 + 实测驱动）
+/// > "连载的动漫更新时间你从这儿获取，时间一般不会更改的，
+/// >  你固定住就好，要么定期在这儿索引"
+///
+/// B站官方时间表给出**精确到分钟**的更新时刻
+///（实测 `pub_time` = `10:00` / `09:00`），而 Emby 两台服务器的 `AirTime`
+/// 都是空、分集时间部分只有零点 ⇒ 精确时刻**只能来自平台索引**，
+/// 且时刻极少变（用户："时间一般不会更改的，你固定住就好"）。
+///
+/// ## 为什么只索引 B站（实测：其他三家拿不到）
+/// | 源 | 有"周几+时刻"吗 |
+/// |---|---|
+/// | B站 PGC 时间表 | ✅ **115 部**（番剧 64 + 国创 51），有 `day_of_week`/`pub_time` |
+/// | 爱奇艺 | ❌ 只有 `dq_updatestatus='更新至1180集'` |
+/// | 腾讯 | ❌ SPA 壳，`PageServer` 要签名参数 |
+/// | 优酷 | ❌ SPA + `FAIL_SYS_TOKEN_EMPTY`（要 mtop token）|
+/// ⇒ 其余三家回落**平台常规时刻**（`platformAirTime`）。
+class AnimeTimelines extends Table {
+  /// 剧名（B站原文；匹配订阅时用）。
+  TextColumn get title => text()();
+
+  /// 平台（当前只有 `bilibili`）。
+  TextColumn get platform => text().withDefault(const Constant('bilibili'))();
+
+  /// 周几（1=周一 … 7=周日）。
+  IntColumn get weekday => integer()();
+
+  /// 更新时刻（`HH:mm`）。
+  TextColumn get airTime => text().withDefault(const Constant(''))();
+
+  /// 源内 id（B站 `season_id`，可用于跳转）。
+  TextColumn get sourceId => text().withDefault(const Constant(''))();
+
+  /// 索引时间（毫秒；用于 TTL 判断 —— 时刻极少变，可长缓存）。
+  IntColumn get updatedAt => integer()();
+
+  @override
+  Set<Column> get primaryKey => {title, platform};
+}
+
+
 /// 版本演进纪律：**新增表/列必须同时升 schemaVersion 并写 migration**，
 /// 否则老用户升级后启动即崩（drift 会抛 schema 不匹配）。
 /// 当前 `schemaVersion = 3`（v2→v3 订阅表加 `status` 列；v1→v2 新增 `CalendarSubscriptions`，
 /// 迁移用 `createTable` 而非 `createAll`，不动既有数据）。
-@DriftDatabase(tables: [DoubanCaches, PlayHistories, CalendarSubscriptions])
+@DriftDatabase(tables: [
+  DoubanCaches,
+  PlayHistories,
+  CalendarSubscriptions,
+  AnimeTimelines,
+])
 class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
-  int get schemaVersion => 3;
+  // v3 → v4：新增 `anime_timelines`（动漫更新时刻索引表）。
+  //
+  // ⚠️ **升版本必须同时写迁移**（本仓库为此踩过坑：
+  //    schemaVersion 升了但 addColumn 漏写 ⇒ 运行时崩溃）——
+  //    见下方 `onUpgrade` 里的长注释。
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -210,6 +263,13 @@ class AppDatabase extends _$AppDatabase {
           //   `createAll` 建的表**已含** status 列
           // · 已是 v3 的老库再次启动时 `onUpgrade` **根本不会被调用**
           // ⇒ `from < 3` 只在"v1/v2 老库"上跑一次。
+          // v3 → v4：新增 `anime_timelines`（动漫更新时刻索引表）
+          // · 同样只 `createTable`，不动既有数据
+          // · 这张表是**缓存性质**（可重建）⇒ 丢失也不影响用户数据，
+          //   但仍按纪律写迁移（老用户升级不该崩）。
+          if (from < 4) {
+            await m.createTable(animeTimelines);
+          }
           if (from < 3) {
             await m.addColumn(calendarSubscriptions, calendarSubscriptions.status);
           }
@@ -488,6 +548,65 @@ class AppDatabase extends _$AppDatabase {
   /// ## 为什么按更新日而不是订阅时间
   /// 用户看「我的追剧」是想知道"**哪个快更新了**"，
   /// 而不是"我什么时候点的订阅"。
+  // ══════════════════════════════════════════════════════════
+  // 动漫更新时刻表（`anime_timelines`）
+  // ══════════════════════════════════════════════════════════
+
+  /// **批量写入索引结果**（幂等：同 `(title, platform)` 覆盖）。
+  ///
+  /// 时刻极少变（用户："时间一般不会更改的，你固定住就好"）
+  /// ⇒ 直接覆盖，不做增量比对。
+  Future<void> upsertTimelines(List<AnimeTimeline> rows) async {
+    if (rows.isEmpty) return;
+    await batch((b) {
+      b.insertAllOnConflictUpdate(animeTimelines, rows);
+    });
+  }
+
+  /// 某平台的最后一次索引时间（毫秒；null = 从没索引过）。
+  ///
+  /// ## ★ 为什么必须**按平台**（真机踩到）
+  /// 原来是"全表 max(updated_at)" ⇒ B站索引过一次后，
+  /// 整个 `if (fresh) return` 会**把爱奇艺/优酷一起跳过**
+  /// ⇒ 新加的平台**永远不索引**（真机 dump：只有 B站时刻生效）。
+  Future<int?> timelineIndexedAt({String? platform}) async {
+    final q = selectOnly(animeTimelines)
+      ..addColumns([animeTimelines.updatedAt.max()]);
+    if (platform != null) {
+      q.where(animeTimelines.platform.equals(platform));
+    }
+    final row = await q.getSingleOrNull();
+    return row?.read(animeTimelines.updatedAt.max());
+  }
+
+  /// **按剧名查更新时刻**（**只读本地表，0 网络**）。
+  ///
+  /// ## 两级匹配（B站标题常带副标题）
+  /// 1. **精确**：`title = ?`
+  /// 2. **包含**：`title LIKE %?%`（如订阅叫「小车队大救援」、
+  ///    B站叫「小车队大救援：自然护卫队」）
+  ///
+  /// 返回 null = 没索引到（**不编时刻**，回落平台惯例）。
+  Future<AnimeTimeline?> timelineFor(String title) async {
+    final t = title.trim();
+    if (t.isEmpty) return null;
+    final exact = await (select(animeTimelines)
+          ..where((x) => x.title.equals(t))
+          ..limit(1))
+        .getSingleOrNull();
+    if (exact != null) return exact;
+    // 退化：包含匹配（两边都可能带后缀，故双向都试）
+    final like = await (select(animeTimelines)
+          ..where((x) =>
+              x.title.like('%$t%') | x.title.like('%${t.split(':').first}%'))
+          ..limit(1))
+        .getSingleOrNull();
+    return like;
+  }
+
+  /// 清空该表（重新索引前用；失败时不该留半套数据）。
+  Future<void> clearTimelines() => delete(animeTimelines).go();
+
   Future<List<CalendarSubscription>> allSubscriptions() {
     return (select(calendarSubscriptions)
           ..orderBy([

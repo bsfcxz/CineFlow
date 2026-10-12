@@ -239,7 +239,7 @@ const _tabItems = <_TabItem>[
   _TabItem(Icons.person_outline_rounded, Icons.person_rounded, '我的'),
 ];
 
-class _TabBar extends StatelessWidget {
+class _TabBar extends ConsumerWidget {
   const _TabBar({required this.index, required this.onTap});
   final int index;
   final ValueChanged<int> onTap;
@@ -253,7 +253,9 @@ class _TabBar extends StatelessWidget {
   static const double barHeight = 58;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 今日更新数（由追剧页写入；见 `todayUpdateCountProvider` 的说明）
+    final todayCount = ref.watch(todayUpdateCountProvider);
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xF0111A33),
@@ -284,14 +286,56 @@ class _TabBar extends StatelessWidget {
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(
-                            i == index
-                                ? _tabItems[i].activeIcon
-                                : _tabItems[i].icon,
-                            // 用刻度而不是 21：底部导航与 theme 的 navigationBarTheme
-                            // （iconLg=24）保持一致，避免两个层级差 3px 的"抖动感"
-                            size: Cf.iconLg,
-                            color: i == index ? Cf.accent : Cf.text3,
+                          // ★ 角标（稿子 `.nav-badge`）：**只在「追剧」那格**显示
+                          //   今日更新数；0 时**隐藏**（稿子 `display:'none'`）
+                          Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              Icon(
+                                i == index
+                                    ? _tabItems[i].activeIcon
+                                    : _tabItems[i].icon,
+                                // 用刻度而不是 21：底部导航与 theme 的
+                                // navigationBarTheme（iconLg=24）保持一致，
+                                // 避免两个层级差 3px 的"抖动感"
+                                size: Cf.iconLg,
+                                color: i == index ? Cf.accent : Cf.text3,
+                              ),
+                              if (_tabItems[i].label == '追剧' && todayCount > 0)
+                                Positioned(
+                                  // 稿子：`top:2px; right:50%; margin-right:-20px`
+                                  // ⇒ 相对图标中心右偏 20px、上移 2px
+                                  top: -4,
+                                  right: -20,
+                                  child: Container(
+                                    constraints:
+                                        const BoxConstraints(minWidth: 16),
+                                    height: 16,
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4),
+                                    decoration: BoxDecoration(
+                                      color: Cf.accent,
+                                      borderRadius:
+                                          BorderRadius.circular(Cf.radiusSm),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: CfText(
+                                      '$todayCount',
+                                      clamp: true,
+                                      // ⚠️ **不写裸 fontSize** ——
+                                      //    底栏标签的防溢出机制是
+                                      //    `CfText(clamp: true)`（见下方注释），
+                                      //    角标也套一层，而不是靠固定 9sp
+                                      //    （`shell_tab_test` 的 U2 会守住这条）。
+                                      style: Cf.micro.copyWith(
+                                        height: 1,
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
                           const SizedBox(height: 2),
                           // ⚠️ `clamp: true` 是**必须的**，这里正体现 CfText 的设计意图：

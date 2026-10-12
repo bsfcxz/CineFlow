@@ -663,6 +663,71 @@ class EmbyProvider implements MediaProvider {
         .toList();
   }
 
+  /// **某剧的库内摘要**（已入库集数 + 最大集号 + 下次更新日）。
+  ///
+  /// ## 一次请求（复用 `getSeriesEpisodes`）
+  /// 要拿到"库内最大集号"与"下次更新日"，必须看**全部分集**
+  ///（`getSeriesEpisodes` 已经把 `PremiereDate` 都取回来了）。
+  ///
+  /// ## ★ 时区
+  /// 服务端给 UTC ⇒ `toLocal()` 之后才是国内观众的"那天"。
+  /// 与 `getSeriesEpisodes` 同口径，不重复解释。
+  @override
+  Future<LibrarySummary?> getLibrarySummary(String seriesId) async {
+    if (seriesId.isEmpty) return null;
+    try {
+      final d = _ok(await _dio.get('/Shows/$seriesId/Episodes',
+          queryParameters: {
+            'UserId': session.user.id,
+            'Fields': 'PremiereDate',
+            'EnableImages': false,
+          }));
+      final eps = _itemsList(d);
+      if (eps.isEmpty) return LibrarySummary.empty;
+      var maxEp = 0;
+      final dates = <DateTime>[];
+      // `weekday → 集号`（**只有带日期的集才进**，与 `getSeriesEpisodes` 同源）
+      final days = <int, List<int>>{};
+      for (final j in eps) {
+        final n = (j['IndexNumber'] as num?)?.toInt();
+        if (n != null && n > maxEp) maxEp = n;
+        final raw = j['PremiereDate'] as String?;
+        if (raw == null || raw.isEmpty) continue;
+        final dt = DateTime.tryParse(raw);
+        if (dt == null) continue;
+        final local = dt.toLocal();
+        dates.add(local);
+        if (n != null) (days[local.weekday] ??= []).add(n);
+      }
+      for (final v in days.values) {
+        v.sort();
+      }
+      // 下次更新 = 今天或之后最近的那个播出日
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      dates.sort();
+      String? next;
+      for (final dt in dates) {
+        final day = DateTime(dt.year, dt.month, dt.day);
+        if (!day.isBefore(today)) {
+          next = '${day.year.toString().padLeft(4, '0')}-'
+              '${day.month.toString().padLeft(2, '0')}-'
+              '${day.day.toString().padLeft(2, '0')}';
+          break;
+        }
+      }
+      return LibrarySummary(
+        episodeCount: eps.length,
+        lastEpisode: maxEp > 0 ? maxEp : null,
+        nextAirDate: next,
+        days: days,
+      );
+    } catch (e) {
+      debugPrint('[Library] 剧 $seriesId 摘要失败: $e');
+      return null;
+    }
+  }
+
   /// **某剧的库内分集**（首播日 → 本地周几）。
   ///
   /// ⚠️ 时区：服务端给 UTC（`...T16:00:00Z` 表示北京次日 0 点）
@@ -703,15 +768,18 @@ class EmbyProvider implements MediaProvider {
   /// ⚠️ 必须显式带 `Fields=ProviderIds` —— 真机实测：不带它时
   ///    `providerIds['tmdb']` 恒空 ⇒ 追剧周历"库内命中 0/21"。
   @override
-  Future<Map<String, String>> mapSeriesTmdbToId() async {
-    final out = <String, String>{};
+  Future<Map<String, SeriesRef>> mapSeriesTmdbToId() async {
+    final out = <String, SeriesRef>{};
     try {
       final d = _ok(await _dio.get('/Users/${session.user.id}/Items',
           queryParameters: {
             'IncludeItemTypes': 'Series',
             'Recursive': true,
             'Limit': 5000,
-            'Fields': 'ProviderIds',
+            // ★ `Studios` 必加：它是**播出平台**的唯一来源
+            //   （实测内容是 Tencent Video / iQiyi / Mango TV / CCTV…）
+            //   订阅源没给平台时用它补 —— 时刻标签要用平台。
+            'Fields': 'ProviderIds,Studios',
             'EnableImages': false,
           }));
       for (final j in _itemsList(d)) {
@@ -734,7 +802,22 @@ class EmbyProvider implements MediaProvider {
             .map((e) => e.value?.toString().trim() ?? '')
             .where((v) => v.isNotEmpty)
             .firstOrNull;
-        if (tmdb != null) out[tmdb] = id;
+        if (tmdb == null) continue;
+        // 平台：`Studios` 的第一项（实测 = 播出平台）
+        String? plat;
+        final studios = j['Studios'];
+        if (studios is List) {
+          for (final st in studios) {
+            if (st is Map) {
+              final nm = (st['Name'] as String?)?.trim();
+              if (nm != null && nm.isNotEmpty) {
+                plat = nm;
+                break;
+              }
+            }
+          }
+        }
+        out[tmdb] = SeriesRef(seriesId: id, platform: plat);
       }
     } catch (e) {
       debugPrint('[Library] tmdb→SeriesId 映射失败: $e');

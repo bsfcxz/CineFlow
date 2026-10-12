@@ -32,6 +32,22 @@ abstract interface class MediaProvider {
   /// TotalRecordCount 2035→823，返回条目确实都含「动作」；`Years=2024` → 67；
   /// 二者组合 → 19，符合交集语义）。
   /// **必须走服务端**：客户端复筛只作用于已加载页，分页下结果会不完整。
+  /// **某剧的库内摘要**（已入库集数 + 最大集号 + 下次更新日）。
+  ///
+  /// ## 为什么需要（用户要求）
+  /// > "库里所有能够获取到的多集剧集、综艺应该都需要这样"
+  /// > "下次更新时间你也没整"
+  ///
+  /// Emby 自己的详情页（首页/搜索/继续观看进去的那个）也应显示：
+  /// · **已入库 N 集**（库里实际有几集）
+  /// · **已更新至第 N 集**（最大集号）
+  /// · **下次更新**（下一个有分集的日期）
+  ///
+  /// ## 与 [getSeriesEpisodes] 的关系
+  /// 本方法是它的**语义封装**（一次请求、算好三个数），
+  /// 避免每个调用点各写一遍统计逻辑（本轮已因"两处各写一套"被用户抓到）。
+  Future<LibrarySummary?> getLibrarySummary(String seriesId);
+
   /// **某剧在库内的分集首播日**（追剧周历的**正解**）。
   ///
   /// ## 为什么不能用"全库本周更新"（我上一版的错误）
@@ -54,7 +70,13 @@ abstract interface class MediaProvider {
   /// ⚠️ **不能**用 `getItems()` 来映射 —— 它的 `Fields` **不含 `ProviderIds`**
   ///    ⇒ `providerIds['tmdb']` 恒空 ⇒ 映射结果为空（真机实测 `库内命中 0/21`）。
   ///    必须显式请求 `Fields=ProviderIds`（与 `collectProviderIds` 同款参数）。
-  Future<Map<String, String>> mapSeriesTmdbToId();
+  ///
+  /// ## 第二返回值（库内信息）
+  /// 现在同时返回 `tmdbId → (SeriesId, 平台名)` ——
+  /// 平台取自 Emby 的 `Studios`（**实测内容是播出平台**：
+  /// `Tencent Video` / `iQiyi` / `Youku` / `Mango TV` / `Netflix` / `CCTV`）。
+  /// 用户订阅时若订阅源没给平台 ⇒ 用库内的补上（时刻标签要用）。
+  Future<Map<String, SeriesRef>> mapSeriesTmdbToId();
 
   /// **全库本周分集**（1 个请求）—— 追剧周历的主数据源。
   ///
@@ -386,6 +408,49 @@ abstract final class ProgressEvent {
 
 /// 库内一集（追剧周历用）。
 ///
+/// 库内一部剧的引用（`tmdbId → SeriesRef`）。
+class SeriesRef {
+  const SeriesRef({required this.seriesId, this.platform});
+
+  /// Emby 的 `SeriesId`。
+  final String seriesId;
+
+  /// **播出平台**（取自 `Studios`；null = 库里没这个元数据）。
+  final String? platform;
+}
+
+/// 某剧的**库内摘要**（详情页「已入库 / 已更新 / 下次更新」三个数）。
+class LibrarySummary {
+  const LibrarySummary({
+    required this.episodeCount,
+    this.lastEpisode,
+    this.nextAirDate,
+    this.days = const {},
+  });
+
+  /// **已入库集数**（库里实际有几集）。
+  final int episodeCount;
+
+  /// **已更新到第几集**（库内最大集号；null = 拿不到集号）。
+  final int? lastEpisode;
+
+  /// **下次更新日**（`yyyy-MM-dd`；null = 本周已无更新 / 拿不到）。
+  final String? nextAirDate;
+
+  /// `weekday(1=周一..7=周日) → 该天播出的集号`（**只有带日期的集才进**）。
+  ///
+  /// ## 为什么放进摘要（而不是另调 `getSeriesEpisodes`）
+  /// 两者打的是**同一个端点**（`/Shows/{id}/Episodes`）——
+  /// 分两次调用是白花一次请求。
+  /// 更重要的是：`getSeriesEpisodes` 会**过滤掉没有 `PremiereDate` 的集**，
+  /// 而 `getLibrarySummary` 不会 ⇒ 两个口径会打架
+  ///（真机实测：卡片 `更新至 E239` vs 详情页 `已更新 第 203 集`）。
+  /// ⇒ **统一到本方法**，一个请求给全部数据。
+  final Map<int, List<int>> days;
+
+  static const empty = LibrarySummary(episodeCount: 0);
+}
+
 /// 只要 UI 需要的三样：季、集、**本地时区的周几**。
 class LibraryEpisode {
   const LibraryEpisode({

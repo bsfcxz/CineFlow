@@ -30,6 +30,7 @@
 library;
 
 import 'dart:async';
+import 'db/app_database.dart';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -47,13 +48,25 @@ import 'package:flutter/foundation.dart' show debugPrint;
 /// 《你好，星期六》    status=Returning Series  本周 E39  air_date=2026-10-10
 /// ```
 class ShowWeek {
-  const ShowWeek({this.days = const {}, this.status});
+  const ShowWeek({this.days = const {}, this.status, this.nextAirDate});
 
   /// `weekday(1=周一..7=周日) → 该天播出的集号列表`。
   final Map<int, List<int>> days;
 
   /// TMDB 原始状态（`Returning Series` / `Ended` / `Canceled` …）。
   final String? status;
+
+  /// **下一次更新的日期**（`yyyy-MM-dd`；null = 未知/已完结）。
+  ///
+  /// ## 为什么需要"日期"而不只是"周几"（用户要求）
+  /// > "下次更新时间你也没整"
+  /// 之前只显示"下次更新：周X"，而 `weekday` 对**库内来源**是 null
+  /// ⇒ 显示"待定"。库内数据里**有每集首播日** ⇒ 能直接算出日期。
+  ///
+  /// ## 判据
+  /// 取 `days` 里**今天或之后最近的**那天；若本周都已过去（周日之后再无）
+  /// ⇒ null（**不编"下周一"** —— 那要靠下一周的 TMDB 数据才知道）。
+  final String? nextAirDate;
 
   /// 中文状态（用户要求区分"已完结/连载中"）。
   ///
@@ -215,6 +228,10 @@ class CalendarDetail {
     this.actors = const [],
     this.seasonCount,
     this.episodeCount,
+    this.lastEpisodeNumber,
+    this.lastEpisodeSeason,
+    this.nextEpisodeNumber,
+    this.nextAirDate,
     this.status,
     this.homepage,
     this.tmdbId,
@@ -258,6 +275,34 @@ class CalendarDetail {
 
   final int? seasonCount;
   final int? episodeCount;
+
+  /// **已更新到第几集**（`last_episode_to_air.episode_number`）。
+  ///
+  /// ## ★ 为什么不能用 [episodeCount] 代替（实测证据）
+  /// `number_of_episodes` 是**跨季总集数**，与"已更新"常不等：
+  /// ```
+  /// 斗破苍穹   number_of_episodes=279   而 last=S5E214
+  /// 完美世界   number_of_episodes=338   而 last=S1E288
+  /// 都市古仙医 number_of_episodes=220 = S1E220（巧合相等）
+  /// ```
+  /// ⇒ 详情页曾把"共 279 集"当进度显示，是**错的**。
+  final int? lastEpisodeNumber;
+
+  /// 上面那集的**季号**（`last_episode_to_air.season_number`）。
+  /// 连载剧常跨季 ⇒ 单看集号会误读（S5E214 的 214 不是第 214 集）。
+  final int? lastEpisodeSeason;
+
+  /// **下一集集号**（`next_episode_to_air.episode_number`，连载中才有）。
+  final int? nextEpisodeNumber;
+
+  /// **下一集播出日**（`next_episode_to_air.air_date`，`yyyy-MM-dd`）。
+  ///
+  /// ## 为什么需要它（实测证据）
+  /// Emby 库内分集的 `PremiereDate` **可能全为空**
+  /// （实测《吞噬星空》33 集全无日期）⇒ 光靠库内算不出"下次更新"。
+  /// 而 TMDB 明确给了 `next_episode_to_air.air_date` = 2026-10-12。
+  /// ⇒ **库内优先、TMDB 兜底**（与周历同一套思路）。
+  final String? nextAirDate;
 
   /// 连载状态（TMDB 原文，如 `Returning Series` ⇒ [statusCn] 转中文）。
   final String? status;
@@ -748,6 +793,13 @@ class CalendarClient {
   static const _ua = 'bsfcxz/CineFlow/1.0 (Android) '
       '(+https://github.com/bsfcxz/CineFlow)';
 
+  /// **移动端 UA** —— 优酷移动端频道页才有 SSR 的「每周X」
+  ///（PC 频道页 1.56MB 且**不含**"每周X"；移动端 217KB 且含）。
+  static const _uaMobile =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) '
+      'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 '
+      'Mobile/15E148 Safari/604.1';
+
   /// 缓存 TTL —— **按"是否本周"分档**（调研取证：MoviePilot 用 6h）。
   ///
   /// ## 为什么要分档
@@ -1163,6 +1215,340 @@ class CalendarClient {
   // ══════════════════════════════════════════════════════════
   // ③ B站番剧时间线
   // ══════════════════════════════════════════════════════════
+
+  /// **索引爱奇艺动漫的更新时刻**（实测 **100%** 可解析）。
+  ///
+  /// ## ★★ 实测依据（可复现，**无需签名**）
+  /// ```
+  /// GET mesh.if.iqiyi.com/portal/lw/v7/channel/cartoon?channel_id=2
+  ///   → 974KB JSON
+  ///   → .items[].video[].data[] 每条含：
+  ///        title             剧名（如"灵武大陆"）
+  ///        desc              **"每周一周五10:00更新一集"**
+  ///        dq_updatestatus   "更新至223集"
+  ///        album_id / page_url
+  ///   → 224 条去重后，含「每周」24 条
+  ///   → 两段式解析 **24/24 = 100%**
+  /// ```
+  ///
+  /// ## ⚠️ 解析必须**两段式**（单条正则只有 18/24）
+  /// 实测形态差异极大：
+  /// ```
+  /// 每周一周五10:00更新一集
+  /// 每周一周二周三周五周六周日10:00更新1集
+  /// 每周三/周五9:00 各更新1集
+  /// 每周二、六10：00各更新一集      ← 全角冒号
+  /// 第二季10月2号起每周五更新        ← **无时刻**
+  /// ```
+  /// ⇒ ① 先抓所有周几（字符类 `[一二三四五六日、/,，和及]`）
+  ///    ② 再在**其后**找 `N点/N:NN`；找不到 ⇒ 时刻留空（UI 只显示星期）
+  ///
+  /// ## 返回
+  /// 写入行数（0 = 失败）。
+  Future<int> indexIqiyiTimeline({required AppDatabase db}) async {
+    try {
+      final r = await _dio.get<String>(
+        'https://mesh.if.iqiyi.com/portal/lw/v7/channel/cartoon',
+        queryParameters: {'channel_id': '2'}, // 2 = 动漫
+        options: Options(responseType: ResponseType.plain, headers: {
+          'User-Agent': _ua,
+          'Referer': 'https://www.iqiyi.com/comic/',
+        }),
+      );
+      if (r.statusCode != 200 || r.data == null) {
+        debugPrint('[Timeline] 爱奇艺索引失败 HTTP ${r.statusCode}');
+        return 0;
+      }
+      final j = jsonDecode(r.data!);
+      if (j is! Map) return 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final rows = <AnimeTimeline>[];
+      final seen = <String>{};
+      // 递归找所有含 title+desc 的对象（结构可能变，不做硬编码路径）
+      void walk(Object? o, int depth) {
+        if (depth > 10 || o == null) return;
+        if (o is Map) {
+          final t = o['title'];
+          final de = o['desc'];
+          if (t is String && de is String && de.isNotEmpty) {
+            final parsed = _parseWeeklyDesc(de);
+            if (parsed != null && seen.add(t)) {
+              rows.add(AnimeTimeline(
+                title: t,
+                platform: 'iqiyi',
+                weekday: parsed.$1,
+                airTime: parsed.$2,
+                sourceId: (o['album_id'] ?? '').toString(),
+                updatedAt: now,
+              ));
+            }
+          }
+          for (final v in o.values) {
+            walk(v, depth + 1);
+          }
+        } else if (o is List) {
+          for (final v in o) {
+            walk(v, depth + 1);
+          }
+        }
+      }
+
+      walk(j, 0);
+      if (rows.isEmpty) {
+        debugPrint('[Timeline] 爱奇艺解析到 0 条');
+        return 0;
+      }
+      await db.upsertTimelines(rows);
+      debugPrint('[Timeline] 爱奇艺索引 ${rows.length} 条');
+      return rows.length;
+    } catch (e) {
+      debugPrint('[Timeline] 爱奇艺索引异常: ${_friendly(e)}');
+      return 0;
+    }
+  }
+
+  /// 从爱奇艺的 `desc` 解析「周几 + 时刻」（**两段式，实测 24/24**）。
+  ///
+  /// ## 为什么两段式
+  /// 单条正则只能吃下 18/24 —— 形态太杂：
+  /// ```
+  /// 每周一周五10:00更新一集
+  /// 每周三/周五9:00 各更新1集
+  /// 每周二、六10：00各更新一集     ← 全角冒号
+  /// 第二季10月2号起每周五更新       ← 无时刻
+  /// ```
+  /// ⇒ ① 抓**第一个** `每周` 之后连续的周几字符
+  ///    ② 在那段**之后**找时刻；没有 ⇒ 返回空时刻（UI 只显示星期）
+  ///
+  /// ## 返回 `(weekday, airTime)`；null = 这条没有可用信息。
+  /// 多周更时**只取第一个**（卡片只显示一个时刻，取最早的那天）。
+  static (int, String)? _parseWeeklyDesc(String desc) {
+    const cn = '一二三四五六日';
+    final mw = RegExp(r'每周([一二三四五六日、/,，和及\s]+)').firstMatch(desc);
+    if (mw == null) return null;
+    final wds = <int>[];
+    for (final ch in mw.group(1)!.split('')) {
+      final i = cn.indexOf(ch);
+      if (i >= 0 && !wds.contains(i + 1)) wds.add(i + 1);
+    }
+    if (wds.isEmpty) return null;
+    wds.sort();
+    // 时刻：只在那段**之后**找（避免误取"首播3集"里的 3）
+    final rest = desc.substring(mw.end);
+    final mh = RegExp(r'(\d{1,2})\s*[:：点时]').firstMatch(rest);
+    var hh = 0;
+    if (mh != null) {
+      final v = int.tryParse(mh.group(1)!) ?? 0;
+      if (v >= 0 && v <= 23) hh = v;
+    }
+    return (wds.first, hh == 0 ? '' : '${hh.toString().padLeft(2, '0')}:00');
+  }
+
+  /// **索引优酷动漫的更新时刻**（实测唯一能拿到"每周X N点"的国内平台之一）。
+  ///
+  /// ## ★★ 实测依据（逐条可复现）
+  /// ```
+  /// ① 移动端频道页 https://m.youku.com/ku/webcomic
+  ///    → 217KB SSR，含「每周五」+「更新至98话」+ 单剧 `video?s=` 链接
+  ///      （**比 PC 频道页 1.56MB 省 7 倍，且 PC 频道页本身没有"每周X"**）
+  /// ② 单剧详情页 https://v.youku.com/video?s=…
+  ///    → SSR 文案：
+  ///      《一斩苍穹》  更新至13/26话，**每周一10点**SVIP更新，周二10点VIP可看
+  ///      《沧元图》    更新至98/129话，**每周五10点**SVIP更新，周六10点VIP可看
+  ///      《光阴之外》  更新至43/78话，**每周日10点**VIP更新，每周六10点SVIP抢先看
+  ///      《师兄啊师兄》更新至162/169话，**每周四10点**VIP更新，每周三10点SVIP抢先看
+  ///    ⇒ 5/5 命中，正则 `每周[一二三四五六日](\d{1,2})点`
+  /// ```
+  ///
+  /// ## ⚠️ 腾讯 / 爱奇艺为什么不做（4 种入口全试过）
+  /// | 平台 | 试过的入口 | 结果 |
+  /// |---|---|---|
+  /// | 腾讯 | PC cover 187KB / 移动 1 字节 / 频道移动 404 / 搜索 2.8KB | **0 个"每周X"** |
+  /// | 爱奇艺 | 动漫页 6.6KB 壳 / 柯南详情 / **排行 1629 词** / 移动 404 | **0 个"每周X"** |
+  /// ⇒ 它们的数据在 XHR 里、页面 HTML 不含。**沿用平台惯例**（20:00）。
+  ///
+  /// ## 返回
+  /// 写入行数（0 = 失败，调用方据此决定是否重试）。
+  Future<int> indexYoukuTimeline({
+    required AppDatabase db,
+    int maxSeries = 60,
+  }) async {
+    try {
+      // ① 频道页拿单剧链接（移动端：小、且有 SSR）
+      final r = await _dio.get<String>(
+        'https://m.youku.com/ku/webcomic',
+        options: Options(responseType: ResponseType.plain, headers: {
+          'User-Agent': _uaMobile,
+          'Referer': 'https://www.youku.com/',
+        }),
+      );
+      if (r.statusCode != 200 || r.data == null) {
+        debugPrint('[Timeline] 优酷频道页失败 HTTP ${r.statusCode}');
+        return 0;
+      }
+      final html = r.data!;
+      // 抓 `//v.youku.com/video?s=xxx` 形式的单剧链接（去重、限量）
+      final links = <String>[];
+      final seen = <String>{};
+      for (final m in RegExp(r'href="(//v\.youku\.com/video\?s=[^"&]+)')
+          .allMatches(html)) {
+        final u = m.group(1)!;
+        if (seen.add(u) && links.length < maxSeries) links.add(u);
+      }
+      if (links.isEmpty) {
+        debugPrint('[Timeline] 优酷频道页没找到单剧链接');
+        return 0;
+      }
+
+      // ② 逐剧抓详情页，解析「每周X N点」
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final byTitle = <String, AnimeTimeline>{};
+      // 限并发 4（对平台友好；优酷有风控）
+      for (var i = 0; i < links.length; i += 4) {
+        final batch = links.skip(i).take(4).toList();
+        final results = await Future.wait(batch.map((u) async {
+          try {
+            final rr = await _dio.get<String>('https:$u',
+                options: Options(responseType: ResponseType.plain, headers: {
+                  'User-Agent': _uaMobile,
+                  'Referer': 'https://m.youku.com/ku/webcomic',
+                }));
+            if (rr.statusCode != 200 || rr.data == null) return null;
+            return _parseYoukuSeries(rr.data!, now);
+          } catch (_) {
+            return null;
+          }
+        }));
+        for (final t in results) {
+          if (t != null) byTitle[t.title] = t;
+        }
+      }
+      if (byTitle.isEmpty) {
+        debugPrint('[Timeline] 优酷解析到 0 条');
+        return 0;
+      }
+      await db.upsertTimelines(byTitle.values.toList());
+      debugPrint('[Timeline] 优酷索引 ${byTitle.length} 条'
+          '（共试 ${links.length} 部）');
+      return byTitle.length;
+    } catch (e) {
+      debugPrint('[Timeline] 优酷索引异常: ${_friendly(e)}');
+      return 0;
+    }
+  }
+
+  /// 从优酷单剧详情页解析「每周X N点」（**实测 5/5 命中**）。
+  ///
+  /// ## 抓什么
+  /// SSR 文案形如：
+  /// `更新至13/26话，每周一10点SVIP更新，周二10点VIP可看`
+  /// ⇒ 正则取**第一个** `每周X` + `N点`（那是正式更新时间；
+  ///    后面的"周二10点VIP可看"是会员抢先，不是首播）。
+  ///
+  /// ## 为什么取第一个
+  /// 「SVIP 抢鲜」在前、「VIP/免费」在后 ⇒ 第一个是**最早可看**的时刻，
+  /// 与卡片"每周X 20:00"的语义（用户看剧的时间点）一致。
+  static AnimeTimeline? _parseYoukuSeries(String html, int nowMs) {
+    // 剧名：`<title>…</title>` 去掉站点后缀
+    String title = '';
+    final mt = RegExp(r'<title>([^<]{1,80})</title>').firstMatch(html);
+    if (mt != null) {
+      title = mt.group(1)!
+          .replaceAll(RegExp(r'[-_|].*$'), '')
+          .replaceAll(RegExp(r'（.*?）'), '')
+          .trim();
+    }
+    if (title.isEmpty) return null;
+    // 「每周X N点」（实测形态：每周一10点 / 每周五10点）
+    final mw = RegExp(r'每周([一二三四五六日])(\d{1,2})\s*点').firstMatch(html);
+    if (mw == null) return null;
+    const cn = '一二三四五六日';
+    final wd = cn.indexOf(mw.group(1)!) + 1;
+    if (wd < 1 || wd > 7) return null;
+    final hh = int.tryParse(mw.group(2)!) ?? 0;
+    if (hh < 0 || hh > 23) return null;
+    return AnimeTimeline(
+      title: title,
+      platform: 'youku',
+      weekday: wd,
+      airTime: '${hh.toString().padLeft(2, '0')}:00',
+      sourceId: '',
+      updatedAt: nowMs,
+    );
+  }
+
+  /// **索引动漫更新时刻表**（用户建议："定期在这儿索引"）。
+  ///
+  /// ## 数据源（实测：只有 B站可用）
+  /// `GET api.bilibili.com/pgc/web/timeline?types=1,4&before=7&after=7`
+  /// · `types`：1=番剧、4=国创
+  /// · `before/after=7` ⇒ **15 天 / 115 部**（`6` 只给 3 天，不够）
+  /// · 字段 `day_of_week`（1..7）、`pub_time`（`HH:mm`）、`season_id`
+  ///
+  /// ## ★ 为什么只做 B站
+  /// | 源 | 有"周几+时刻"吗 |
+  /// |---|---|
+  /// | B站 | ✅ 115 部，精确到分钟 |
+  /// | 爱奇艺 | ❌ 只有 `更新至N集` |
+  /// | 腾讯 / 优酷 | ❌ SPA + 签名/token 门槛 |
+  ///
+  /// ## 返回
+  /// 写入行数（0 = 失败，调用方据此决定是否重试）。
+  Future<int> indexAnimeTimeline({required AppDatabase db}) async {
+    try {
+      final r = await _dio.get<String>(
+        'https://api.bilibili.com/pgc/web/timeline',
+        queryParameters: {
+          'types': '1,4',
+          // ★ 7 是上限；实测 15 天 / 115 部（6 只给 3 天）
+          'before': '7',
+          'after': '7',
+        },
+        options: Options(responseType: ResponseType.plain, headers: {
+          'User-Agent': _ua,
+          // ★ 必须带 Referer（实测，不带会 403）
+          'Referer': 'https://www.bilibili.com/',
+        }),
+      );
+      if (r.statusCode != 200 || r.data == null) {
+        debugPrint('[Timeline] B站索引失败 HTTP ${r.statusCode}');
+        return 0;
+      }
+      final j = jsonDecode(r.data!);
+      if (j is! Map) return 0;
+      if ((j['code'] as num?)?.toInt() != 0) {
+        debugPrint('[Timeline] B站索引 code=${j['code']}');
+        return 0;
+      }
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final rows = <AnimeTimeline>[];
+      for (final day in (j['result'] as List? ?? const [])) {
+        if (day is! Map) continue;
+        final wd = (day['day_of_week'] as num?)?.toInt();
+        if (wd == null || wd < 1 || wd > 7) continue;
+        for (final ep in (day['episodes'] as List? ?? const [])) {
+          if (ep is! Map) continue;
+          final title = (ep['title'] as String?)?.trim() ?? '';
+          if (title.isEmpty) continue;
+          rows.add(AnimeTimeline(
+            title: title,
+            platform: 'bilibili',
+            weekday: wd,
+            airTime: (ep['pub_time'] as String?)?.trim() ?? '',
+            sourceId: (ep['season_id'] ?? '').toString(),
+            updatedAt: now,
+          ));
+        }
+      }
+      if (rows.isEmpty) return 0;
+      await db.upsertTimelines(rows);
+      debugPrint('[Timeline] B站索引 ${rows.length} 条（时刻表已更新）');
+      return rows.length;
+    } catch (e) {
+      debugPrint('[Timeline] B站索引异常: ${_friendly(e)}');
+      return 0;
+    }
+  }
 
   /// `GET https://api.bilibili.com/pgc/web/timeline?types=1,4&before=6&after=6`
   ///
@@ -2110,12 +2496,35 @@ class CalendarClient {
       actors: actors,
       seasonCount: (j['number_of_seasons'] as num?)?.toInt(),
       episodeCount: (j['number_of_episodes'] as num?)?.toInt(),
+      // ★ 实测：`number_of_episodes` 是**跨季总数**，不是"已更新"
+      //   （斗破苍穹 279 vs last S5E214）⇒ 必须单独取 last_episode_to_air。
+      lastEpisodeNumber: _lastEp(j)?['episode_number'] as int?,
+      lastEpisodeSeason: _lastEp(j)?['season_number'] as int?,
+      nextEpisodeNumber: _nextEp(j)?['episode_number'] as int?,
+      nextAirDate: _nextEp(j)?['air_date'] as String?,
       status: str(j['status']),
       homepage: str(j['homepage']),
       tmdbId: (j['id'] ?? '').toString(),
     );
   }
 
+  /// `last_episode_to_air`（**防御式**：可能缺失/不是 Map）。
+  ///
+  /// ## 为什么单独抽出来
+  /// 解析里要读它**两次**（集号 + 季号），内联会写成
+  /// `(j['last_episode_to_air'] as Map?)?['x']` —— 但 `as Map?` 在
+  /// 字段是 `List`/`String` 等异常形状时会**抛异常**，不符合 §5.3
+  /// "不允许对服务器字段做非空断言 / 必须防御式"。
+  static Map? _lastEp(Map j) {
+    final v = j['last_episode_to_air'];
+    return v is Map ? v : null;
+  }
+
+  /// `next_episode_to_air`（连载中才有；已完结时缺失）。
+  static Map? _nextEp(Map j) {
+    final v = j['next_episode_to_air'];
+    return v is Map ? v : null;
+  }
 
   /// **某个订阅剧本周哪几天更新**（追剧 Tab 的周历用）。
   ///

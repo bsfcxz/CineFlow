@@ -417,6 +417,15 @@ class _DetailPageState extends ConsumerState<DetailPage> {
                 ]),
                 SizedBox(height: 15),
                 _actionButtons(item),
+                // ★ 「已入库 / 已更新 / 下次更新」（用户 2026-10-12）
+                //
+                // ## 用户原话
+                // > "为什么这个详情页只有追剧栏改了，库里所有能够获取到的
+                // >  多集剧集、综艺应该都需要这样。下次更新时间你也没整。"
+                //
+                // ⇒ 真正的**库内详情页**也要有这些（不只是追剧栏那个）。
+                // 只对**剧集**显示（电影没有"集数/下次更新"）。
+                if (isSeries) _libraryInfo(item),
                 // ★ 预告片（用户第一批需求第 2 项）
                 //
                 // ## 为什么单独一行（不并进按钮行）
@@ -481,6 +490,79 @@ class _DetailPageState extends ConsumerState<DetailPage> {
         ),
       ]),
     ]);
+  }
+
+  /// **库内集数信息**（已入库 / 已更新 / 下次更新）。
+  ///
+  /// ## 数据链
+  /// `item.providerIds['tmdb']` → `librarySummaryProvider(tmdbId)`
+  /// → 遍历所有已登录服务器：`mapSeriesTmdbToId` → `getLibrarySummary`
+  /// → 已入库集数 / 最大集号 / 下次更新日。
+  ///
+  /// ## 为什么这些数**必须来自库内**
+  /// 用户要的是"**我手上有几集**" —— TMDB 的 `number_of_episodes` 是
+  /// **跨季总数（含未播）**，和库里实际有的不是一回事
+  /// （实测《斗破苍穹》279 vs 库内差异很大）。
+  ///
+  /// ## 拿不到就不显示（不编数字）
+  /// 没 tmdbId / 库里没这部剧 / 请求失败 ⇒ 整块 `SizedBox.shrink()`。
+  Widget _libraryInfo(MediaItem item) {
+    final tmdbId = item.providerIds['tmdb'];
+    if (tmdbId == null || tmdbId.isEmpty) return const SizedBox.shrink();
+    final sum = ref.watch(librarySummaryProvider(tmdbId)).value;
+    if (sum == null || sum.episodeCount <= 0) return const SizedBox.shrink();
+    final rows = <(String, String)>[
+      ('已入库', '${sum.episodeCount} 集'),
+      if (sum.lastEpisode != null) ('已更新', '第 ${sum.lastEpisode} 集'),
+      if (sum.nextAirDate != null)
+        ('下次更新', _nextLabel(sum.nextAirDate!)),
+    ];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Cf.gap4, Cf.gap4, Cf.gap4, 0),
+      child: Container(
+        padding: const EdgeInsets.all(Cf.gap4),
+        decoration: BoxDecoration(
+          color: Cf.surface,
+          borderRadius: BorderRadius.circular(Cf.radiusMd),
+          border: Border.all(color: Cf.border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final (k, v) in rows)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(children: [
+                  SizedBox(
+                    width: 64,
+                    child: Text(k,
+                        style: Cf.caption.copyWith(color: Cf.text3)),
+                  ),
+                  Expanded(
+                    child: Text(v,
+                        style: Cf.caption.copyWith(
+                            fontWeight: FontWeight.w700, color: Cf.text)),
+                  ),
+                ]),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 「下次更新」的文案：今天/明天/日期。
+  static String _nextLabel(String ymd) {
+    final dt = DateTime.tryParse(ymd);
+    if (dt == null || ymd.length < 10) return ymd;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final gap = DateTime(dt.year, dt.month, dt.day).difference(today).inDays;
+    return switch (gap) {
+      0 => '今天',
+      1 => '明天',
+      _ => ymd,
+    };
   }
 
   Widget _poster(MediaProvider api, MediaItem item) {

@@ -21,16 +21,29 @@
 library;
 
 import 'package:flutter/material.dart';
+import '../data/emby_provider.dart';
 import '../data/media_provider.dart';
+import '../widgets/calendar_detail_sheet.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/theme.dart';
 import '../widgets/media_cards.dart';
-import '../data/calendar_client.dart' show ShowWeek;
-import '../data/db/app_database.dart' show CalendarSubscription;
+import '../widgets/media_tags.dart';
+import '../widgets/tracking_views.dart';
+import 'detail_page.dart';
+// ⚠️ **不能**只 `show ShowWeek` —— 卡片转 `CalendarEntry` 时
+//    还需要 `CalendarEntry` 与 `BrowseCategory`。
+//    show 选择器会**屏蔽其它名字**，漏写就报 "Undefined class"
+//    （编译器看不到，但文件里确实有）。
+import '../data/aggregated_search.dart';
+import '../data/calendar_client.dart'
+    show CalendarEntry, CalendarCategory, ShowWeek;
+// ⚠️ show 选择器会**屏蔽其它名字**——漏写就报 'Undefined class'
+//（我已经踩过两次：CalendarEntry、AnimeTimeline）。
+import '../data/db/app_database.dart'
+    show AnimeTimeline, CalendarSubscription;
 import '../data/db/db_provider.dart' show appDbProvider;
 import '../state/providers.dart';
-import 'history_page.dart';
 
 class TrackingPage extends ConsumerStatefulWidget {
   const TrackingPage({super.key});
@@ -76,6 +89,10 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
   @override
   Widget build(BuildContext context) {
     final subs = ref.watch(subscriptionsProvider);
+    // ★ 库内集数（由子级 `_loadAll` 写入 → 这里读；
+    //   见 `libraryEpisodeCountProvider` 的说明）。
+    //   已完结网格的"全 N 集"与详情页的「已入库」都用它。
+    final libCount = ref.watch(libraryEpisodeCountProvider);
     final list = subs.maybeWhen(
         data: (l) => l, orElse: () => const <CalendarSubscription>[]);
     // 三个统计卡的数字（稿子 `#segLiveCount` / `#segEndCount` / `#segContCount`）
@@ -152,11 +169,16 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
             // ── 内容 ──
             Expanded(
               child: switch (_seg) {
-                // 在播 / 已完结走同一个日历（按状态过滤）
+                // 0 连载中：**保留周历**（周几更新对连载剧有意义）
                 0 => _SubscribedCalendar(only: _Only.live),
-                1 => _SubscribedCalendar(only: _Only.ended),
-                // 复用 `HistoryPage`（它已实现加载/空态/错误态/下拉刷新）
-                _ => const HistoryPage(embedded: true),
+                // 1 已完结：**3 列海报网格，不带日历**（用户截图规格）
+                //    已完结的剧不会再更新 ⇒ 周历毫无意义
+                1 => _FinishedView(
+                    subs: list.where((x) => x.status == '已完结').toList(),
+                    libCount: libCount,
+                  ),
+                // 2 继续观看：**横卡列表**（聚合所有服务器）
+                _ => const _ContinueView(),
               },
             ),
           ],
@@ -166,12 +188,93 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
   }
 }
 
-/// 「追剧日历」要显示的**状态子集**（三个统计卡各对应一个）。
+/// 「已完结」视图包装（把订阅表转成 `FinishedGrid` 需要的形状）。
+class _FinishedView extends ConsumerWidget {
+  const _FinishedView({required this.subs, required this.libCount});
+
+  /// **已完结**的订阅（上层已过滤好；这里不再筛一次，
+  /// 避免"两处各筛一套"导致口径不一致）。
+  final List<CalendarSubscription> subs;
+
+  /// `sourceId → 库内集数`（来自追剧页第 ② 段）。
+  final Map<String, int> libCount;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return FinishedGrid(
+      items: subs,
+      // ★ 集数用**库内实际集数**（`_libCount`，追剧页第 ② 段顺手记下的）
+      //    拿不到就不显示（"宁可不显示，也不编数字"）。
+      episodeCountOf: (id) => libCount[id],
+      onTap: (sub) => showCalendarDetail(context, _subToEntry(sub)),
+    );
+  }
+}
+
+/// 「继续观看」视图包装（**聚合所有已登录服务器**）。
 ///
-/// ## 为什么用"过滤"而不是"三套列表"
-/// 三条数据的渲染逻辑**完全相同**（周历 + 按天筛选 + 卡片）⇒
-/// 各写一套必然漂移（本轮已因"两处各写一套标签"被用户抓到过）。
-enum _Only { live, ended }
+/// ## 为什么不用 `HistoryPage`
+/// 它是通用的 3 列海报网格；用户要的是稿子里的**横卡**（`.cont-card`：
+/// 130×74 缩略图 + 标题 + 进度条 + 百分比）。
+/// 且 `HistoryPage` 只查**当前会话一台**，用户明确要求"继续观看也要聚合"。
+class _ContinueView extends ConsumerWidget {
+  const _ContinueView();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final async = ref.watch(aggregatedResumeProvider);
+    final api = ref.watch(embyApiProvider);
+    return async.when(
+      loading: () => Center(child: CircularProgressIndicator(color: Cf.accent)),
+      error: (e, _) => CfErrorView(
+        message: e is MediaException ? e.message : '加载失败',
+        onRetry: () => ref.invalidate(aggregatedResumeProvider),
+      ),
+      data: (items) => RefreshIndicator(
+        color: Cf.accent,
+        backgroundColor: Cf.surface,
+        onRefresh: () => ref.refresh(aggregatedResumeProvider.future),
+        child: ContinueList(
+          items: items,
+          api: api,
+          onTap: (it) => openMediaItem(context, it),
+        ),
+      ),
+    );
+  }
+}
+
+/// 订阅 → `CalendarEntry`（`showCalendarDetail` 需要的类型）。
+///
+/// ## 为什么在调用侧转（而不是改 `showCalendarDetail` 签名）
+/// 那个函数被 **3 处**复用（日历页/分类浏览/热播页），它们手上都是
+/// `CalendarEntry`。为一个调用点改公共签名会波及它们。
+CalendarEntry _subToEntry(CalendarSubscription sub) => CalendarEntry(
+      title: sub.title,
+      titleCn: sub.titleCn.isEmpty ? null : sub.titleCn,
+      source: sub.source,
+      sourceId: sub.sourceId,
+      posterUrl: sub.posterUrl.isEmpty ? null : sub.posterUrl,
+      platform: sub.platform.isEmpty ? null : sub.platform,
+      // ⚠️ `CalendarEntry.category` 是 `CalendarCategory`（3 档），
+      //    不是 `BrowseCategory`（6 档）—— 两者维度不同。
+      category: switch (sub.category) {
+        'anime' => CalendarCategory.anime,
+        'variety' => CalendarCategory.variety,
+        _ => CalendarCategory.series,
+      },
+      airDate: sub.lastAirDate.isEmpty ? null : sub.lastAirDate,
+    );
+
+/// 「追剧日历」要显示的**状态子集**。
+///
+/// ## ★ 为什么现在只剩一个值（曾经有 `ended`）
+/// 用户要求"已完结的显示成 3 列海报网格，**不带日历**"⇒
+/// 已完结改走 `FinishedGrid`，不再复用周历视图
+/// ⇒ `_Only.ended` 成了**死分支**，删掉。
+/// 保留枚举而不是直接去掉参数：周历视图**语义上仍只服务"连载中"**，
+/// 留一个值比留一个 bool 更能表达"这是状态过滤"。
+enum _Only { live }
 
 /// 统计卡的种类（决定圆点色与激活背景）。稿子 `.top-seg-btn.live/.end/.cont`。
 enum _StatKind { live, end, cont }
@@ -312,6 +415,18 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
   /// 要给 `MediaItem` 加 `ChildCount` 解析才能显示完整进度。
   Map<String, (int, int)> _progress = {};
 
+  /// sourceId → **下次更新日**（yyyy-MM-dd；第 ② 段顺手算）。
+  Map<String, String> _libNext = {};
+
+  /// `sourceId → **库内平台名**`（订阅表没平台时用它补 —— 时刻标签要用）。
+  Map<String, String> _libPlat = {};
+
+  /// `sourceId → **库内最大集号**`（卡片"更新至 EN"用 —— **以库为准**）。
+  Map<String, int> _libMaxEp = {};
+
+  /// `sourceId → 时刻表条目`（B站官方索引；决定卡片的精确时刻）。
+  Map<String, AnimeTimeline> _timeline = {};
+
   bool _loading = true;
 
   /// 已回写过状态的 sourceId（防同一轮重复写库）。
@@ -398,16 +513,25 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
     //    ⇒ 必须 wait ...future（读 .value 会拿到 null，本轮已踩过）
     final apisMap = await ref.read(accountApisProvider.future);
     final apis = apisMap.values.toList();
+    // `sourceId → 库内集数`（本段填充，见 `_libCount` 的说明）
+    final libCount = <String, int>{};
+    // `sourceId → 下次更新日 yyyy-MM-dd`（本段顺手算，零额外请求）
+    final libNext = <String, String>{};
+    // `sourceId → 库内平台名`（订阅表没平台时用它补 —— 时刻标签要用）
+    final libPlat = <String, String>{};
+    // `sourceId → 库内最大集号`（卡片"更新至 EN"用 —— **以库为准**）
+    final libMaxEp = <String, int>{};
     final api = ref.read(embyApiProvider);
     var inLib = 0;
     if (apis.isNotEmpty) {
       try {
         // ① 每台的 id 映射（并发）
-        final maps = await Future.wait(apis.map((a) async {
+        final List<Map<String, SeriesRef>> maps =
+        await Future.wait(apis.map((a) async {
           try {
             return await a.mapSeriesTmdbToId();
           } catch (_) {
-            return <String, String>{};
+            return <String, SeriesRef>{};
           }
         }));
 
@@ -419,27 +543,63 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
           await Future.wait(batch.map((s) async {
             // 该剧在哪几台有（可能多台都有）
             final ids = <String>[];
+            // ★ 并用**库内平台**补订阅表的空平台
+            //
+            // ## 为什么需要（用户要卡片上的 `20:00` 时刻标签）
+            // 时刻由 `platformAirTime(平台)` 推出 ⇒ 平台为空就没有时刻。
+            // 订阅源（TMDB/B站/tgmeng）常常没给平台；库内的 `Studios`
+            // **实测就是播出平台**（Tencent Video / iQiyi / Mango TV / CCTV…）。
+            String? libPlatform;
             for (final m in maps) {
-              final sid = m[s.sourceId];
-              if (sid != null && sid.isNotEmpty) ids.add(sid);
+              final rf = m[s.sourceId];
+              if (rf == null || rf.seriesId.isEmpty) continue;
+              ids.add(rf.seriesId);
+              libPlatform ??= rf.platform;
+            }
+            if (libPlatform != null && libPlatform.isNotEmpty) {
+              libPlat[s.sourceId] = libPlatform;
             }
             if (ids.isEmpty) return;
-            final all = <LibraryEpisode>[];
+            // ★★ 改用 `getLibrarySummary`（**一个请求拿全部**）
+            //
+            // ## 为什么换（真机实证的矛盾）
+            // ```
+            // 卡片：更新至 E239            ← TMDB 周历（错）
+            // 详情页：已入库 203 集 / 第 203 集  ← 库内（对）
+            // ```
+            // 根因：`getSeriesEpisodes` **会过滤掉没有 `PremiereDate` 的集**
+            //（《吞噬星空》33 集全无日期 ⇒ 返回空），
+            // 而 `getLibrarySummary` 不会 ⇒ 同一部剧、两个函数、两个数。
+            // ⇒ 统一到 `getLibrarySummary`（它与详情页**同源同口径**）。
+            LibrarySummary? sum;
             for (var k = 0; k < ids.length; k++) {
               try {
-                all.addAll(await apis[k].getSeriesEpisodes(ids[k]));
+                final r0 = await apis[k].getLibrarySummary(ids[k]);
+                if (r0 != null && r0.episodeCount > 0) {
+                  if (sum == null || r0.episodeCount > sum.episodeCount) {
+                    sum = r0;
+                  }
+                  if (r0.nextAirDate != null) break;
+                }
               } catch (_) {}
             }
-            if (all.isEmpty) return;
-            // ③ 只留**本周**（周一到周日）的集
-            final days = <int, List<int>>{};
-            for (final e in all) {
-              (days[e.weekday] ??= []).add(e.episode ?? 0);
+            if (sum == null || sum.episodeCount == 0) return;
+
+            // ① 已入库集数（**以库为准**）
+            libCount[s.sourceId] = sum.episodeCount;
+            // ② 库内最大集号 ⇒ 卡片"更新至 EN"
+            if (sum.lastEpisode != null && sum.lastEpisode! > 0) {
+              libMaxEp[s.sourceId] = sum.lastEpisode!;
             }
-            for (final v in days.values) {
-              v.sort();
+            // ③ 库内下次更新日
+            if (sum.nextAirDate != null && sum.nextAirDate!.isNotEmpty) {
+              libNext[s.sourceId] = sum.nextAirDate!;
             }
-            weeks[s.sourceId] = ShowWeek(days: days, status: s.status);
+            // ④ 周历（只含**带日期**的集；没日期时为空 ⇒ 退回 TMDB 周历）
+            if (sum.days.isNotEmpty) {
+              weeks[s.sourceId] = ShowWeek(
+                  days: sum.days, status: s.status);
+            }
             inLib++;
           }));
         }
@@ -554,11 +714,123 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
     }
 
     if (!mounted) return;
+    // ★ 查时刻表（0 网络，只读本地）
+    await _loadTimelineHits();
+
+    // ★ 库内集数写进 provider（头部与详情页要读；见该 provider 的说明）
+    ref.read(libraryEpisodeCountProvider.notifier).set(libCount);
     setState(() {
       _weeks = weeks;
       _progress = prog;
+      _libNext = libNext;
+      _libPlat = libPlat;
+      _libMaxEp = libMaxEp;
       _loading = false;
     });
+
+    // ══════ ⑤ 动漫更新时刻表（用户建议："定期在这儿索引"）══════
+    //
+    // ## 触发策略
+    // 打开追剧页时：**表为空或超过 24h** ⇒ 后台索引一次。
+    // 不做系统级定时任务 —— 移动端系统定时不可靠（会被杀后台），
+    // 而时刻极少变（用户："时间一般不会更改的，你固定住就好"）
+    // ⇒ "打开时按需刷新"就够，且**不阻塞 UI**（`await` 放在最后）。
+    await _ensureTimelineIndexed();
+
+    // ★ 写底栏角标（稿子 `updateNavBadge()`：今日更新的剧集数）
+    //
+    // ⚠️ 必须**与周历用同一份 `_weeks`** —— 各算各的会让
+    //    底栏显示 3、点进去看到 2（用户已因此报障过一次）。
+    _syncNavBadge(weeks, subs);
+  }
+
+  /// 确保**动漫更新时刻表**已索引（表为空或超 24h 才刷）。
+  ///
+  /// ## 为什么 24h
+  /// 时刻极少变（用户："时间一般不会更改的，你固定住就好"）。
+  /// 索引 115 部只需 1 个请求 ⇒ 24h 一次的成本可忽略。
+  ///
+  /// ## 失败不抛
+  /// 索引失败只是"没有精确时刻"⇒ 回落平台惯例，**不影响周历**。
+  Future<void> _ensureTimelineIndexed() async {
+    final c = ref.read(calendarClientProvider);
+    final db = ref.read(appDbProvider);
+    var total = 0;
+    // ★ **每个平台各判自己的新鲜度**（不能用一个全局 TTL）
+    //
+    // ## 真机踩到的 bug
+    // 原实现：`at = 全表 max(updated_at)` ⇒ B站索引过一次后，
+    // 整个 if (fresh) return **把爱奇艺/优酷一起跳过**
+    // ⇒ 新加的平台永远不索引（dump 证实：只有 B站时刻生效）。
+    Future<void> run(String platform, Future<int> Function() fn) async {
+      try {
+        final at = await db.timelineIndexedAt(platform: platform);
+        final now = DateTime.now().millisecondsSinceEpoch;
+        const day = 24 * 60 * 60 * 1000;
+        if (at != null && now - at < day) {
+          debugPrint('[追剧] $platform 时刻表还新鲜（跳过）');
+          return;
+        }
+        total += await fn();
+      } catch (e) {
+        debugPrint('[追剧] $platform 索引失败（继续）: $e');
+      }
+    }
+
+    // ## 顺序：先便宜后贵
+    // · **B站** 1 个请求（官方时间表，115 部）
+    // · **爱奇艺** 1 个请求（频道 JSON，两段式解析 100%）
+    // · **优酷** 1 + N（频道页 + 逐剧详情页，限并发 4）—— 最准但最贵
+    //
+    // ## 腾讯为什么不在列（穷尽式验证过，见 CalendarClient 的注释）
+    await run('bilibili', () => c.indexAnimeTimeline(db: db));
+    await run('iqiyi', () => c.indexIqiyiTimeline(db: db));
+    await run('youku', () => c.indexYoukuTimeline(db: db));
+    debugPrint('[追剧] 时刻表本次新增 $total 条');
+    if (total > 0 && mounted) {
+      await _loadTimelineHits();
+    }
+  }
+
+  /// 查"订阅剧在时刻表里的更新时刻"（**只读本地表，0 网络**）。
+  Future<void> _loadTimelineHits() async {
+    final db = ref.read(appDbProvider);
+    // ⚠️ **必须 `await ...future`** —— 这是本轮修过 6 次的同一个坑：
+    //    读 `.value` 在未就绪时是 null ⇒ `?? const []` ⇒ **静默不执行**。
+    //    全仓守卫测试当场抓到（`tracking_page.dart` 命中）。
+    final subs = await ref.read(subscriptionsProvider.future);
+    final hits = <String, AnimeTimeline>{};
+    for (final s in subs) {
+      final t = s.titleCn.isEmpty ? s.title : s.titleCn;
+      try {
+        final row = await db.timelineFor(t);
+        if (row != null) hits[s.sourceId] = row;
+      } catch (_) {}
+    }
+    if (mounted) setState(() => _timeline = hits);
+  }
+
+  /// 把"今日更新的订阅数"写进 `todayUpdateCountProvider`（底栏角标）。
+  ///
+  /// ## 判据（与周历 `_countOn` 完全一致）
+  /// `_weeks[sourceId].days` 是否含**今天的 weekday**。
+  /// 只看 `_Only.live`（已完结的剧不会有"今日更新"）。
+  void _syncNavBadge(Map<String, ShowWeek> weeks, List<CalendarSubscription> subs) {
+    final today = DateTime.now().weekday;
+    var n = 0;
+    for (final s in subs) {
+      // 已完结的跳过（与"连载中"统计卡同一口径）
+      if (s.status == '已完结') continue;
+      final w = weeks[s.sourceId];
+      if (w != null && w.days.containsKey(today)) n++;
+    }
+    // ★ 直接由调用方传入 `subs`（`_loadAll` 顶部已 `await ...future` 拿到）
+    //
+    // ## 为什么不再读一次（守卫测试当场抓到）
+    // 我第一版写的是 `ref.read(subscriptionsProvider).value` —— 又是本轮
+    // 修过 5 次的那个错（未就绪时是 null ⇒ 静默不执行）。
+    // 全仓守卫测试立刻变红，指向这一行。**改成参数传入**。
+    ref.read(todayUpdateCountProvider.notifier).set(n);
   }
 
   /// 本周一的 0 点（与 `CalendarClient._mondayOf` 同算法）。
@@ -681,6 +953,15 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
                             sub: onDay[i],
                             week: _weeks[onDay[i].sourceId],
                             progress: _progress[onDay[i].sourceId],
+                            // ★ 库内集数（详情页「已入库」用）
+                            // 库内集数（provider 里的；子级也能 watch）
+                            libCount: ref
+                                .watch(libraryEpisodeCountProvider)[
+                                    onDay[i].sourceId],
+                            libNext: _libNext[onDay[i].sourceId],
+                            libPlatform: _libPlat[onDay[i].sourceId],
+                            libMaxEp: _libMaxEp[onDay[i].sourceId],
+                            timeline: _timeline[onDay[i].sourceId],
                             isToday: _sel == today,
                           ),
                         ),
@@ -811,25 +1092,99 @@ class _WeekBar extends StatelessWidget {
 /// ## 规格（用户）
 /// 左 56x80 海报；右侧剧名 + `[状态] · 平台` + 进度条 + `已看 8/12 · 剩 4 集`
 /// 今天更新的卡片左侧有 3px 竖条。
-class _SubTile extends StatelessWidget {
+/// 订阅剧卡片。
+///
+/// ## 为什么是 `ConsumerWidget`（而不是 `StatelessWidget`）
+/// 点击时要 `ref.read(aggregatedSearchProvider)` **先查库** ——
+/// 库里有的直接进库内详情页（用户要求"应该等于库中的详情页"）。
+class _SubTile extends ConsumerWidget {
   const _SubTile({
     required this.sub,
     this.week,
     this.progress,
+    this.libCount,
+    this.libNext,
+    this.libPlatform,
+    this.libMaxEp,
+    this.timeline,
     this.isToday = false,
   });
 
   final CalendarSubscription sub;
   final ShowWeek? week;
 
+  /// **库内已入库的集数**（null = 库里没有 / 未查到）⇒ 传给详情页显示「已入库」。
+  final int? libCount;
+
   /// `(已看集数, 总集数)`；null = Emby 里没匹配到（**不编数字**）。
   final (int, int)? progress;
+
+  /// 今天是否更新（左侧 3px 竖条用）。
   final bool isToday;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final cn = week?.statusCn ?? (sub.status.isEmpty ? null : sub.status);
     final eps = week?.days.values.expand((x) => x).toList() ?? const <int>[];
+    return GestureDetector(
+      onTap: () => _open(context, ref),
+      behavior: HitTestBehavior.opaque,
+      child: _content(cn, eps),
+    );
+  }
+
+  /// 点开卡片：**先查库**，命中进库内详情页；没命中才用日历详情页。
+  ///
+  /// ## ★ 用户要求（2026-10-12）
+  /// > "追剧中详情页应该等于库中的详情页，不需要跳转"
+  ///
+  /// ## 为什么必须查库（而不是直接开日历详情页）
+  /// 日历详情页是我为**外部源**（TMDB/豆瓣）做的 ——
+  /// 库里已有的剧不该有两套详情页。用户明确要求"应该等于"。
+  ///
+  /// ## 降级
+  /// 库里没有（先订阅、等入库的剧）⇒ 仍用日历详情页看简介/取消订阅。
+  Future<void> _open(BuildContext context, WidgetRef ref) async {
+    final title = sub.titleCn.isEmpty ? sub.title : sub.titleCn;
+    final entry = _subToEntry(sub);
+    // 轻提示：查库约 1 秒，避免"点了没反应"
+    if (context.mounted) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(
+          content: Text('正在媒体库里查找…'),
+          duration: Duration(milliseconds: 1200),
+        ),
+      );
+    }
+    try {
+      final results =
+          await ref.read(aggregatedSearchProvider(title).future);
+      if (!context.mounted) return;
+      for (final r in results) {
+        for (final h in r.hits) {
+          final t = h.item.type;
+          // 只要整剧/整片（避免命中的是分集）
+          if (t != 'Series' && t != 'Movie') continue;
+          ScaffoldMessenger.maybeOf(context)?.hideCurrentSnackBar();
+          openMediaItem(context, h.item);
+          return;
+        }
+      }
+    } catch (_) {
+      // 查库失败 ⇒ 走降级（不让用户卡住）
+    }
+    if (!context.mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.hideCurrentSnackBar();
+    // 库里没有 ⇒ 外部源详情页（能看简介、能取消订阅）
+    showCalendarDetail(
+      context,
+      entry,
+      libraryEpisodeCount: libCount,
+    );
+  }
+
+  /// 卡片内容（拆出来是为了让 [build] 只负责"包点击"）。
+  Widget _content(String? cn, List<int> eps) {
     return Padding(
       padding: const EdgeInsets.symmetric(
           horizontal: Cf.gap4, vertical: Cf.gap2),
@@ -874,7 +1229,15 @@ class _SubTile extends StatelessWidget {
             Wrap(spacing: 6, runSpacing: 3, children: [
               // ★ 状态：连载中 / 已完结（用户明确要求区分）
               if (cn != null) _chip(cn, _statusColor(cn)),
-              if (sub.platform.isNotEmpty) _chip(sub.platform, Cf.text2),
+              if (_platform.isNotEmpty) _chip(_platform, Cf.text2),
+              // ★ 播出时刻（稿子 `.uc-meta .time-tag`：绿底浅绿字）
+              //
+              // ⚠️ 这是**平台常规首播时刻**（腾讯/爱奇艺/芒果 20:00、
+              //    B站 23:30…），**不是该剧的精确时刻** ——
+              //    实测两台服务器的 `AirTime`/`AirDays` 全为空、
+              //    分集时间部分只有 00:00:00 / 16:00:00（都是日期零点）。
+              //    详见 `platformAirTime` 的注释。
+              if (_airTime case final at?) _timeChip(at),
               // ★ 集号（稿子口径："已更新至第 N 集"，不是把每天更新的集全罗列）
               //
               // ## 我第一版为什么错
@@ -883,7 +1246,18 @@ class _SubTile extends StatelessWidget {
               // 而用户要的是"更新到哪儿了"这一个数。
               //
               // 稿子原文：`已更新至第 ${stats.total} 集` ⇒ 取**最大集号**。
-              if (eps.isNotEmpty)
+              // ★ "更新至 EN" —— **库内集号优先**（用户："以库里的集数为准"）
+              //
+              // ## 为什么必须换（真机 dump 的矛盾）
+              // 原来用**周历**的最大集号：`更新至 E239`，
+              // 而详情页显示库里只有 **203 集** ⇒ 两个数字打架。
+              // 用户看到会以为数据错。
+              // ## 两级
+              // 1. 库内最大集号（`libMaxEp`）—— 最准
+              // 2. 没有 ⇒ 退回周历
+              if ((libMaxEp ?? 0) > 0)
+                _chip('更新至 E$libMaxEp', Cf.accent)
+              else if (eps.isNotEmpty)
                 _chip('更新至 E${eps.reduce((a, b) => a > b ? a : b)}',
                     Cf.accent),
             ]),
@@ -929,26 +1303,100 @@ class _SubTile extends StatelessWidget {
   /// · 明天有 ⇒ "明天 周X"
   /// · 其余 ⇒ 直接"周X"（避免"3 天后"这种要心算的说法）
   /// · 本周没有任何更新 ⇒ null（**不显示**，不编"待定"）
+  /// 「下次更新」文案：`下次更新：今天 周一 20:00`。
+  ///
+  /// ## 与用户截图的对应（稿子）
+  /// ```
+  /// ⏰ 下次更新：今天 周一 20:00
+  /// ```
+  ///
+  /// ## 三级降级（都不编造）
+  /// · 有库内日期 ⇒ "今天/明天/日期" + 周几
+  /// · 只有 `weekday` ⇒ "周X"
+  /// · 都没有 ⇒ null（**不显示**，而不是显示"待定"）
+  ///
+  /// ## 时刻是**平台常规时刻**
+  /// 见 `platformAirTime` 的实测注释：两台服务器的 `AirTime` 全空，
+  /// 分集时间部分只有零点 ⇒ 精确时刻在现有源里不存在。
+  /// 认不出平台 ⇒ **不带时刻**（只显示到周几）。
   String? _nextUpdateText() {
     final w = week;
-    if (w == null || w.days.isEmpty) return null;
     final today = DateTime.now().weekday;
-    // 按"距今天的天数"排序（0=今天）
-    final days = w.days.keys.toList()
-      ..sort((a, b) =>
-          ((a - today + 7) % 7).compareTo((b - today + 7) % 7));
-    if (days.isEmpty) return null;
-    final d = days.first;
     const cn = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-    final gap = (d - today + 7) % 7;
-    final when = switch (gap) {
-      0 => '今天',
-      1 => '明天',
-      _ => '',
-    };
-    return when.isEmpty
-        ? '下次更新：${cn[d]}'
-        : '下次更新：$when ${cn[d]}';
+    final at = _airTime;
+
+    // ① 库内日期优先（最准）
+    final d = _nextDate; // yyyy-MM-dd
+    if (d != null && d.length >= 10) {
+      final dt = DateTime.tryParse(d);
+      if (dt != null) {
+        final now = DateTime.now();
+        final gap = DateTime(dt.year, dt.month, dt.day)
+            .difference(DateTime(now.year, now.month, now.day))
+            .inDays;
+        final when = switch (gap) {
+          0 => '今天',
+          1 => '明天',
+          _ => d,
+        };
+        final wd = cn[dt.weekday];
+        return at == null
+            ? '下次更新：$when $wd'
+            : '下次更新：$when $wd $at';
+      }
+    }
+
+    // ② 退回外部源的 weekday
+    if (w != null && w.days.isNotEmpty) {
+      final days = w.days.keys.toList()
+        ..sort((a, b) =>
+            ((a - today + 7) % 7).compareTo((b - today + 7) % 7));
+      final dd = days.first;
+      final gap = (dd - today + 7) % 7;
+      final when = switch (gap) {
+        0 => '今天',
+        1 => '明天',
+        _ => '',
+      };
+      final head = when.isEmpty ? '下次更新：${cn[dd]}' : '下次更新：$when ${cn[dd]}';
+      return at == null ? head : '$head $at';
+    }
+    return null; // **不显示**"待定"
+  }
+
+  /// 库内的"下次更新日"（`yyyy-MM-dd`；null = 拿不到）。
+  ///
+  /// 由 `_loadAll` 从 `librarySummaryProvider` 之外单独查 —— 见 `libNext`。
+  String? get _nextDate => libNext;
+
+  /// 该剧的库内"下次更新日"（由上层通过构造参数传入）。
+  final String? libNext;
+
+  /// **库内平台名**（订阅表没平台时用它 —— 决定能否显示 `20:00` 时刻）。
+  final String? libPlatform;
+
+  /// **库内最大集号**（"更新至 EN"用 —— **以库为准**，用户明确要求）。
+  final int? libMaxEp;
+
+  /// **时刻表条目**（B站官方索引；`null` = 没索引到）。
+  final AnimeTimeline? timeline;
+
+  /// 生效的平台名（**库内优先** —— 那是最准的）。
+  String get _platform =>
+      (libPlatform != null && libPlatform!.isNotEmpty)
+          ? libPlatform!
+          : sub.platform;
+
+  /// **生效的更新时刻**（`HH:mm`；null = 不知道）。
+  ///
+  /// ## 优先级（越靠前越准）
+  /// 1. **时刻表索引**（B站官方，精确到分）—— 实测 `pub_time` = `10:00`
+  /// 2. **平台惯例**（`platformAirTime`：腾讯/爱奇艺/优酷 20:00、B站 23:30）
+  /// 3. 都没有 ⇒ null（**不显示**，不编）
+  String? get _airTime {
+    final t = timeline?.airTime;
+    if (t != null && t.isNotEmpty) return t;
+    return platformAirTime(_platform);
   }
 
   Color _statusColor(String cn) => switch (cn) {
@@ -964,6 +1412,23 @@ class _SubTile extends StatelessWidget {
           borderRadius: BorderRadius.circular(Cf.radiusXs),
         ),
         child: Text(t, style: Cf.micro.copyWith(fontSize: 10, color: c)),
+      );
+
+  /// 播出时刻胶囊（稿子 `.uc-meta .time-tag`：绿底浅绿字，紧跟平台标签）。
+  ///
+  /// 与 [_chip] 分开是因为**配色不同**（那个用状态色，这个固定绿）。
+  Widget _timeChip(String text) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          // `rgba(34,197,94,0.15)`
+          color: const Color(0xFF22C55E).withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(Cf.radiusXs),
+        ),
+        child: Text(text,
+            style: Cf.micro.copyWith(
+                fontWeight: FontWeight.w700,
+                // `#7dd96f`
+                color: const Color(0xFF7DD96F))),
       );
 
   Widget _progressBar() {

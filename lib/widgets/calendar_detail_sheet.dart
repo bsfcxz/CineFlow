@@ -25,9 +25,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/theme.dart';
+import '../data/media_provider.dart';
+import '../data/aggregated_search.dart';
+import '../pages/detail_page.dart';
+import '../state/providers.dart';
 import '../data/calendar_client.dart';
 import 'media_tags.dart';
-import '../state/providers.dart';
 
 /// 打开日历条目的**全屏详情页**。
 ///
@@ -39,7 +42,11 @@ import '../state/providers.dart';
 /// 差异不只是高度：全屏页才能放下
 /// 「52vh Hero + 操作按钮 + 下次更新 + 5 行信息 + 3 行简介 + 4 列选集网格」
 /// —— 弹层里这些会挤成一片。
-void showCalendarDetail(BuildContext context, CalendarEntry entry) {
+void showCalendarDetail(
+  BuildContext context,
+  CalendarEntry entry, {
+  int? libraryEpisodeCount,
+}) {
   Navigator.push(
     context,
     PageRouteBuilder<void>(
@@ -47,7 +54,10 @@ void showCalendarDetail(BuildContext context, CalendarEntry entry) {
       // 稿子的曲线：cubic-bezier(0.32, 0.72, 0, 1)，420ms
       transitionDuration: const Duration(milliseconds: 420),
       reverseTransitionDuration: const Duration(milliseconds: 320),
-      pageBuilder: (_, __, ___) => CalendarDetailPage(entry: entry),
+      pageBuilder: (_, __, ___) => CalendarDetailPage(
+        entry: entry,
+        libraryEpisodeCount: libraryEpisodeCount,
+      ),
       transitionsBuilder: (_, anim, __, child) => SlideTransition(
         position: Tween<Offset>(
           begin: const Offset(0, 1), // 从底部滑入（稿子 translateY(100%)）
@@ -63,9 +73,24 @@ void showCalendarDetail(BuildContext context, CalendarEntry entry) {
 }
 
 class CalendarDetailPage extends ConsumerStatefulWidget {
-  const CalendarDetailPage({super.key, required this.entry});
+  const CalendarDetailPage({
+    super.key,
+    required this.entry,
+    this.libraryEpisodeCount,
+  });
 
   final CalendarEntry entry;
+
+  /// **库内已入库的集数**（调用方传入；详情页自己查不到）。
+  ///
+  /// ## 为什么由外部传
+  /// 详情页只有 `tmdbId`，要查"库里几集"需走 Emby
+  /// （`mapSeriesTmdbToId` + `getSeriesEpisodes`）—— 那需要 `MediaProvider`，
+  /// 而本页是纯 UI 组件、不持有 provider。
+  /// **追剧页已经有这份数据** ⇒ 传进来即可，不重复请求。
+  /// 其它调用点（日历页 / 热播页 / 分类浏览）拿不到 ⇒ 传 null，
+  /// 「已入库」那行就**不显示**（而不是显示"未知"）。
+  final int? libraryEpisodeCount;
 
   @override
   ConsumerState<CalendarDetailPage> createState() =>
@@ -175,14 +200,18 @@ class _CalendarDetailPageState extends ConsumerState<CalendarDetailPage> {
                   _ActionRow(
                     entry: e,
                     detail: d,
-                    onPlay: () => _jumpToPlatform(title, d, e),
+                    onPlay: () => _play(title, d, e),
                     following: _following,
                     onToggleFollow: _toggleFollow,
                   ),
                   // ── ③ 下次更新（**电影隐藏**，用户规格）──
                   if (!isMovie) _NextUpdate(entry: e, detail: d),
                   // ── ④ 信息栏（**全类型显示**，用户规格）──
-                  _InfoSection(entry: e, detail: d),
+                  _InfoSection(
+                entry: e,
+                detail: d,
+                libraryEpisodeCount: widget.libraryEpisodeCount,
+              ),
                   // ── ⑤ 简介 3 行 + 展开全部 ──
                   if (d?.overview case final intro? when intro.isNotEmpty)
                     _Overview(
@@ -306,37 +335,104 @@ class _CalendarDetailPageState extends ConsumerState<CalendarDetailPage> {
   ///    （实测《仙逆》给了 `v.qq.com/x/cover/...`）
   /// ③ **平台搜索页** —— 只知道平台名时的兜底
   ///    （`platformSearchUrl`，用户还得再点一次）
-  Future<void> _jumpToPlatform(
+  /// **播放**：**先查库**，库里有就播库里的；没有才跳外部平台。
+  ///
+  /// ## ★★ 用户报障（2026-10-12）
+  /// > "为什么我点击，播放会跳转到腾讯，我这个是自己的库，
+  /// >  你查看我库里的资源，应该是播放库里的资源。"
+  ///
+  /// 旧实现无条件跳 `entry.jumpUrl`（腾讯/B站外链）—— **从不查库**，
+  /// 而用户的库里有这部剧（实测订阅 21 部有 14 部在库）。
+  ///
+  /// ## 判据与「追剧」按钮**完全一致**（同一条链，用户此前已确认）
+  /// · 库里命中 ⇒ 进播放器播库里的（**不跳外链**）
+  /// · 库里没有 ⇒ 提示 + 允许跳外部平台（播放平台的官方页面）
+  ///
+  /// ## 为什么用标题搜（而不是 tmdbId 映射）
+  /// 外部来源的条目**可能没有 tmdbId**（B站/tgmeng 就没有），
+  /// 标题才是通用入口。`aggregatedSearchProvider` 已实现
+  /// "并行搜所有已登录服务器 + 去重排序"。
+  Future<void> _play(
       String title, CalendarDetail? d, CalendarEntry e) async {
-    // ① tgmeng 的精确播放页（最准）
-    final jump = e.jumpUrl;
-    if (jump != null && jump.isNotEmpty) {
-      final ok = await launchUrl(Uri.parse(jump),
-          mode: LaunchMode.externalApplication);
-      if (ok) return;
-      // 打不开就继续降级（有些 http 链接在 Android 上被拦）
-    }
-    // ② TMDB 的官方页面
-    final home = d?.homepage;
-    final url = (home != null && home.isNotEmpty)
-        ? home
-        // ③ 平台搜索页兜底
-        : platformSearchUrl(
-            (d?.platforms.isNotEmpty ?? false) ? d!.platforms.first : e.platform,
-            title);
-    if (url == null) {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(content: Text('没有可跳转的播放平台')),
-      );
+    // ① 先搜本地库
+    List<ServerSearchResult> hits;
+    try {
+      hits = await ref.read(aggregatedSearchProvider(title).future);
+    } catch (err) {
+      if (mounted) _toast('搜索本地库失败：$err');
       return;
     }
-    final ok =
-        await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-    if (!ok && mounted) {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(content: Text('无法打开链接')),
-      );
+    if (!mounted) return;
+
+    // ② 命中 ⇒ 打开**库内**的详情页（那里有播放/选集，播的就是库里的资源）
+    final best = _pickBest(hits);
+    if (best != null) {
+      if (mounted) openMediaItem(context, best.item);
+      return;
     }
+
+    // ③ 没命中 ⇒ 说明库里没有；给用户选择（而不是静默跳外链）
+    final jump = e.jumpUrl;
+    if (jump == null || jump.isEmpty) {
+      _toast('媒体库里没有《$title》，也没有可跳转的播放平台');
+      return;
+    }
+    if (!mounted) return;
+    // 用对话框而非直接跳：用户点"播放"的预期是播片，跳网页是**降级**
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: Cf.surface,
+        title: const Text('媒体库里没有这部剧'),
+        content: Text('《$title》还没有入库。\n'
+            '要打开播放平台（${e.platform ?? '外部平台'}）的页面吗？'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('去平台看看')),
+        ],
+      ),
+    );
+    if (go == true) {
+      await launchUrl(Uri.parse(jump),
+          mode: LaunchMode.externalApplication);
+    }
+  }
+
+  /// 从搜索结果里挑**最匹配**的一条（同名/电视剧优先）。
+  ///
+  /// ## 判据（刻意保守）
+  /// · 优先 `type` 是 `Series`/`Movie` 的（搜索结果可能混入分集）
+  /// · 其次按名字完全相等
+  /// · 都没有 ⇒ 取第一条（聚合结果已按相关度排序）
+  /// 从聚合结果里挑**最匹配**的一条。
+  ///
+  /// ## ⚠️ `ServerSearchResult` 是**按服务器分组**的
+  /// ```dart
+  /// class ServerSearchResult {
+  ///   final MediaSession session;      // 这台服务器
+  ///   final List<AggregatedHit> hits;  // 这台上的命中
+  /// }
+  /// ```
+  /// ⇒ 必须**两层遍历**（我第一版当成"单条结果"写了，报 4 个 error）。
+  ///
+  /// ## 挑选判据（刻意保守）
+  /// 优先 `Series` / `Movie`（避免命中的是分集）；
+  /// 都没有 ⇒ 取第一个。
+  /// 不按"电影/剧集"区分 —— `CalendarCategory` 只有 3 档（无 movie）。
+  AggregatedHit? _pickBest(List<ServerSearchResult> results) {
+    AggregatedHit? fallback;
+    for (final r in results) {
+      for (final h in r.hits) {
+        final t = h.item.type;
+        if (t == 'Series' || t == 'Movie') return h;
+        fallback ??= h;
+      }
+    }
+    return fallback;
   }
 }
 // ══════════════════════════════════════════════════════════════
@@ -587,21 +683,78 @@ class _ActionRow extends StatelessWidget {
 }
 
 /// 「下次更新」横幅 —— **仅连载中显示**（用户规格：电影隐藏）。
-class _NextUpdate extends StatelessWidget {
+///
+/// ## ★ 用户要求（2026-10-12）
+/// > "下次更新时间你也没整"
+///
+/// 原来只显示"周X"，而 `entry.weekday` 对**库内来源**是 null
+/// ⇒ 一直显示"待定"。但库里**有每集首播日**（`getSeriesEpisodes` 取回）
+/// ⇒ 能算出**真实日期**。
+class _NextUpdate extends ConsumerWidget {
   const _NextUpdate({required this.entry, required this.detail});
 
   final CalendarEntry entry;
   final CalendarDetail? detail;
 
+  /// 「下次更新」文案（**三级降级，都不编造**）。
+  ///
+  /// 1. **库内摘要的日期** —— 最准（库里实际的分集首播日）
+  /// 2. 外部源的 `weekday` ⇒ "每周X"
+  /// 3. 都没有 ⇒ "待定"
+  ///
+  /// ## 为什么日期优于"周几"
+  /// 用户要的是"**下次更新时间**"；日期是确定的，
+  /// "每周X"读者还得自己算"那还有几天"。
+  /// [tmdbNext] = TMDB 的 `next_episode_to_air.air_date`（**兜底**）。
+  ///
+  /// ## ★ 为什么要兜底（实测证据）
+  /// Emby 库内分集的 `PremiereDate` **可能全为空**
+  /// （实测《吞噬星空》33 集全无日期）⇒ 库内算不出"下次更新"。
+  /// 而 TMDB 明确给了 `next_episode_to_air.air_date` = 2026-10-12。
+  /// ⇒ **库内优先**（那是"我手上真有的"），TMDB 兜底。
+  static String textFor(int? wd, LibrarySummary? sum, {String? tmdbNext}) {
+    final lib = sum?.nextAirDate;
+    final d = (lib != null && lib.isNotEmpty) ? lib : tmdbNext;
+    if (d != null && d.length >= 10) {
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final dt = DateTime.tryParse(d);
+      if (dt != null) {
+        final gap = DateTime(dt.year, dt.month, dt.day).difference(today).inDays;
+        final when = switch (gap) {
+          0 => '今天',
+          1 => '明天',
+          _ => d,
+        };
+        return '下次更新：$when';
+      }
+      return '下次更新：$d';
+    }
+    if (wd != null) return '下次更新：周${weekdayCn(wd)}';
+    return '下次更新：待定';
+  }
+
   @override
-  Widget build(BuildContext context) {
-    final st = statusKindFrom(detail?.status,
-            isMovie: entry.category == BrowseCategory.movie);
+  Widget build(BuildContext context, WidgetRef ref) {
+    final d = detail;
+    final st = statusKindFrom(d?.status,
+        isMovie: entry.category == BrowseCategory.movie);
+    // 电影不显示（用户规格）；已完结也不显示（不会再更新）
     if (st != 'live') return const SizedBox.shrink();
     final wd = entry.weekday;
-    final sub = detail?.episodeCount != null
-        ? '共 ${detail!.episodeCount} 集'
-        : '播出中';
+    // 库内摘要（含"下次更新日"）—— 用户："下次更新时间你也没整"
+    final tmdbId = d?.tmdbId;
+    final sum = (tmdbId == null || tmdbId.isEmpty)
+        ? null
+        : ref.watch(librarySummaryProvider(tmdbId)).value;
+    // 副标题：库内已入库集数优先（那是"你手上有几集"）
+    final libN = sum?.episodeCount;
+    final total = d?.episodeCount;
+    final sub = libN != null && libN > 0
+        ? (total != null && total > libN
+            ? '已入库 $libN 集 · 共 $total 集'
+            : '已入库 $libN 集')
+        : (total != null ? '共 $total 集' : '播出中');
     return Container(
       margin: const EdgeInsets.fromLTRB(Cf.gap5, Cf.gap2, Cf.gap5, Cf.gap2),
       padding: const EdgeInsets.all(Cf.gap4),
@@ -617,12 +770,13 @@ class _NextUpdate extends StatelessWidget {
           child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(wd == null ? '下次更新：待定' : '下次更新：周${weekdayCn(wd)}',
+                Text(textFor(wd, sum, tmdbNext: d?.nextAirDate),
                     style: Cf.caption.copyWith(
                         fontWeight: FontWeight.w700, color: Cf.text)),
                 const SizedBox(height: 2),
                 Text(sub,
-                    style: Cf.micro.copyWith(fontSize: Cf.caption.fontSize, color: Cf.text3)),
+                    style: Cf.micro.copyWith(
+                        fontSize: Cf.caption.fontSize, color: Cf.text3)),
               ]),
         ),
       ]),
@@ -632,21 +786,80 @@ class _NextUpdate extends StatelessWidget {
 
 /// 信息栏（**全类型显示**，用户规格）：播出平台/地区/播出/状态/进度。
 class _InfoSection extends StatelessWidget {
-  const _InfoSection({required this.entry, required this.detail});
+  const _InfoSection({
+    required this.entry,
+    required this.detail,
+    this.libraryEpisodeCount,
+  });
 
   final CalendarEntry entry;
   final CalendarDetail? detail;
 
+  /// **库内已入库的集数**（由调用方传入，详情页自己查不到）。
+  ///
+  /// ## 为什么需要外部传（而不是详情页自己查）
+  /// 详情页只有 `tmdbId`，要查"库里几集"得走 Emby
+  /// （`getSeriesEpisodes` + id 映射）—— 那需要 `MediaProvider`，
+  /// 而详情页是纯 UI 组件、不持有 provider。
+  /// **追剧页已经有这份数据**（`_weeks` + `_progress`）⇒ 传进来即可，不重复请求。
+  /// 其它调用点（日历页/热播页）拿不到 ⇒ 传 null，那行就**不显示**
+  /// （而不是显示"未知"——那会让用户以为坏了）。
+  final int? libraryEpisodeCount;
+
+  /// 「已更新」文案（**用户明确要求**：区分"已更新"与"共几集"）。
+  ///
+  /// ## 口径
+  /// | 情况 | 显示 |
+  /// |---|---|
+  /// | 有已更新集号 + 总集数 | `已更新至第 214 集 · 共 279 集` |
+  /// | 只有已更新集号 | `已更新至第 214 集` |
+  /// | 只有总集数 | `共 279 集` |
+  /// | 都没有 | `—` |
+  /// | 跨季（`season > 1`）| `已更新至 S5 第 214 集`（单看集号会误读）|
+  /// | 已完结 | `全 279 集`（稿子 `.trailer-sub` 口径）|
+  ///
+  /// ## ★ 为什么不能直接用 `episodeCount` 当"已更新"
+  /// 它是**跨季总数**（斗破苍穹 279 vs last S5E214）——
+  /// 我上一版就是这么显示的，用户看到会以为数据错。
+  String _progressText(CalendarDetail? d) {
+    if (d == null) return '—';
+    final last = d.lastEpisodeNumber;
+    final total = d.episodeCount;
+    final ended = statusKindFrom(d.status) == 'end';
+    // 已完结：总集数就是全集（稿子：`全 ${total} 集`）
+    if (ended && total != null) return '全 $total 集';
+    if (last == null) return total != null ? '共 $total 集' : '—';
+    // 跨季时带季号（S5E214 的 214 不是第 214 集）
+    final sn = d.lastEpisodeSeason;
+    final head = (sn != null && sn > 1) ? 'S$sn 第 $last 集' : '第 $last 集';
+    return total != null && total != last
+        ? '已更新至$head · 共 $total 集'
+        : '已更新至$head';
+  }
+
   @override
   Widget build(BuildContext context) {
     final d = detail;
+    // ★ 进度行：区分"**已更新到第几集**"与"**共几集**"（用户明确要求）
+    //
+    // ## 我上一版的错（实测证据）
+    // 只显示 `共 {number_of_episodes} 集` —— 但那个字段是**跨季总数**：
+    // ```
+    // 斗破苍穹  number_of_episodes=279   而 last=S5E214
+    // 完美世界  number_of_episodes=338   而 last=S1E288
+    // ```
+    // ⇒ 用户看到"共 279 集"却只更新到 214，会以为数据错了。
+    final progress = _progressText(d);
     final rows = <(String, String)>[
       ('播出平台', platformOf(entry, d) ?? '—'),
       ('地区', (d?.countries.isNotEmpty ?? false) ? d!.countries.first : '—'),
       ('播出',
           entry.weekday == null ? '已全部上线' : '每周${weekdayCn(entry.weekday!)}'),
       ('状态', statusTextOf(statusKindFrom(d?.status) ?? 'end')),
-      ('进度', d?.episodeCount != null ? '共 ${d!.episodeCount} 集' : '—'),
+      ('已更新', progress),
+      // 「已入库」只在**调用方能提供**时显示（见字段说明）
+      if (libraryEpisodeCount != null && libraryEpisodeCount! > 0)
+        ('已入库', '$libraryEpisodeCount 集'),
     ];
     return Padding(
       padding: const EdgeInsets.fromLTRB(Cf.gap5, Cf.gap3, Cf.gap5, Cf.gap3),

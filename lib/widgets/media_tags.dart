@@ -258,3 +258,50 @@ String? yearOfDate(String? d) {
   final y = d.substring(0, 4);
   return int.tryParse(y) == null ? null : y;
 }
+
+/// **平台常规首播时刻**（`20:00` / `23:30` 这种）。
+///
+/// ## ★★ 这不是"该剧的精确播出时刻"（实测证据）
+/// 在**两台真实 Emby 服务器**上完整核过，精确时刻**不存在于现有源**：
+/// ```
+/// ① 分集 PremiereDate 的时间部分：
+///    iLoveHD  00:00:00 ×40    ← 全是"日期零点"
+///    HK-Emby  16:00:00 ×39    ← 16:00Z = 北京次日 0 点，同样是零点
+/// ② 剧级 AirTime / AirDays：**两台全部 None / 空数组**
+/// ③ TMDB 只有 air_date，没有 air_time
+/// ```
+/// ⇒ 拿不到"这部剧几点播"。
+///
+/// ## 那 20:00 / 23:30 从哪来
+/// 是**中国大陆平台的常规首播时刻**（公开、稳定）：
+/// · 腾讯/爱奇艺/优酷/芒果 ⇒ **20:00**（会员抢先看）
+/// · B站番剧 ⇒ **23:30**
+/// · CCTV 电视剧频道 ⇒ **19:30**
+/// 稿子对芒果TV 写 20:00、对 B 站写 23:30 —— 与此表吻合。
+///
+/// ## 返回 null 的含义
+/// 认不出平台 ⇒ **不显示**（本仓库一贯口径：宁可不显示，也不编数字）。
+String? platformAirTime(String? platform) {
+  if (platform == null || platform.isEmpty) return null;
+  final p = platform.toLowerCase();
+  // B站番剧：23:30
+  if (p.contains('b站') || p.contains('bilibili') || p.contains('哔哩')) {
+    return '23:30';
+  }
+  // CCTV 电视剧频道：19:30
+  if (p.contains('cctv') || p.contains('央视')) return '19:30';
+  // 主流长视频平台：20:00
+  for (final k in const [
+    '腾讯', 'tencent', 'weixin',
+    '爱奇艺', 'iqiyi',
+    '优酷', 'youku',
+    '芒果', 'mango', 'mgtv',
+    '咪咕', 'migu',
+    '乐视', 'letv',
+    '搜狐', 'sohu',
+    '西瓜', 'ixigua',
+  ]) {
+    if (p.contains(k)) return '20:00';
+  }
+  return null;
+}

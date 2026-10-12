@@ -79,12 +79,28 @@ void main() {
     });
 
     test('★★ 新表必须注册进 @DriftDatabase', () {
+      // ⚠️ 断言**逐表检查**，而不是匹配整行字面量。
+      //
+      // ## 为什么（本轮踩到）
+      // 原断言匹配 `tables: [A, B, C]` 这个**单行**写法；
+      // 我加第 4 张表（`AnimeTimelines`）时改成多行 ⇒ 断言**假失败**
+      //（表已正确注册，只是格式变了）。
+      // 逐表检查既守住"必须注册"的本意，也不会因格式/新增而假失败。
       final c = code('lib/data/db/app_database.dart');
-      expect(
-          c.contains(
-              'tables: [DoubanCaches, PlayHistories, CalendarSubscriptions]'),
-          isTrue,
-          reason: '★★ 不注册 ⇒ drift 不生成表 ⇒ 运行时 "no such table"');
+      final m = RegExp(
+          r'@DriftDatabase\(tables:\s*\[([^\]]*)\]',
+          dotAll: true,
+      ).firstMatch(c);
+      expect(m, isNotNull, reason: '★★ 找不到 @DriftDatabase(tables: …)');
+      for (final t in const [
+        'DoubanCaches',
+        'PlayHistories',
+        'CalendarSubscriptions',
+        'AnimeTimelines',
+      ]) {
+        expect(m!.group(1)!.contains(t), isTrue,
+            reason: '★★ 表 $t 没注册 ⇒ drift 不生成 ⇒ "no such table"');
+      }
     });
   });
 

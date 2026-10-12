@@ -173,10 +173,19 @@ void main() {
       final c = code('lib/pages/profile_page.dart');
       expect(c.contains("title: '继续观看'"), isFalse,
           reason: '★★★ 用户："删除继续观看"');
-      // ⚠️ `HistoryPage` 仍在（被「追剧」Tab 复用），只是不从这里进
+      // ⚠️ 追剧 Tab 的第二个分页**已改为 `ContinueList`**（横卡样式）。
+      //
+      // ## 为什么断言变了（用户 2026-10-12 明确要求）
+      // > "已完结的和继续观看的显示成图二这样，不带日历"
+      // > "继续观看你也要聚合一下哦"
+      // 稿子 `.cont-card` 是**横排卡片**（130×74 缩略图 + 进度条 + 百分比），
+      // 与 `HistoryPage` 的 3 列海报网格不同；且 `HistoryPage` 只查
+      // **当前会话一台**，不满足"聚合"要求。
+      // ⇒ `HistoryPage` 作为**独立页面**保留，但追剧 Tab 改用
+      //    `ContinueList` + `aggregatedResumeProvider`。
       final t = code('lib/pages/tracking_page.dart');
-      expect(t.contains('HistoryPage'), isTrue,
-          reason: '★ 它被追剧 Tab 复用，不能一起删');
+      expect(t.contains('ContinueList'), isTrue,
+          reason: '★ 追剧 Tab 的继续观看已改为横卡 + 聚合');
     });
 
     test('★★★ 「服务端播放列表」必须**已移除**（用户 2026-10-11）', () {

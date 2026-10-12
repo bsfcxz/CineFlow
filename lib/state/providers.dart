@@ -396,6 +396,201 @@ String? _statusCn(String? s) => switch (s) {
       _ => null,
     };
 
+/// **继续观看（聚合所有已登录服务器）**。
+///
+/// ## 用户要求
+/// > "继续观看你也要聚合一下哦"
+///
+/// ## 为什么原来的不够（真机实测）
+/// `_historyProvider` 用 `embyApiProvider` = **当前会话那一台**。
+/// 用户有两台（iLoveHD / HK-Emby），在另一台看了一半的内容
+/// **不会出现在继续观看里** —— 与"周历只查一台"是同一类错误。
+///
+/// ## 合并规则（去重 + 排序）
+/// · 去重键：`(serverId, itemId)` —— 两台可能各有一份同一部片，
+///   那是**两条不同的续播记录**（进度可能不同），不能按名字去重
+/// · 排序：按 `userData.lastPlayedDate` 倒序（最近看的在前）
+///   ⚠️ 缺日期的排最后（不能当"最旧"的正序插入 —— 那会让它们挤到中间）
+final aggregatedResumeProvider =
+    FutureProvider.autoDispose<List<MediaItem>>((ref) async {
+  // ⚠️ `accountApisProvider` 是 FutureProvider<Map> ⇒ 必须 await
+  final apisMap = await ref.watch(accountApisProvider.future);
+  if (apisMap.isEmpty) return const [];
+  final lists = await Future.wait(apisMap.values.map((a) async {
+    try {
+      return await a.getResume(limit: 60);
+    } catch (e) {
+      debugPrint('[Resume] 某台失败（忽略）: $e');
+      return const <MediaItem>[];
+    }
+  }));
+  // ⚠️ `MediaItem` **没有** `serverId` / `userData` / `lastPlayedDate`
+  //    （那些是 Emby 线格式，未映射成对象）—— 我第一版又凭记忆写了不存在的字段。
+  //    实际可用：`id` / `seriesId` / `indexNumber` / `playedPercentage`。
+  //
+  // ## 去重键：同一部剧在两台各有一条续播 ⇒ 保留**进度更靠前**的那条
+  // 键 = `(seriesId ?? id, indexNumber ?? 0)`
+  // · 剧集 ⇒ 同一部剧同集，两台各一份（进度不同）
+  // · 电影 ⇒ `seriesId` 为 null，退化成 `(id, 0)`
+  final byKey = <String, MediaItem>{};
+  for (final list in lists) {
+    for (final it in list) {
+      final k = '${it.seriesId ?? it.id}/${it.indexNumber ?? 0}';
+      final prev = byKey[k];
+      if (prev == null) {
+        byKey[k] = it;
+        continue;
+      }
+      // 进度更靠前的胜出（null 当 0）
+      final a = prev.playedPercentage ?? 0;
+      final b = it.playedPercentage ?? 0;
+      if (b > a) byKey[k] = it;
+    }
+  }
+  final out = byKey.values.toList();
+  // ## 排序：`playedPercentage` 降序
+  //
+  // ⚠️ **次优选择**（已记录）：理想是按"最近播放时间"，但 `MediaItem`
+  //    没有映射 `UserData.LastPlayedDate`。退而求其次用"看了多少"——
+  //    看了一半的比刚开头的更可能想接着看。
+  //    要改对需给 `MediaItem` 加 `lastPlayedDate` 字段（另开一轮）。
+  out.sort((a, b) =>
+      (b.playedPercentage ?? 0).compareTo(a.playedPercentage ?? 0));
+  return out;
+});
+
+/// **某剧的库内摘要**（按 `tmdbId` 查；详情页用）。
+///
+/// ## 为什么按 tmdbId（而不是 Emby 的 SeriesId）
+/// 详情页手上只有 `tmdbId`（来自外部源）⇒ 需要先映射一次
+/// （`mapSeriesTmdbToId`，1 个请求），再取摘要。
+///
+/// ## 缓存
+/// `FutureProvider.family` 自带缓存（同一部剧反复打开详情页不会再请求）。
+/// 要刷新用 `ref.invalidate`。
+final librarySummaryProvider =
+    FutureProvider.family<LibrarySummary?, String>((ref, tmdbId) async {
+  if (tmdbId.isEmpty) return null;
+  final apisMap = await ref.watch(accountApisProvider.future);
+  // 遍历所有已登录服务器：任一台上找到就用（**多账号聚合**）
+  LibrarySummary? best;
+  for (final api in apisMap.values) {
+    try {
+      final map = await api.mapSeriesTmdbToId();
+      final ref0 = map[tmdbId];
+      if (ref0 == null || ref0.seriesId.isEmpty) continue;
+      final sum = await api.getLibrarySummary(ref0.seriesId);
+      if (sum != null && sum.episodeCount > 0) {
+        // 取**集数最多**的那台（用户可能在多台都有，集数多的更全）
+        if (best == null || sum.episodeCount > best.episodeCount) {
+          best = sum;
+        }
+        // 已有"下次更新日"就不用再找别台了
+        if (sum.nextAirDate != null) break;
+      }
+    } catch (e) {
+      debugPrint('[Library] 摘要查询失败（换下一台）: $e');
+    }
+  }
+  if (best == null) return null;
+
+  // ★ **TMDB 兜底**：库内没有"下次更新日"时用 TMDB 的 `next_episode_to_air.air_date`
+  //
+  // ## 为什么需要（实测证据）
+  // Emby 库内分集的 `PremiereDate` **可能全为空**
+  // （实测某剧 33 集全无日期）⇒ 库内算不出"下次更新"。
+  // 而 TMDB 明确给了日期。
+  // ## 成本
+  // 只在 `nextAirDate == null` 时发 1 个请求（CalendarClient 有 6h 缓存）。
+  if (best.nextAirDate == null) {
+    try {
+      final key = await ref.read(sessionStoreProvider).loadTmdbKey();
+      if (key != null && key.isNotEmpty) {
+        final d = await ref.read(calendarClientProvider).fetchDetail(
+              tmdbId,
+              apiKey: key,
+            );
+        if (d?.nextAirDate != null && d!.nextAirDate!.isNotEmpty) {
+          return LibrarySummary(
+            episodeCount: best.episodeCount,
+            lastEpisode: best.lastEpisode,
+            nextAirDate: d.nextAirDate,
+            days: best.days,
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('[Library] TMDB 兜底失败（忽略）: $e');
+    }
+  }
+  return best;
+});
+
+/// **每部订阅剧在库内已入库的集数**（`sourceId → 集数`）。
+///
+/// ## 谁写谁读
+/// · **写**：追剧页 `_loadAll` 第 ② 段（对每部调 `getSeriesEpisodes`，
+///   条目数就是库内集数）—— **零额外请求**
+/// · **读**：追剧页头部的 `FinishedGrid`（"全 N 集"）与详情页（「已入库」行）
+///
+/// ## 为什么放 provider 而不是 State
+/// 头部（三统计卡 + 视图切换）在 `TrackingPage.build`，
+/// 而 `_loadAll` 在**子级** `_SubscribedCalendarState` ——
+/// 子 State 的字段头部读不到。用 provider 跨层级共享
+/// （与 `todayUpdateCountProvider` 同一手法，不引入新机制）。
+final libraryEpisodeCountProvider =
+    NotifierProvider<LibraryEpisodeCountNotifier, Map<String, int>>(
+  LibraryEpisodeCountNotifier.new,
+);
+
+class LibraryEpisodeCountNotifier extends Notifier<Map<String, int>> {
+  @override
+  Map<String, int> build() => const {};
+
+  /// 由追剧页写入（**唯一写入口**）。
+  void set(Map<String, int> v) {
+    if (!_same(v, state)) state = v;
+  }
+
+  static bool _same(Map<String, int> a, Map<String, int> b) {
+    if (a.length != b.length) return false;
+    for (final e in a.entries) {
+      if (b[e.key] != e.value) return false;
+    }
+    return true;
+  }
+}
+
+/// **今日有更新的订阅剧数量**（底栏「追剧」角标用）。
+///
+/// ## 稿子原文（`updateNavBadge()`）
+/// ```js
+/// const todayCount = Array.from(followedLive).map(id => CONTENT[id])
+///     .filter(c => c && seriesInDay(c, todayDow)).length;
+/// badge.style.display = todayCount > 0 ? 'block' : 'none';   // 0 时隐藏
+/// ```
+///
+/// ## ★ 为什么必须共享（而不是底栏自己算）
+/// 这个数字要和**追剧页周历**里的数字**完全一致**——
+/// 底栏显示 3、点进去看到 2 会让用户困惑。
+/// 周历数据在 `_SubscribedCalendarState` 里（`_weeks`），底栏拿不到
+/// ⇒ 由追剧页 `_loadAll` **写入**，底栏**读取**。
+///
+/// ⚠️ 不能用 `ref.watch` 在这里再查一遍 TMDB（那会翻倍请求）。
+final todayUpdateCountProvider = NotifierProvider<TodayUpdateCountNotifier, int>(
+  TodayUpdateCountNotifier.new,
+);
+
+class TodayUpdateCountNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  /// 由追剧页写入（**唯一写入口**）。
+  void set(int n) {
+    if (state != n) state = n;
+  }
+}
+
 /// **TMDB 热播榜**（「热播」Tab 的 TMDB 栏，按 类别 × 状态）。
 ///
 /// ## 用户定义
