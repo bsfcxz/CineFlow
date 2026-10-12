@@ -4,6 +4,7 @@ library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../data/aggregated_search.dart';
 import '../data/calendar_client.dart';
 import '../data/db/app_database.dart' show CalendarSubscription;
 import '../data/db/db_provider.dart' show appDbProvider;
@@ -219,6 +220,173 @@ final homeProvider = FutureProvider.autoDispose<HomeData>((ref) async {
 /// 若每次 build 都 new 一个，冷却状态丢失 ⇒ 一个必然失败的源
 /// （如本机连不上的 Bangumi）会让**每次打开日历都白等 8 秒退避**
 /// （实测：缓存全命中时仍耗时 **8,408 ms**）。
+/// **订阅结果**（供 UI 区分"成功/未入库/失败"三种提示）。
+enum SubscribeOutcome {
+  /// 已在库里 + 已写订阅（本地表 + Emby 收藏）。
+  subscribed,
+
+  /// 已在库里，已**取消**订阅。
+  unsubscribed,
+
+  /// **库里没有这部** ⇒ 未写任何东西（用户要求"提示，订阅暂未入库"）。
+  notInLibrary,
+
+  /// 网络/接口失败。
+  failed,
+}
+
+/// 订阅动作的返回值。
+class SubscribeResult {
+  const SubscribeResult(this.outcome, {this.title = '', this.error});
+
+  final SubscribeOutcome outcome;
+
+  /// 媒体标题（用于提示文案）。
+  final String title;
+
+  /// `failed` 时的原因。
+  final String? error;
+}
+
+/// **订阅一部「外部源」作品**（豆瓣 / TMDB）—— 先搜本地库，再决定怎么做。
+///
+/// ## 用户要求（2026-10-12）
+/// > "tmdb 和豆瓣的订阅增加后 —— 先搜索本地库是否有，存在的话直接从
+/// >  emby 服务端收藏 = 订阅，没有的话提示，订阅暂未入库。"
+///
+/// ## 三步
+/// ① **搜本地库**（`aggregatedSearchProvider`，并行搜所有已登录服务器）
+/// ② **命中** ⇒ 写 Emby 收藏（`toggleFavorite`）+ 写本地订阅表
+/// ③ **未命中** ⇒ **什么都不写**，返回 [SubscribeOutcome.notInLibrary]
+///
+/// ## ⚠️ 为什么未命中时不能写本地订阅表
+/// 写了的话，首页「我的追剧」会出现一部**库里没有、也播不了**的剧 ——
+/// 用户点进去只会"找不到"。用户明确要求这种情况下**提示**而不是静默记录。
+///
+/// ## 为什么用标题搜（而不是用 tmdbId 精确查）
+/// · 豆瓣条目**没有 tmdbId**（两个体系不通），只能靠标题
+/// · 即便有 tmdbId，Emby 也没有"按 tmdbId 查询"的公开端点
+///   （只能 `AnyProviderIdEquals`，实测不覆盖全部条目）
+/// ⇒ 标题搜索 + **首条即认**（用户点的是具体某部剧，搜出来第一条通常就是）。
+///    若需要更精确，可后续加"二次确认"弹窗。
+Future<SubscribeResult> subscribeExternal({
+  required WidgetRef ref,
+  required String title,
+  required String mediaType, // 'tv' | 'movie'
+  String? platform,
+  String? category,
+  String? status,
+  double? rating,
+  String? posterUrl,
+  String? summary,
+}) async {
+  final t = title.trim();
+  if (t.isEmpty) {
+    return const SubscribeResult(SubscribeOutcome.failed, error: '标题为空');
+  }
+
+  // ① 先搜本地库
+  List<ServerSearchResult> results;
+  try {
+    results = await ref.read(aggregatedSearchProvider(t).future);
+  } catch (e) {
+    return SubscribeResult(SubscribeOutcome.failed,
+        title: t, error: '搜索本地库失败：$e');
+  }
+
+  // 找第一条命中的（跨台聚合后的主条目）
+  MediaItem? hit;
+  MediaSession? hitSession;
+  for (final r in results) {
+    if (r.hits.isEmpty) continue;
+    hit = r.hits.first.item;
+    hitSession = r.session;
+    break;
+  }
+
+  // ③ 未命中 ⇒ 什么都不写
+  if (hit == null) {
+    return SubscribeResult(SubscribeOutcome.notInLibrary, title: t);
+  }
+
+  // ② 命中 ⇒ 写 Emby 收藏 + 本地订阅表
+  try {
+    final tmdbId = hit.providerIds['tmdb'];
+    final subEntry = CalendarEntry(
+      title: hit.name,
+      titleCn: hit.name,
+      source: (tmdbId != null && tmdbId.isNotEmpty) ? 'tmdb' : 'emby',
+      sourceId: (tmdbId != null && tmdbId.isNotEmpty) ? tmdbId : hit.id,
+      posterUrl: posterUrl,
+      rating: hit.communityRating ?? rating,
+      summary: summary,
+      platform: platform,
+      category: _categoryFor(category),
+      airDate: null,
+    );
+    final now = await toggleCalendarSubscription(
+      ref,
+      entry: subEntry,
+      mediaType: hit.type == 'Movie' ? 'movie' : (mediaType.isEmpty ? 'tv' : mediaType),
+      status: status ?? _statusCn(hit.status) ?? '',
+    );
+
+    // Emby 收藏（= 服务端订阅，跨设备同步）
+    if (hitSession != null) {
+      try {
+        final apis = await ref.read(accountApisProvider.future);
+        final api = apis[SessionStore.accountKey(hitSession)];
+        await api?.toggleFavorite(hit.id, favorite: now);
+      } catch (e) {
+        // 本地订阅已写成功 ⇒ 服务端失败只降级提示，不回滚
+        debugPrint('[Subscribe] 同步 Emby 收藏失败: $e');
+      }
+    }
+
+    return SubscribeResult(
+        now ? SubscribeOutcome.subscribed : SubscribeOutcome.unsubscribed,
+        title: hit.name);
+  } catch (e) {
+    return SubscribeResult(SubscribeOutcome.failed, title: t, error: '$e');
+  }
+}
+
+/// 外部源的类别字符串 → 日历类别（**近似**：只有三档）。
+CalendarCategory _categoryFor(String? c) => switch (c) {
+      '动漫' || '动画' => CalendarCategory.anime,
+      '综艺' || '真人秀' => CalendarCategory.variety,
+      _ => CalendarCategory.series,
+    };
+
+/// Emby 的 `Status` → 中文（订阅表存中文，与详情页一致）。
+String? _statusCn(String? s) => switch (s) {
+      'Continuing' => '连载中',
+      'Ended' => '已完结',
+      _ => null,
+    };
+
+/// **平台名兜底**：把一批 tmdbId 换成交中文平台名（`tmdbId → 平台名`）。
+///
+/// ## 为什么做成 `family`（按 id 集合缓存）
+/// 首页轮播是 5 个 `_Slide` 各自 build。若每个 slide 自己查平台，
+/// 同一部剧会**重复发请求**。`family` 以"需要补查的 id 集合"为键
+/// ⇒ 整页只查一次，且结果被 riverpod 缓存。
+///
+/// ## 返回空 Map 的两种情况（都不是错误）
+/// · 没填 TMDB key（用户没配）⇒ 跳过，不如实不显示
+/// · 全都命中服务端了 ⇒ 不需要补查
+final platformFallbackProvider =
+    FutureProvider.family<Map<String, String>, String>((ref, idsKey) async {
+  if (idsKey.isEmpty) return const {};
+  final ids = idsKey.split(',').where((s) => s.isNotEmpty).toList();
+  final key = await ref.watch(sessionStoreProvider).loadTmdbKey();
+  if (key == null || key.isEmpty) return const {};
+  return ref.watch(calendarClientProvider).fetchPlatformsByTmdbIds(
+        ids,
+        apiKey: key,
+      );
+});
+
 final calendarClientProvider = Provider<CalendarClient>((ref) {
   final c = CalendarClient();
   final db = ref.watch(appDbProvider);

@@ -1254,6 +1254,80 @@ class CalendarClient {
   ///   ⇒ 我们用 `first_air_date` 的星期兜底（≥ 有胜于无）。
   ///
   /// 好处：TMDB 的**中文译名与海报质量**最好，可补 Bangumi 缺的欧美剧。
+  /// **批量取平台名**（`tmdbId → 中文平台名`），用于首页 hero 的兜底。
+  ///
+  /// ## 使用场景（用户 2026-10-12）
+  /// > "平台标签你先从服务端获取，服务端获取不到的，通过 tmdb 和豆瓣获取"
+  ///
+  /// 服务端（Emby `Studios`）实测填充率 **88% / 92%** ⇒ 剩下 8–12% 走这里。
+  ///
+  /// ## ★ 为什么单独写一个方法（而不是循环调 `fetchDetail`）
+  /// `fetchDetail` 会带 `append_to_response=credits`（演职员大对象）。
+  /// 这里**只要 `networks`** ⇒ 直接请求 `/tv/{id}`（或 `/movie/{id}`），
+  /// 响应体小一个数量级，且**并发**发出。
+  ///
+  /// ## 缓存（避免每次刷新都打 TMDB）
+  /// 键 `platform:<tmdbId>`，TTL = `cacheTtl`（与详情一致）。
+  /// **命中就完全跳过网络** ⇒ 第二次进首页 0 请求。
+  ///
+  /// ## ⚠️ 为什么不再接豆瓣兜底
+  /// 豆瓣的"播出平台"字段在 `m.douban.com/rexxar/api/v2` 的详情里**不存在**
+  /// （实测字段只有 `countries`/`genres`/`pubdate` 等，没有电视台/平台）。
+  /// 硬凑只能靠"标题搜索 + 抓播放链接"，脆弱且易错。
+  /// ⇒ TMDB 拿不到就**如实不显示**（宁缺勿造，与 AGENTS §5.8 一致）。
+  Future<Map<String, String>> fetchPlatformsByTmdbIds(
+    List<String> tmdbIds, {
+    required String apiKey,
+    String kind = 'tv',
+  }) async {
+    final out = <String, String>{};
+    final need = <String>[];
+    for (final id in tmdbIds) {
+      if (id.isEmpty) continue;
+      final cached = await cache?.get('platform:$id');
+      if (cached != null && cached.isNotEmpty) {
+        out[id] = cached;
+      } else if (!need.contains(id)) {
+        need.add(id);
+      }
+    }
+    // 命中的直接返回，未命中的并发请求
+    await Future.wait(need.map((id) async {
+      try {
+        final r = await _dio.get<String>(
+          'https://api.themoviedb.org/3/$kind/$id',
+          queryParameters: {'api_key': apiKey, 'language': 'zh-CN'},
+          options: Options(
+              responseType: ResponseType.plain,
+              headers: {'User-Agent': _ua},
+              // 与分类浏览同一个理由：dio 默认不超时
+              receiveTimeout: const Duration(seconds: 10)),
+        );
+        if (r.statusCode != 200 || r.data == null) return;
+        final j = jsonDecode(r.data!);
+        if (j is! Map) return;
+        // 剧集用 `networks`，电影是 `production_companies`（无 networks）
+        final list = (j['networks'] as List?) ??
+            (j['production_companies'] as List?) ??
+            const [];
+        final names = [
+          for (final n in list)
+            if (n is Map && (n['name'] as String?)?.isNotEmpty == true)
+              n['name'] as String
+        ];
+        if (names.isEmpty) return;
+        final cn = cnPlatformName(names.first);
+        out[id] = cn;
+        await cache?.put('platform:$id', cn, ttl: cacheTtl);
+      } catch (_) {
+        // 单条失败不影响其它（平台是"锦上添花"）
+      }
+    }));
+    debugPrint('[Calendar] 平台兜底：查 ${need.length} 条，命中缓存 '
+        '${tmdbIds.length - need.length} 条，共得 ${out.length} 条');
+    return out;
+  }
+
   /// **分类浏览**：按「类别 × 地区」拉 TMDB 榜单（稿子 180b4d 的分类面板）。
   ///
   /// ## 实测（24/24 组合全部有数据）

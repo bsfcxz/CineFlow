@@ -161,8 +161,21 @@ class EmbyProvider implements MediaProvider {
               // `Collections`：与 getResume 同理 —— 首页轮播/最近添加里的
               // 电影也要能解析出合集体，否则从这些入口进播放器时
               // "列表没有下一部"仍会复现。
+              //
+              // ★ `Studios`（2026-10-12 加，用户要求"平台标签先从服务端取"）：
+              //   实测两台服务器 `/Items/Latest?Fields=...Studios`
+              //   填充率 **88% / 92%**，且内容就是**播出平台**：
+              //     兰香如故 → Tencent Video   蒸蒸日上 → iQiyi
+              //     此处通往繁星 → Youku/Mango TV   中情局律师 → Netflix
+              //   ⇒ 首页 hero 的平台标签直接用它（零额外请求），
+              //     再经 `cnPlatformName()` 转中文。
+              //
+              // ⚠️ 此前没带这个字段 ⇒ 首页 hero **永远没有平台标签**。
+              //    我当时误判成"MediaItem 不带 Studios"（其实字段早就有，
+              //    只是没请求、没解析）—— 教训：**先读 models.dart 再下结论**。
               'PrimaryImageAspectRatio,ProductionYear,OfficialRating,'
-                  'CommunityRating,Genres,Overview,DateCreated,Collections',
+                  'CommunityRating,Genres,Overview,DateCreated,Collections,'
+                  'Studios',
         }));
     final items = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
     // 单一事实源：可播性只在这里判定（Series 保留 —— 它是合法浏览入口，

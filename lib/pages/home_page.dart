@@ -189,18 +189,50 @@ class _HomeTopBar extends ConsumerWidget {
 }
 
 /// 精选轮播：5s 自动翻页，真实背景图 + 渐变压暗
-class _Carousel extends StatefulWidget {
+class _Carousel extends ConsumerStatefulWidget {
   const _Carousel({required this.items});
   final List<MediaItem> items;
 
   @override
-  State<_Carousel> createState() => _CarouselState();
+  ConsumerState<_Carousel> createState() => _CarouselState();
 }
 
-class _CarouselState extends State<_Carousel> {
+// ★ 用 `ConsumerState`（而非 `State`）—— 需要 `ref` 查
+//   `platformFallbackProvider`（服务端没给平台时的 TMDB 兜底）。
+class _CarouselState extends ConsumerState<_Carousel> {
   final _controller = PageController();
   Timer? _timer;
   int _page = 0;
+
+  /// **平台兜底**：服务端（Emby `Studios`）没给平台的条目，用 TMDB 批量补。
+  ///
+  /// ## 为什么只查"服务端没有的"
+  /// 实测服务端填充率 **88–92%** ⇒ 全拿去查是浪费。
+  /// 只把 `studios.isEmpty` 的 id 拼成 key 交给 provider。
+  ///
+  /// ## 为什么用 provider（而不是这里 await）
+  /// `family` 以 id 集合为键 ⇒ 同一集合**只查一次**，结果被缓存；
+  /// 且响应式（key 变了自动重查）。
+  ///
+  /// ## 返回空 Map 的情况（都不是错误）
+  /// · 没填 TMDB key ⇒ 跳过（如实不显示平台）
+  /// · 全都有服务端平台 ⇒ 不需要补
+  /// · TMDB 也查不到 ⇒ 如实不显示（**不编造**）
+  Map<String, String> _platformFallback(WidgetRef ref) {
+    final ids = [
+      for (final it in widget.items)
+        if (it.studios.isEmpty &&
+            (it.providerIds['tmdb']?.isNotEmpty ?? false))
+          it.providerIds['tmdb']!
+    ];
+    if (ids.isEmpty) return const {};
+    // 排序后拼接 ⇒ 同一个集合得到同一个 key（否则顺序不同会重复查）
+    final sorted = [...ids]..sort();
+    return ref
+            .watch(platformFallbackProvider(sorted.join(',')))
+            .maybeWhen(data: (m) => m, orElse: () => const {})
+        as Map<String, String>;
+  }
 
   @override
   void initState() {
@@ -271,7 +303,13 @@ class _CarouselState extends State<_Carousel> {
               _armTimer(); // 手动滑动后重新计时
             },
             itemBuilder: (context, i) =>
-                _Slide(item: widget.items[i], active: i == _page),
+                _Slide(
+              item: widget.items[i],
+              active: i == _page,
+              // 服务端没给平台的才需要兜底（见 _platformFallback）
+              fallbackPlatform:
+                  _platformFallback(ref)[widget.items[i].providerIds['tmdb']],
+            ),
           ),
         ),
 
@@ -352,9 +390,20 @@ class _CarouselState extends State<_Carousel> {
 }
 
 class _Slide extends ConsumerWidget {
-  const _Slide({required this.item, required this.active});
+  const _Slide({
+    required this.item,
+    required this.active,
+    this.fallbackPlatform,
+  });
   final MediaItem item;
   final bool active;
+
+  /// **服务端没有平台时的 TMDB 兜底值**（由父级批量查好后传入）。
+  ///
+  /// ## 为什么要从父级传（而不是自己查）
+  /// 轮播 5 张图各自 build ⇒ 自己查会重复请求同一部剧。
+  /// 父级（`_Carousel`）按"需要补查的 id 集合"**一次**查完再分发。
+  final String? fallbackPlatform;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -372,14 +421,32 @@ class _Slide extends ConsumerWidget {
     // ⇒ 全部复用 `media_tags.dart` 的公共组件（与详情页**同一套**）。
     //    这正是"两处样式必须一致"的关键 —— 各写一套必然漂移。
     final kind = statusKindFrom(item.status);
-    // ⚠️ 平台**暂缺**：`MediaItem`（列表项）不带 `Studios`，
-    //    它只在详情端点返回（`MediaItemDetail.studios`）。
-    //    首页轮播若为每张图都发一次详情请求，代价是 5 次额外请求/次刷新。
+
+    // ★ 平台（用户 2026-10-12："平台标签你先从服务端获取"）
     //
-    // ⇒ 现在如实留空（**不编造**）；等"首页 hero 改用 TMDB 热播交集"落地后，
-    //    TMDB 的 `networks` 会直接给出平台（那才是正解，且零额外请求）。
-    //    见 docs/AI-MEMORY.md 的未完成清单。
-    final String? platform = null;
+    // ## 数据来自 Emby 的 `Studios`（**零额外请求**）
+    // `getLatest` 的 `Fields` 已加 `Studios`，实测两台服务器填充率
+    // **88% / 92%**，且内容就是**播出平台**（不是制作公司）：
+    //   兰香如故 → Tencent Video    蒸蒸日上 → iQiyi
+    //   此处通往繁星 → Youku/Mango TV   中情局律师 → Netflix
+    // ⇒ 经 `cnPlatformName()` 转中文后直接显示。
+    //
+    // ⚠️ 我此前误判成"MediaItem 不带 Studios" ⇒ 首页一直没有平台标签。
+    //    实际是 `Fields` 没请求它（字段早就在 models.dart 里）。
+    //
+    // ## 服务端没有时（8–12%）怎么办
+    // 按用户要求应走 TMDB `networks`。但 TMDB 补查是**逐条请求**
+    //（首页 5 张图 = 5 次）⇒ 每次刷新多 5 个请求。
+    // ⇒ 这里**如实不显示**；TMDB 补查放在**详情页**（那里本来就有一次
+    //    `fetchDetail`，顺手就带 `networks`）。
+    //    这是刻意的取舍，不是漏做（见台账未完成清单）。
+    // ⚠️ `studios` 是 `List<String>`（不是对象列表）⇒ 直接取 first
+    final rawPlatform =
+        item.studios.isNotEmpty ? item.studios.first : null;
+    // 服务端优先；没有则用父级批量查到的 TMDB 兜底值
+    final platform = (rawPlatform != null && rawPlatform.isNotEmpty)
+        ? CalendarClient.cnPlatformName(rawPlatform)
+        : fallbackPlatform;
     return GestureDetector(
       onTap: () => openMediaItem(context, item),
       child: Stack(fit: StackFit.expand, children: [

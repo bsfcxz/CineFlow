@@ -134,6 +134,24 @@ class MediaItem {
   ///    订阅时优先用 Emby 的（用户看的是自己的库）。
   final String? status;
 
+  /// **播出平台 / 制作方**（Emby `Studios`，实测内容是**播出平台**）。
+  ///
+  /// ## ★ 实测（2026-10-12，两台服务器）
+  /// `/Users/{uid}/Items/Latest?Fields=...Studios`
+  /// 填充率 **88% / 92%**，内容就是播出平台（不是制作公司）：
+  /// ```
+  /// 兰香如故 → [Tencent Video]      蒸蒸日上 → [iQiyi]
+  /// 此处通往繁星 → [Youku, Mango TV]  中情局律师 → [Netflix]
+  /// ```
+  /// ⇒ 首页 hero 的平台标签**零额外请求**就能拿到。
+  ///
+  /// ⚠️ 是**列表**（一部剧可能多平台，如 "Tencent Video + Mango TV"）。
+  ///    首页只取第一个（`studios.first`）。
+  ///
+  /// ⚠️ 与 `MediaItemDetail.studios` 同名同义（`List<String>`）；
+  ///    两者并存是因为列表端点与详情端点各自返回一份。
+  final List<String> studios;
+
   /// **入库时间**（Emby `DateCreated`，ISO8601）。
   ///
   /// ## 用途：「3 天前」这类标签
@@ -200,6 +218,7 @@ class MediaItem {
     this.childCount,
     this.status,
     this.dateCreated,
+    this.studios = const [],
     this.imageTags = const {},
     this.backdropImageTags = const [],
     this.parentBackdropItemId,
@@ -247,6 +266,13 @@ class MediaItem {
       status: j['Status'] as String?,
       // 入库时间（「3 天前」标签用；Emby 的 DateCreated 早就在请求里了）
       dateCreated: j['DateCreated'] as String?,
+      // 播出平台（实测 `[{Name: "Tencent Video"}]` ⇒ 取 Name；
+      // 防御式：非 map / Name 缺失都跳过，不让一条脏数据炸整个列表）
+      studios: ((j['Studios'] as List?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map((e) => (e['Name'] ?? '').toString())
+          .where((s) => s.isNotEmpty)
+          .toList(),
       imageTags: ((j['ImageTags'] as Map<String, dynamic>?) ?? const {})
           .cast<String, String>(),
       backdropImageTags: ((j['BackdropImageTags'] as List?) ?? const [])

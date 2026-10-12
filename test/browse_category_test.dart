@@ -231,6 +231,178 @@ void main() {
     });
   });
 
+  group('★★★ 两处详情页的按钮必须同一套（用户两次报"追剧按钮没了"）', () {
+    test('★★★ 两个详情页都要有"两个等宽按钮"（播放 + 追剧）', () {
+      // ## 真实教训
+      // 我改了日历详情页的按钮，但 Emby 详情页还是"圆形星标图标
+      // + 占满整行的主按钮" ⇒ 用户看到的就是"没有追剧按钮"
+      //（那颗圆星上**没有"追剧"两个字**）。
+      for (final f in ['lib/pages/detail_page.dart',
+                       'lib/widgets/calendar_detail_sheet.dart']) {
+        final c = code(f);
+        expect(c.contains("'追剧'"), isTrue,
+            reason: '★★★ $f 必须有带"追剧"字样的按钮');
+        expect(c.contains("'已追'"), isTrue,
+            reason: '★★★ $f 必须支持已追态');
+        // 高度 46 + 圆角 radiusMd（稿子 .btn-primary/.btn-secondary）
+        expect(c.contains('46'), isTrue,
+            reason: '★★ $f 按钮高度按稿子 46');
+      }
+    });
+
+    test('★★★ Emby 详情页不再是"圆形星标图标"（那是造成误认的根因）', () {
+      final c = code('lib/pages/detail_page.dart');
+      // `_roundBtn` 是旧的 38×38 圆形按钮 —— 已删
+      expect(c.contains('_roundBtn'), isFalse,
+          reason: '★★★ 圆形图标不像按钮（用户看不出那是追剧）');
+      // ⚠️ 断言范围必须**限定在按钮行**，不能全文搜 `BoxShape.circle` ——
+      //    演职员的圆形头像（62×62）合法地用了它
+      //    （我第一版全文搜，把头像误判成按钮 ⇒ 假失败）。
+      final btn = slice('lib/pages/detail_page.dart',
+          'Widget _actionButtons', '_hdTags');
+      expect(btn.contains('BoxShape.circle'), isFalse,
+          reason: '★ 按钮不该是圆形（稿子是圆角矩形）');
+    });
+
+    test('★★★ Emby 详情页的追剧 = 本地订阅 + Emby 收藏（写两边）', () {
+      final c = code('lib/pages/detail_page.dart');
+      expect(c.contains('toggleCalendarSubscription('), isTrue,
+          reason: '★★★ 写本地订阅表');
+      expect(c.contains('toggleFavorite('), isTrue,
+          reason: '★★★ 同步 Emby 收藏（用户："这个会同步的"）');
+      // 顺序：先本地后服务端（服务器不可达时本地仍要成功）
+      final iLocal = c.indexOf('toggleCalendarSubscription(');
+      final iServer = c.indexOf('toggleFavorite(');
+      expect(iLocal, lessThan(iServer),
+          reason: '★★ 先写本地（主行为）再同步服务端');
+    });
+
+    test('★★ 预告片功能没被按钮改造顺手砍掉', () {
+      final c = code('lib/pages/detail_page.dart');
+      // ⚠️ 我覆盖按钮行时把 TrailerButton 一起删了 ——
+      //    那是**已交付的功能**，砍掉比没做更糟。
+      expect(c.contains('TrailerButton('), isTrue,
+          reason: '★★ 预告片是已实现功能，不能顺手删');
+    });
+
+    // ✅ 已实现（2026-10-12）。
+    //
+    // 历史：我第一版写成 `skip: '待实现…'` 保住待办（不写会遗忘、
+    // 直接断言会常红被当噪音）。实现后**取消 skip** —— 现在它是真守卫。
+    test('★★★ 豆瓣排行榜的详情也需要订阅入口（用户要求）', () {
+      final c = code('lib/widgets/douban_detail_sheet.dart');
+      expect(c.contains('追剧') || c.contains('toggleCalendarSubscription'),
+          isTrue,
+          reason: '★★★ 用户明确要求豆瓣排行榜也有订阅按钮');
+    });
+  });
+
+  group('★★★ 订阅流程：先搜本地库，命中才写（用户明确要求）', () {
+    test('★★★ 未入库时**什么都不写**（否则「我的追剧」会有播不了的剧）', () {
+      // 用户原话：
+      // > "先搜索本地库是否有，存在的话直接从 emby 服务端收藏 = 订阅，
+      // >  没有的话提示，订阅暂未入库。"
+      final seg = slice('lib/state/providers.dart',
+          'Future<SubscribeResult> subscribeExternal',
+          'CalendarCategory _categoryFor(');
+      // 未命中就 return（**在写任何东西之前**）
+      expect(seg.contains('SubscribeOutcome.notInLibrary'), isTrue,
+          reason: '★★★ 要有"未入库"分支');
+      final iNotFound = seg.indexOf('notInLibrary');
+      final iWrite = seg.indexOf('toggleCalendarSubscription');
+      expect(iNotFound, lessThan(iWrite),
+          reason: '★★★ 未命中的 return 必须在写入**之前**\n'
+              '    （否则库里没有的剧也会进「我的追剧」，点进去"找不到"）');
+    });
+
+    test('★★★ 命中后要写两边：本地订阅表 + Emby 收藏', () {
+      final seg = slice('lib/state/providers.dart',
+          'Future<SubscribeResult> subscribeExternal',
+          'CalendarCategory _categoryFor(');
+      expect(seg.contains('toggleCalendarSubscription'), isTrue,
+          reason: '★★★ 写本地订阅表（首页「我的追剧」/ 追剧日历共用）');
+      expect(seg.contains('toggleFavorite'), isTrue,
+          reason: '★★★ 写 Emby 收藏（用户："= emby 服务端的收藏，这个会同步的"）');
+      // 顺序：先本地后服务端（服务器不可达时本地仍要成功）
+      expect(seg.indexOf('toggleCalendarSubscription'),
+          lessThan(seg.indexOf('toggleFavorite')),
+          reason: '★★ 先本地（主行为）再服务端');
+    });
+
+    test('★★★ 四种结果都要有 UI 提示（用户要"提示"而非静默）', () {
+      final c = code('lib/widgets/douban_detail_sheet.dart');
+      // 未入库必须**明确提示**（用户要求"提示，订阅暂未入库"）
+      expect(c.contains('订阅暂未入库'), isTrue,
+          reason: '★★★ 用户明确要求这句提示');
+      expect(c.contains('已加入追剧'), isTrue);
+      expect(c.contains('操作失败'), isTrue);
+    });
+
+    test('★★ 豆瓣详情页的订阅按钮与其它两处同规格（等宽 46）', () {
+      final c = code('lib/widgets/douban_detail_sheet.dart');
+      expect(c.contains("'追剧'"), isTrue, reason: '★★ 带字样的按钮');
+      expect(c.contains('46'), isTrue, reason: '★ 稿子高度 46');
+      expect(c.contains('Cf.radiusMd'), isTrue, reason: '★ 稿子圆角 12');
+    });
+
+    test('★★ 订阅走**聚合搜索**（多台服务器都要搜）', () {
+      final c = code('lib/state/providers.dart');
+      expect(c.contains('aggregatedSearchProvider'), isTrue,
+          reason: '★★ 用户有多台服务器 ⇒ 只搜一台会误报"未入库"');
+    });
+  });
+
+  group('★★★ 平台标签的服务端数据链（用户："先从服务端获取"）', () {
+    test('★★★ getLatest 必须请求 Studios 字段', () {
+      // ## 真实缺口
+      // 首页 hero 一直没有平台标签。我误判成"MediaItem 不带 Studios"，
+      // 实际是 `Fields` **没请求它** —— 字段与服务端都支持。
+      //
+      // 实测（2026-10-12，两台服务器）：
+      //   /Items/Latest?Fields=...Studios  填充率 **88% / 92%**
+      //   内容就是播出平台：兰香如故→Tencent Video / 蒸蒸日上→iQiyi
+      final seg = slice('lib/data/emby_provider.dart',
+          'Future<List<MediaItem>> getLatest', 'Future<List<MediaItem>> getResume');
+      expect(seg.contains('Studios'), isTrue,
+          reason: '★★★ 不请求该字段 ⇒ 首页 hero 永远没有平台标签');
+    });
+
+    test('★★★ MediaItem 必须解析 Studios（防御式）', () {
+      final c = code('lib/data/models.dart');
+      // 找 MediaItem 类（不是 MediaItemDetail）
+      final i = c.indexOf('class MediaItem {');
+      final j = c.indexOf('class MediaItemDetail');
+      expect(i, greaterThan(0));
+      expect(j, greaterThan(i));
+      final item = c.substring(i, j);
+      expect(item.contains('final List<String> studios'), isTrue,
+          reason: '★★★ 列表项也要有 studios（首页 hero 用它）');
+      expect(item.contains("j['Studios']"), isTrue);
+      // ⚠️ 防御式：AGENTS §5.3 不允许对服务器字段做非空断言
+      expect(item.contains('whereType<Map<String, dynamic>>'), isTrue,
+          reason: '★★ 一条脏数据不该炸掉整个列表');
+    });
+
+    test('★★★ 首页 hero 用服务端平台名 + 中文映射', () {
+      final seg = slice('lib/pages/home_page.dart', 'class _Slide',
+          'class _CategoryBrowseSection');
+      expect(seg.contains('item.studios'), isTrue,
+          reason: '★★★ 从服务端取');
+      expect(seg.contains('CalendarClient.cnPlatformName'), isTrue,
+          reason: '★★★ 服务端给的是英文（Tencent Video）⇒ 要转中文');
+      expect(seg.contains('CfPlatformTag('), isTrue,
+          reason: '★★★ 用公共平台标签组件（品牌色）');
+    });
+
+    test('★★ 中文映射是 static（无需实例，可直接调）', () {
+      final c = code('lib/data/calendar_client.dart');
+      // ⚠️ 我一度试图把它"抽成顶层函数"，其实它本来就是 static
+      //    ⇒ 直接 `CalendarClient.cnPlatformName(...)` 即可。
+      expect(c.contains('static String cnPlatformName('), isTrue,
+          reason: '★ 是 static ⇒ 首页无需 new 一个 CalendarClient');
+    });
+  });
+
   group('★★★ 分类浏览的竞态与超时（真机暴露的真实缺陷）', () {
     test('★★★ 缓存键必须在 await **之前**固定（不是用 getter）', () {
       // ## 真实 bug（真机截图暴露）
