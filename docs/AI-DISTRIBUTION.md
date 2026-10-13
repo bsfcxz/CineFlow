@@ -300,5 +300,10 @@ GitHub 的规则是**仓库设置是权限上限**，工作流里的 `permission
 - [GitHub CLI: `gh release`](https://cli.github.com/manual/gh_release)
 - [Semantic Versioning 2.0.0](https://semver.org/lang/zh-CN/)（本项目用 `X.Y.Z`，不带预发布标识）
 - 仓库内：[`.github/workflows/release.yml`](../.github/workflows/release.yml) ·
-  [`.github/skills/cineflow-release/SKILL.md`](../.github/skills/cineflow-release/SKILL.md) ·
+  `.github/skills/cineflow-release/SKILL.md` ·
   [docs/CHANGELOG-GUIDE.md](CHANGELOG-GUIDE.md)
+  > ⚠️ `cineflow-release` 技能写成**内联代码而非链接**：
+  > `.github/skills/` 按 `.gitignore:88` 是**有意不入库**的本地工作流资产
+  > ⇒ 相对链接在**干净克隆里必然断链**，会让 CI 的 `docs-guard` 长期变红
+  > （本地却通过 —— 实测最近 6+ 个 commit 全红才被发现）。
+  > 仓库内其它引用（`AGENTS.md` §12、`README.md`）**本来就用内联代码**，此处对齐。
