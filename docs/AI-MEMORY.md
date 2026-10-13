@@ -3341,8 +3341,8 @@ RenderFlex overflowed: 0 次 ✅
 仓库 `bsfcxz/CineFlow` 是 **PUBLIC**，而 `docs/AI-MEMORY.md` 里
 **已在历史提交中**含私有服务器地址（`a93ca87`、`20129c1`，已推送）：
 ```
-<server-A>  →  <Emby-A>   （3 处）
-la6.<server-B>  →  <Emby-B>   （3 处）
+<Emby-A>  →  <Emby-A>   （3 处）
+<Emby-B>  →  <Emby-B>   （3 处）
 ```
 本次已脱敏。**历史提交里仍有**（未改历史，避免 force-push）。
 扫描确认 **TMDB key / TVDB key / Trakt Client ID / Emby 密码均未入库** ✅
