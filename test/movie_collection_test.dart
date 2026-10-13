@@ -83,9 +83,14 @@ void main() {
 
     test('★ 请求必须显式要 Collections 字段（否则服务端不返回）', () {
       final p = code('lib/data/emby_provider.dart');
-      expect(p.contains('CommunityRating,UserData,Collections'), isTrue,
+      expect(
+            // 常量形态（`_listFields`）或字面量形态都算通过
+            fieldsHas(p, 'Collections', viaConst: '_listFields'),
+            isTrue,
           reason: '★ 列表请求的 Fields 必须带 Collections');
-      expect(p.contains('CommunityRating,Collections'), isTrue,
+      expect(
+            fieldsHas(p, 'Collections', viaConst: '_detailFields'),
+            isTrue,
           reason: '★ 详情请求的 Fields 必须带 Collections');
     });
 
@@ -106,7 +111,10 @@ void main() {
 
     test('★ "最近添加/轮播"也要带（同一类入口）', () {
       final p = code('lib/data/emby_provider.dart');
-      expect(p.contains('DateCreated,Collections'), isTrue,
+      expect(
+            fieldsHas(p, 'Collections', viaConst: '_listFields') ||
+                p.contains('DateCreated,Collections'),
+            isTrue,
           reason: '★ getLatest 的 Fields 同样要带 Collections');
     });
 
@@ -176,4 +184,30 @@ void main() {
           reason: '★ 不能在"没有合集"或"取合集失败"时打不开电影');
     });
   });
+}
+
+
+/// **Fields 是否含某字段** —— 同时支持两种写法。
+///
+/// ## 为什么需要（本轮重构引发）
+/// `emby_provider.dart` 的 `Fields` 从**就地字面量**提成了具名常量
+/// （`_listFields` / `_detailFields`，见那里的注释：这个串已栽 4 次）。
+/// 而本文件的断言原本只认字面量 ⇒ 重构后全部变红。
+///
+/// ## 为什么不能删断言
+/// 这些断言防的是"有人把 `Collections` 从 Fields 里去掉"——
+/// 删了就失去保护。⇒ 改成**两种形态都认**。
+///
+/// ## 判据
+/// · 字面量形态：源码里直接出现 `needle`
+/// · 常量形态：源码里出现了常量名，**且常量定义里含 `needle`**
+///   （在 `_listFields = ...` / `_detailFields = ...` 的赋值块内）
+bool fieldsHas(String src, String needle, {String? viaConst}) {
+  if (src.contains(needle)) return true;
+  if (viaConst == null) return false;
+  final i = src.indexOf(viaConst);
+  if (i < 0) return false;
+  // 常量定义块：从常量名往后 400 字符（足够覆盖多行拼接的串）
+  final block = src.substring(i, (i + 400).clamp(0, src.length));
+  return block.contains(needle);
 }

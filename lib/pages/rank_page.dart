@@ -66,6 +66,15 @@ class _RankPageState extends ConsumerState<RankPage> {
               const Spacer(),
               // 与首页顶栏同一处缺陷：裸 GestureDetector 的可点区域
               // 只有图标本身（22×22），远小于 48dp，且无按压反馈。
+              // ★ TMDB Key 入口（随时可改，不必等空态）
+              if (_source == _Source.tmdb)
+                IconButton(
+                  tooltip: 'TMDB Key',
+                  onPressed: () => _editTmdbKey(context, ref),
+                  icon: const Icon(Icons.key_rounded, size: 20),
+                  color: Cf.text2,
+                  visualDensity: VisualDensity.compact,
+                ),
               IconButton(
                 tooltip: '搜索',
                 onPressed: () => context.push(Routes.search),
@@ -272,6 +281,82 @@ class _RankPageState extends ConsumerState<RankPage> {
 
   static const movie = BrowseCategory.movie;
 
+  /// 弹出 **TMDB API Key** 输入框（用户要求）。
+  ///
+  /// ## ★ 安全（AGENTS.md 安全红线）
+  /// **key 绝不入库**（不写 drift、不写日志、不写注释）——
+  /// 只进 `flutter_secure_storage`（`SessionStore.saveTmdbKey`，与日历页同款）。
+  /// 输入框用 `obscureText` 避免旁人看到。
+  ///
+  /// ## 保存后立刻重拉
+  /// `ref.invalidate(hotBoardProvider(...))`（否则要等缓存过期才见效）。
+  Future<void> _editTmdbKey(BuildContext context, WidgetRef ref) async {
+    final store = ref.read(sessionStoreProvider);
+    final cur = await store.loadTmdbKey() ?? '';
+    if (!context.mounted) return;
+    final ctl = TextEditingController(text: cur);
+    // 'save' / 'clear' / 'cancel'
+    final act = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: Cf.surface,
+        title: const Text('TMDB API Key'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text(
+            'TMDB 榜单需要 API Key。\n'
+            '在 themoviedb.org → 设置 → API 免费申请。\n\n'
+            'Key 只保存在本机（加密存储），不会上传、不会写进代码。',
+            style: TextStyle(fontSize: 12, height: 1.5),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: ctl,
+            obscureText: true,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: const InputDecoration(
+              hintText: '粘贴 API Key',
+              isDense: true,
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, 'cancel'),
+              child: const Text('取消')),
+          if (cur.isNotEmpty)
+            TextButton(
+                onPressed: () => Navigator.pop(c, 'clear'),
+                child: const Text('清除')),
+          FilledButton(
+              onPressed: () => Navigator.pop(c, 'save'),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    final v = ctl.text.trim();
+    ctl.dispose();
+    if (act == 'cancel' || act == null) return;
+    if (act == 'clear') {
+      await store.saveTmdbKey('');
+      if (context.mounted) _toast(context, '已清除 TMDB Key');
+    } else {
+      if (v.isEmpty) {
+        if (context.mounted) _toast(context, 'Key 为空，未保存');
+        return;
+      }
+      await store.saveTmdbKey(v);
+      if (context.mounted) _toast(context, '已保存，正在重新加载');
+    }
+    // 按新 key 重拉当前那一栏（不 invalidate 其它栏，省一次请求）
+    ref.invalidate(hotBoardProvider((_cat, _board)));
+  }
+
+  void _toast(BuildContext context, String msg) {
+    ScaffoldMessenger.maybeOf(context)
+        ?.showSnackBar(SnackBar(content: Text(msg)));
+  }
+
   /// 统一的 chip（分类与状态共用，避免两套样式）。
   Widget _chip({
     required String label,
@@ -321,14 +406,28 @@ class _RankPageState extends ConsumerState<RankPage> {
                     Icon(Icons.travel_explore_rounded,
                         size: 40, color: Cf.text3),
                     SizedBox(height: 12),
+                    // ⚠️ **不能加 `const`** —— `style` 里用了 `Cf.text2`，
+                    //    而结构色是**可变 static**（主题切换会改）
+                    //    ⇒ 进 const 会报 `invalid_constant`。
                     Text(
-                      '这个榜单暂时没有内容\n'
-                      '若一直为空，请检查「我的 → 追剧日历」里的 TMDB Key',
+                      '这个榜单暂时没有内容',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontSize: 12, color: Cf.text2, height: 1.6),
                     ),
-                    SizedBox(height: 16),
+                    const SizedBox(height: 16),
+                    // ★ 主操作：**填 TMDB Key**（用户："在热播中增加
+                    //   弹出 apikey 输入的框"）
+                    //
+                    // ## 为什么必须有这个按钮
+                    // 用户已删掉「我的 → 追剧日历」入口 ⇒ TMDB Key 的
+                    // **唯一填写入口也没了**，而 TMDB 栏全靠它。
+                    //（旧文案还写着"请检查我的→追剧日历"，指向不存在的入口。）
+                    FilledButton(
+                      onPressed: () => _editTmdbKey(context, ref),
+                      child: const Text('填写 TMDB Key'),
+                    ),
+                    const SizedBox(height: 8),
                     OutlinedButton(
                       onPressed: () => ref
                           .invalidate(hotBoardProvider((_cat, _board))),

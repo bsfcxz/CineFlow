@@ -19,6 +19,46 @@ class MediaException implements Exception {
 }
 
 class EmbyProvider implements MediaProvider {
+
+  /// 列表查询的 `Fields`。
+  ///
+  /// ## ★★ 加字段必须动这里（否则**静默失效** —— 已栽 4 次）
+  /// | 缺谁 | 现象 |
+  /// |---|---|
+  /// | `ProviderIds` | tmdb→SeriesId 映射 **0 条**（周历/进度全空）|
+  /// | `Studios` | 平台标签不显示（"未标注平台"）|
+  /// | `Status` | **已完结显示"连载中"**（用户报障：体能之巅 2023）|
+  ///
+  /// ## 为什么提成常量
+  /// 原来是**就地写的字符串**，分散在各方法的 `queryParameters` 里
+  /// ⇒ 加字段时容易漏，而漏了是 **0 报错 + 静默拿不到值**（最难查的一类）。
+  /// 提成常量后只有一处要改。
+  ///
+  /// ## 逐项依据
+  /// · `PrimaryImageAspectRatio` 海报宽高比（布局）
+  /// · `ProductionYear`/`OfficialRating`/`CommunityRating` 卡片元信息
+  /// · `Genres` 类型 chips · `Overview` 简介（豆瓣降级时用）
+  /// · `DateCreated` "最新添加"排序键
+  /// · `Collections` **电影所属合集**的唯一来源（`MediaItem.collectionIds`）
+  /// · `Studios` **播出平台**（实测内容是 `Tencent Video`/`iQiyi`/`Mango TV`…）
+  /// · `ProviderIds` tmdb/imdb 映射（首页标签、进度映射、订阅同步都靠它）
+  /// · `Status` **连载状态**（`Continuing`/`Ended`）；缺它一律显示"连载中"
+  static const _listFields =
+      'PrimaryImageAspectRatio,ProductionYear,OfficialRating,'
+      'CommunityRating,Genres,Overview,DateCreated,Collections,'
+      'Studios,ProviderIds,Status';
+
+  /// 详情查询的 `Fields`（`/Items/{id}`）。
+  ///
+  /// 实测：**详情端点即使不写 `Fields` 也返回 `ProviderIds` 与 `Status`**
+  /// （curl 实测：只给详情串时 `ProviderIds={'Tmdb':'207374',...}`、
+  /// `Status='Ended'` 都在）⇒ 不含那两项也不会坏，但为一致性仍显式带上。
+  static const _detailFields =
+      'MediaSources,People,Studios,Genres,Overview,Taglines,'
+      'ProductionYear,OfficialRating,CommunityRating,Collections,'
+      'ProviderIds,Status';
+
+
   EmbyProvider._(this.session, this._dio);
 
   final MediaSession session;
@@ -195,7 +235,8 @@ class EmbyProvider implements MediaProvider {
           //   `openPlayerResolved` 的合集分支只能降级成单条播放 ⇒
           //   "列表里没有下一部"（用户报障）在这条路径上**依然复现**。
           //   ⚠️ 只补 `getItems`/`getItemDetail` 而漏这里 = 修了但没修全。
-          'Fields': 'PrimaryImageAspectRatio,BasicSyncInfo,Collections',
+          // `Status` 与 `ProviderIds` 必加：列表卡片要判连载/已完结、要给首页标签供 tmdbId。
+          'Fields': 'PrimaryImageAspectRatio,BasicSyncInfo,Collections,ProviderIds,Status',
         }));
     return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
   }
@@ -320,12 +361,7 @@ class EmbyProvider implements MediaProvider {
           // 服务端类型/年份筛选（实测有效；客户端复筛在分页下不完整，见 §7.15）
           if (genres case final g? when g.isNotEmpty) 'Genres': g,
           if (years case final y? when y.isNotEmpty) 'Years': y,
-          'Fields':
-              // ★ `Collections` 必加：它是"电影所属合集"的唯一来源
-              //   （见 `MediaItem.collectionIds`）。缺它就永远拿不到
-              //   兄弟片 ⇒ 列表里没有"下一部"（用户报障场景）。
-              'PrimaryImageAspectRatio,ProductionYear,OfficialRating,'
-                  'CommunityRating,UserData,Collections',
+            'Fields': _listFields,
         })) as Map<String, dynamic>;
     final items = [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
     return ItemPage(
@@ -338,11 +374,7 @@ class EmbyProvider implements MediaProvider {
   Future<MediaItemDetail> getItemDetail(String itemId) async {
     final d = _ok(await _dio.get('/Users/${session.user.id}/Items/$itemId',
         queryParameters: {
-          'Fields':
-              // ★ `Collections` 同 `getItems`：详情页也要用它才能知道
-              //   "这部属于哪个合集"（电影详情页的"同系列"入口依赖它）。
-              'MediaSources,People,Studios,Genres,Overview,Taglines,'
-                  'ProductionYear,OfficialRating,CommunityRating,Collections',
+            'Fields': _detailFields,
         })) as Map<String, dynamic>;
     return MediaItemDetail.fromJson(d);
   }
@@ -679,18 +711,47 @@ class EmbyProvider implements MediaProvider {
       final d = _ok(await _dio.get('/Shows/$seriesId/Episodes',
           queryParameters: {
             'UserId': session.user.id,
-            'Fields': 'PremiereDate',
+            // ★ `UserData` 必加 —— 它带 `Played`（实测样例：
+            //   {"PlaybackPositionTicks":0,"PlayCount":0,
+            //    "IsFavorite":false,"Played":false}）
+            //   ⇒ 数"未看集数"**零额外请求**（原来另走
+            //     `getItems(limit:1000)`，那条链有**截断 bug**：
+            //     HK 5711 部 ⇒ 只取前 1000 ⇒ 一斩苍穹查不到 ⇒
+            //     卡片显示"无法显示进度"）。
+            'Fields': 'PremiereDate,UserData',
             'EnableImages': false,
           }));
       final eps = _itemsList(d);
       if (eps.isEmpty) return LibrarySummary.empty;
-      var maxEp = 0;
+      // ★ 取**最后一集**，而不是"集号 max"
+      //
+      // ## 为什么（真机实证的矛盾）
+      // ```
+      // 赛尔号：已入库 349 集，但 max(IndexNumber) = 52
+      // ```
+      // `IndexNumber` 是**季内集号** ⇒ 多季剧取 max 会远小于总集数
+      // ⇒ 用户看到"349 集 · 更新至第 52 集"会觉得数据错。
+      // ⇒ 按 `(季号, 集号)` 排序取**最后一个**，并记下它的季号。
+      var lastSeason = 0;
+      var lastEp = 0;
+      // ★ 未看集数（`UserData.Played == false`）—— 见 `Fields` 处说明
+      var unplayed = 0;
       final dates = <DateTime>[];
-      // `weekday → 集号`（**只有带日期的集才进**，与 `getSeriesEpisodes` 同源）
       final days = <int, List<int>>{};
       for (final j in eps) {
+        // 未看集数（见 `Fields` 处的说明）
+        final ud = j['UserData'];
+        if (ud is Map && ud['Played'] != true) unplayed++;
+        final sn = (j['ParentIndexNumber'] as num?)?.toInt() ?? 1;
         final n = (j['IndexNumber'] as num?)?.toInt();
-        if (n != null && n > maxEp) maxEp = n;
+        if (n != null) {
+          // 比"季号×1000+集号"（同一季内集号单调 ⇒ 等价于字典序）
+          final key = sn * 1000 + n;
+          if (key > lastSeason * 1000 + lastEp) {
+            lastSeason = sn;
+            lastEp = n;
+          }
+        }
         final raw = j['PremiereDate'] as String?;
         if (raw == null || raw.isEmpty) continue;
         final dt = DateTime.tryParse(raw);
@@ -718,7 +779,11 @@ class EmbyProvider implements MediaProvider {
       }
       return LibrarySummary(
         episodeCount: eps.length,
-        lastEpisode: maxEp > 0 ? maxEp : null,
+        // 剧名（供"本地时刻表"按名查 —— 见 `LibrarySummary.title` 的说明）
+        title: (d['Name'] as String?) ?? '',
+        unplayedCount: unplayed,
+        lastEpisode: lastEp > 0 ? lastEp : null,
+        lastSeason: lastSeason > 0 ? lastSeason : null,
         nextAirDate: next,
         days: days,
       );
@@ -771,18 +836,56 @@ class EmbyProvider implements MediaProvider {
   Future<Map<String, SeriesRef>> mapSeriesTmdbToId() async {
     final out = <String, SeriesRef>{};
     try {
-      final d = _ok(await _dio.get('/Users/${session.user.id}/Items',
-          queryParameters: {
-            'IncludeItemTypes': 'Series',
-            'Recursive': true,
-            'Limit': 5000,
-            // ★ `Studios` 必加：它是**播出平台**的唯一来源
-            //   （实测内容是 Tencent Video / iQiyi / Mango TV / CCTV…）
-            //   订阅源没给平台时用它补 —— 时刻标签要用平台。
-            'Fields': 'ProviderIds,Studios',
-            'EnableImages': false,
-          }));
-      for (final j in _itemsList(d)) {
+      // ★★ **必须翻页取全**（2026-10-13 修真实 bug）
+      //
+      // ## 原来的错：`Limit: 5000` 静默截断
+      // ```dart
+      // 'Limit': 5000,   // ← HK 有 5711 部 Series ⇒ 截断 711 部
+      // ```
+      // ## 真机 + 服务器双证据
+      // ```
+      // HK Series 总数 = 5711
+      // App 拿到 5000 条（带 Tmdb 的 4997 条）
+      // ⇒ 一斩苍穹(Tmdb=303287) / 择日飞升(326695) /
+      //    战旗如画(317895) / 生化危机(1423191) 全在被截断的部分
+      // 诊断日志：未命中库：一斩苍穹｜maps=[4997, 0]｜该 id 在映射里=false
+      // 服务器实测：StartIndex=5000 一取就到 ✅
+      // ```
+      // ## 为什么用户看到"在媒体库里却显示不在媒体库"
+      // 映射表缺这些剧 ⇒ 追剧卡片认为"库里没有" ⇒ 显示"不在媒体库"。
+      //
+      // ## 危险之处：**它随库增长而恶化**
+      // 库到 5001 部时开始丢，库越大丢越多 —— 而**没有任何报错**。
+      final out2 = <Map<String, dynamic>>[];
+      var start = 0;
+      // 硬上限防"服务端 TotalRecordCount 说谎"导致无限循环
+      // （5711 / 5000 ≈ 2 页；给 20 页足够任何真实库）
+      for (var page = 0; page < 20; page++) {
+        final d = _ok(await _dio.get('/Users/${session.user.id}/Items',
+            queryParameters: {
+              'IncludeItemTypes': 'Series',
+              'Recursive': true,
+              // `SortBy` 固定 ⇒ 分页顺序稳定（否则可能重复/漏）
+              'SortBy': 'SortName',
+              'SortOrder': 'Ascending',
+              'StartIndex': start,
+              'Limit': 5000,
+              // ★ `Studios` 必加：它是**播出平台**的唯一来源
+              //   （实测内容是 Tencent Video / iQiyi / Mango TV / CCTV…）
+              //   订阅源没给平台时用它补 —— 时刻标签要用平台。
+              'Fields': 'ProviderIds,Studios',
+              'EnableImages': false,
+            }));
+        final batch = _itemsList(d);
+        if (batch.isEmpty) break;
+        out2.addAll(batch);
+        final total = (d['TotalRecordCount'] as num?)?.toInt() ?? 0;
+        start += batch.length;
+        // 取满 / 服务端没给总数 ⇒ 停
+        if (total <= 0 || out2.length >= total) break;
+      }
+      debugPrint('[Library] 映射翻页取到 ${out2.length} 条 Series');
+      for (final j in out2) {
         final ids = j['ProviderIds'];
         final id = j['Id'];
         if (ids is! Map || id is! String) continue;

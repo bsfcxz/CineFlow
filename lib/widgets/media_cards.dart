@@ -4,6 +4,8 @@ library;
 import 'package:flutter/material.dart';
 
 import '../core/theme.dart';
+import 'media_tags.dart';
+import '../data/calendar_client.dart';
 import '../data/media_provider.dart';
 import '../data/models.dart';
 
@@ -126,6 +128,17 @@ class PosterCard extends StatelessWidget {
                   ),
                 ),
               ),
+              // ★ 左上：状态标签（连载中/已完结）—— 用户要求
+              //   "库里的所有内容你都应该打上这些标签"
+              //
+              // ⚠️ 位置必须是**左上**：右上已被评分角标占用（`top:6,right:6`）。
+              if (statusKindFrom(item.status,
+                      isMovie: item.type == 'Movie') case final k?)
+                Positioned(
+                  top: 6,
+                  left: 6,
+                  child: CfStatusTag(kind: k),
+                ),
               if (item.communityRating case final r?)
                 Positioned(
                   top: 6,
@@ -159,6 +172,17 @@ class PosterCard extends StatelessWidget {
                         color: Cf.accent, shape: BoxShape.circle),
                     child: Icon(Icons.check_rounded, size: 12, color: Cf.ink),
                   ),
+                ),
+              // ★ 平台标签 —— 剧名**上方**靠左（用户要求"都打上标签"）
+              //
+              // ## 为什么放这里
+              // · `bottom:6` 是剧名、`bottom:26,right:7` 是"已播放 ✓"
+              // · 右上/左上都被占用 ⇒ 平台只能放"剧名上方 + 靠左"
+              if (_platformOf(item) case final plat?)
+                Positioned(
+                  left: 6,
+                  bottom: 26,
+                  child: CfPlatformTag(name: plat),
                 ),
               Positioned(
                 left: 8,
@@ -580,4 +604,23 @@ class CfEmptyView extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 取条目的**播出平台**（中文名；null = 认不出，UI 不显示）。
+///
+/// ## 数据来源与依据
+/// Emby 的 `Studios` 字段**实测内容就是播出平台**
+/// （`Tencent Video` / `iQiyi` / `Youku` / `Mango TV` / `Netflix` / `CCTV`），
+/// 填充率 88%（iLoveHD）/ 92%（HK-Emby）。
+/// ⇒ `studio.first` → `cnPlatformName()` 转中文（与首页轮播同一函数，不重复实现）。
+///
+/// ## ⚠️ 为什么不能用"地区/语言"判断平台
+/// `ProductionLocations` 填充率极低（Series 0%），`OriginalLanguage` 为 0/80
+/// ⇒ 只有 `Studios` 可用（历史实测，见 `docs/AI-MEMORY.md`）。
+String? _platformOf(MediaItem item) {
+  for (final st in item.studios) {
+    final cn = CalendarClient.cnPlatformName(st);
+    if (cn.isNotEmpty) return cn;
+  }
+  return null;
 }

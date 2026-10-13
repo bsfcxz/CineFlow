@@ -5,6 +5,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../data/aggregated_search.dart';
 import '../data/calendar_client.dart';
 import '../widgets/media_tags.dart';
 import 'browse_page.dart';
@@ -17,6 +18,7 @@ import '../data/emby_provider.dart';
 import '../data/models.dart';
 import '../data/db/app_database.dart' show CalendarSubscription;
 import '../state/providers.dart';
+import '../widgets/calendar_detail_sheet.dart';
 import '../widgets/media_cards.dart';
 import 'detail_page.dart';
 
@@ -362,7 +364,8 @@ class _CarouselState extends ConsumerState<_Carousel> {
                       duration: Cf.durBase,
                       curve: Cf.curve,
                       // 当前页拉长为短横条：比"只变色"更容易一眼定位
-                      width: i == _page ? 16 : 6,
+                      // （稿子 `.hero-dots span.active { width:18px }`）
+                      width: i == _page ? 18 : 6,
                       height: 6,
                       decoration: BoxDecoration(
                         color:
@@ -690,13 +693,24 @@ class _MyTrackingSection extends ConsumerWidget {
       title: '我的追剧',
       trailing: '${list.length} 部',
       child: SizedBox(
-        height: 178,
+        // 稿子：140 卡宽 + 190 海报 + 剧名/平台两行 ⇒ 总高 ≈ 250
+        height: 250,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 16),
           itemCount: list.length,
           separatorBuilder: (_, _) => const SizedBox(width: 10),
-          itemBuilder: (_, i) => _TrackingCard(sub: list[i]),
+          itemBuilder: (_, i) => _TrackingCard(
+            sub: list[i],
+            // ★ 点击 → **先查库**，命中进库内详情页（与追剧 Tab 卡片同一逻辑）
+            //
+            // ## 用户报障（2026-10-12）
+            // > "首页中我的追剧竟然不能点击"
+            // 实测：`_TrackingCard` 从 `SizedBox` 到 `Column` **一路没有任何手势**
+            // ⇒ 点不动。现在补上，且语义与追剧 Tab 一致（用户此前明确：
+            //   "追剧中详情页应该等于库中的详情页，不需要跳转"）。
+            onTap: () => _openTracking(context, ref, list[i]),
+          ),
         ),
       ),
     );
@@ -710,23 +724,30 @@ class _MyTrackingSection extends ConsumerWidget {
 /// `CalendarSubscription`（本地表行，含 TMDB 条目）⇒ 类型不兼容。
 /// 强行转换会造出一个"假的 MediaItem"（id 是 tmdb id，点进去播不了）。
 class _TrackingCard extends StatelessWidget {
-  const _TrackingCard({required this.sub});
+  const _TrackingCard({required this.sub, required this.onTap});
 
   final CalendarSubscription sub;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final poster = sub.posterUrl;
-    return SizedBox(
-      width: 112,
+    return GestureDetector(
+      onTap: onTap,
+      // `opaque` 让**整张卡**（含海报外的空白）都能点，而不是只有图
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+      // ★ 稿子 `.sub-card { flex: 0 0 140px }`
+      width: 140,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(Cf.radiusSm),
+            // ★ 稿子 `.sub-poster { height: 190px }`（原来 134）
             child: SizedBox(
-              width: 112,
-              height: 134,
+              width: 140,
+              height: 190,
               child: poster.isEmpty
                   ? _fallback()
                   : Image.network(
@@ -747,13 +768,27 @@ class _TrackingCard extends StatelessWidget {
             style: Cf.caption.copyWith(color: Cf.text),
           ),
           const SizedBox(height: 2),
-          Text(
-            sub.platform.isEmpty ? '未标注平台' : sub.platform,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Cf.micro,
-          ),
+          // ⚠️ 平台认不出时**不显示那一行**（而不是写"未标注平台"）
+          //
+          // ## 真机实证（为什么改）
+          // 原来显示"未标注平台" ⇒ 首页两张卡都是这行字，**纯噪声**：
+          // 用户从剧名就知道是哪部剧，平台认不出就不显示
+          //（本仓库一贯口径：宁可不显示，也不编）。
+          //
+          // ## 订阅表的 platform 为什么常为空
+          // 它是**订阅时的快照**，而订阅源（TMDB/B站/tgmeng）常常没给平台。
+          // 库内的 `Studios` 其实有（追剧 Tab 已用 `_libPlat` 兜底）——
+          // 首页要拿到它需要 tmdbId → `mapSeriesTmdbToId()` 的映射，
+          // 那是 per-api 的（无现成 provider 缓存）⇒ 留待后续统一。
+          if (sub.platform.isNotEmpty)
+            Text(
+              sub.platform,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Cf.micro,
+            ),
         ],
+      ),
       ),
     );
   }
@@ -764,3 +799,48 @@ class _TrackingCard extends StatelessWidget {
         child: Icon(Icons.movie_outlined, color: Cf.text3),
       );
 }
+
+/// 点「我的追剧」卡片：**先查库**，命中进库内详情页；未命中用日历详情页。
+///
+/// ## 为什么两步（与追剧 Tab 完全一致）
+/// 用户明确："追剧中详情页应该等于库中的详情页，不需要跳转"。
+/// 库里有的就不该有第二套详情页；库里没有（先订阅、等入库）才退回日历详情页
+/// （那里能看简介、能取消订阅）。
+Future<void> _openTracking(
+    BuildContext context, WidgetRef ref, CalendarSubscription sub) async {
+  final title = sub.titleCn.isEmpty ? sub.title : sub.titleCn;
+  try {
+    final results = await ref.read(aggregatedSearchProvider(title).future);
+    if (!context.mounted) return;
+    for (final r0 in results) {
+      for (final h in r0.hits) {
+        final t = h.item.type;
+        if (t != 'Series' && t != 'Movie') continue;
+        openMediaItem(context, h.item);
+        return;
+      }
+    }
+  } catch (_) {
+    // 查库失败 ⇒ 走降级（不让用户卡住）
+  }
+  if (!context.mounted) return;
+  showCalendarDetail(context, _subToEntry(sub));
+}
+
+/// 订阅 → `CalendarEntry`（`showCalendarDetail` 需要的类型）。
+CalendarEntry _subToEntry(CalendarSubscription sub) => CalendarEntry(
+      title: sub.title,
+      titleCn: sub.titleCn.isEmpty ? null : sub.titleCn,
+      source: sub.source,
+      sourceId: sub.sourceId,
+      posterUrl: sub.posterUrl.isEmpty ? null : sub.posterUrl,
+      platform: sub.platform.isEmpty ? null : sub.platform,
+      // ⚠️ `CalendarEntry.category` 是 `CalendarCategory`（3 档），
+      //    不是 `BrowseCategory`（6 档）—— 两者维度不同。
+      category: switch (sub.category) {
+        'anime' => CalendarCategory.anime,
+        'variety' => CalendarCategory.variety,
+        _ => CalendarCategory.series,
+      },
+      airDate: sub.lastAirDate.isEmpty ? null : sub.lastAirDate,
+    );

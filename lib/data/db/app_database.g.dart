@@ -856,6 +856,21 @@ class $CalendarSubscriptionsTable extends CalendarSubscriptions
     requiredDuringInsert: false,
     defaultValue: const Constant(''),
   );
+  static const VerificationMeta _syncedToServerMeta = const VerificationMeta(
+    'syncedToServer',
+  );
+  @override
+  late final GeneratedColumn<bool> syncedToServer = GeneratedColumn<bool>(
+    'synced_to_server',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("synced_to_server" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
   static const VerificationMeta _subscribedAtMeta = const VerificationMeta(
     'subscribedAt',
   );
@@ -879,6 +894,7 @@ class $CalendarSubscriptionsTable extends CalendarSubscriptions
     category,
     lastAirDate,
     status,
+    syncedToServer,
     subscribedAt,
   ];
   @override
@@ -962,6 +978,15 @@ class $CalendarSubscriptionsTable extends CalendarSubscriptions
         status.isAcceptableOrUnknown(data['status']!, _statusMeta),
       );
     }
+    if (data.containsKey('synced_to_server')) {
+      context.handle(
+        _syncedToServerMeta,
+        syncedToServer.isAcceptableOrUnknown(
+          data['synced_to_server']!,
+          _syncedToServerMeta,
+        ),
+      );
+    }
     if (data.containsKey('subscribed_at')) {
       context.handle(
         _subscribedAtMeta,
@@ -1022,6 +1047,10 @@ class $CalendarSubscriptionsTable extends CalendarSubscriptions
         DriftSqlType.string,
         data['${effectivePrefix}status'],
       )!,
+      syncedToServer: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}synced_to_server'],
+      )!,
       subscribedAt: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}subscribed_at'],
@@ -1075,6 +1104,24 @@ class CalendarSubscription extends DataClass
   ///    而存原始值会让 UI 每次都要做映射（多一处可能漏的地方）。
   final String status;
 
+  /// 「**是否在服务端收藏里出现过**」—— 双向同步的安全阀门。
+  ///
+  /// ## 用户要求
+  /// > "emby 服务端中的我的收藏 = 我的追剧，我的追剧 = 收藏。**要互相同步**哇。"
+  ///
+  /// ## ⚠️ 为什么不能"服务端没有就删本地"
+  /// 本地可能有"**库里没有**"的**外部订阅**（先订阅、等入库）——
+  /// 那些在服务端**没有**对应收藏（订阅时库里没命中 ⇒ 按规则不写收藏）。
+  /// 若按"服务端没有就删"，会把它们**全删掉**（正是上次 uninstall 的痛）。
+  ///
+  /// ## 判据
+  /// | 服务端 | 本列 | 动作 |
+  /// |---|---|---|
+  /// | 有 | 任意 | upsert + 置 **true** |
+  /// | 没有 | **true** | 用户在服务端**取消**了 ⇒ **删本地** |
+  /// | 没有 | false | 外部订阅 ⇒ **保留** |
+  final bool syncedToServer;
+
   /// 订阅时间（Unix 秒）。
   final int subscribedAt;
   const CalendarSubscription({
@@ -1088,6 +1135,7 @@ class CalendarSubscription extends DataClass
     required this.category,
     required this.lastAirDate,
     required this.status,
+    required this.syncedToServer,
     required this.subscribedAt,
   });
   @override
@@ -1103,6 +1151,7 @@ class CalendarSubscription extends DataClass
     map['category'] = Variable<String>(category);
     map['last_air_date'] = Variable<String>(lastAirDate);
     map['status'] = Variable<String>(status);
+    map['synced_to_server'] = Variable<bool>(syncedToServer);
     map['subscribed_at'] = Variable<int>(subscribedAt);
     return map;
   }
@@ -1119,6 +1168,7 @@ class CalendarSubscription extends DataClass
       category: Value(category),
       lastAirDate: Value(lastAirDate),
       status: Value(status),
+      syncedToServer: Value(syncedToServer),
       subscribedAt: Value(subscribedAt),
     );
   }
@@ -1139,6 +1189,7 @@ class CalendarSubscription extends DataClass
       category: serializer.fromJson<String>(json['category']),
       lastAirDate: serializer.fromJson<String>(json['lastAirDate']),
       status: serializer.fromJson<String>(json['status']),
+      syncedToServer: serializer.fromJson<bool>(json['syncedToServer']),
       subscribedAt: serializer.fromJson<int>(json['subscribedAt']),
     );
   }
@@ -1156,6 +1207,7 @@ class CalendarSubscription extends DataClass
       'category': serializer.toJson<String>(category),
       'lastAirDate': serializer.toJson<String>(lastAirDate),
       'status': serializer.toJson<String>(status),
+      'syncedToServer': serializer.toJson<bool>(syncedToServer),
       'subscribedAt': serializer.toJson<int>(subscribedAt),
     };
   }
@@ -1171,6 +1223,7 @@ class CalendarSubscription extends DataClass
     String? category,
     String? lastAirDate,
     String? status,
+    bool? syncedToServer,
     int? subscribedAt,
   }) => CalendarSubscription(
     source: source ?? this.source,
@@ -1183,6 +1236,7 @@ class CalendarSubscription extends DataClass
     category: category ?? this.category,
     lastAirDate: lastAirDate ?? this.lastAirDate,
     status: status ?? this.status,
+    syncedToServer: syncedToServer ?? this.syncedToServer,
     subscribedAt: subscribedAt ?? this.subscribedAt,
   );
   CalendarSubscription copyWithCompanion(CalendarSubscriptionsCompanion data) {
@@ -1199,6 +1253,9 @@ class CalendarSubscription extends DataClass
           ? data.lastAirDate.value
           : this.lastAirDate,
       status: data.status.present ? data.status.value : this.status,
+      syncedToServer: data.syncedToServer.present
+          ? data.syncedToServer.value
+          : this.syncedToServer,
       subscribedAt: data.subscribedAt.present
           ? data.subscribedAt.value
           : this.subscribedAt,
@@ -1218,6 +1275,7 @@ class CalendarSubscription extends DataClass
           ..write('category: $category, ')
           ..write('lastAirDate: $lastAirDate, ')
           ..write('status: $status, ')
+          ..write('syncedToServer: $syncedToServer, ')
           ..write('subscribedAt: $subscribedAt')
           ..write(')'))
         .toString();
@@ -1235,6 +1293,7 @@ class CalendarSubscription extends DataClass
     category,
     lastAirDate,
     status,
+    syncedToServer,
     subscribedAt,
   );
   @override
@@ -1251,6 +1310,7 @@ class CalendarSubscription extends DataClass
           other.category == this.category &&
           other.lastAirDate == this.lastAirDate &&
           other.status == this.status &&
+          other.syncedToServer == this.syncedToServer &&
           other.subscribedAt == this.subscribedAt);
 }
 
@@ -1266,6 +1326,7 @@ class CalendarSubscriptionsCompanion
   final Value<String> category;
   final Value<String> lastAirDate;
   final Value<String> status;
+  final Value<bool> syncedToServer;
   final Value<int> subscribedAt;
   final Value<int> rowid;
   const CalendarSubscriptionsCompanion({
@@ -1279,6 +1340,7 @@ class CalendarSubscriptionsCompanion
     this.category = const Value.absent(),
     this.lastAirDate = const Value.absent(),
     this.status = const Value.absent(),
+    this.syncedToServer = const Value.absent(),
     this.subscribedAt = const Value.absent(),
     this.rowid = const Value.absent(),
   });
@@ -1293,6 +1355,7 @@ class CalendarSubscriptionsCompanion
     this.category = const Value.absent(),
     this.lastAirDate = const Value.absent(),
     this.status = const Value.absent(),
+    this.syncedToServer = const Value.absent(),
     required int subscribedAt,
     this.rowid = const Value.absent(),
   }) : source = Value(source),
@@ -1310,6 +1373,7 @@ class CalendarSubscriptionsCompanion
     Expression<String>? category,
     Expression<String>? lastAirDate,
     Expression<String>? status,
+    Expression<bool>? syncedToServer,
     Expression<int>? subscribedAt,
     Expression<int>? rowid,
   }) {
@@ -1324,6 +1388,7 @@ class CalendarSubscriptionsCompanion
       if (category != null) 'category': category,
       if (lastAirDate != null) 'last_air_date': lastAirDate,
       if (status != null) 'status': status,
+      if (syncedToServer != null) 'synced_to_server': syncedToServer,
       if (subscribedAt != null) 'subscribed_at': subscribedAt,
       if (rowid != null) 'rowid': rowid,
     });
@@ -1340,6 +1405,7 @@ class CalendarSubscriptionsCompanion
     Value<String>? category,
     Value<String>? lastAirDate,
     Value<String>? status,
+    Value<bool>? syncedToServer,
     Value<int>? subscribedAt,
     Value<int>? rowid,
   }) {
@@ -1354,6 +1420,7 @@ class CalendarSubscriptionsCompanion
       category: category ?? this.category,
       lastAirDate: lastAirDate ?? this.lastAirDate,
       status: status ?? this.status,
+      syncedToServer: syncedToServer ?? this.syncedToServer,
       subscribedAt: subscribedAt ?? this.subscribedAt,
       rowid: rowid ?? this.rowid,
     );
@@ -1392,6 +1459,9 @@ class CalendarSubscriptionsCompanion
     if (status.present) {
       map['status'] = Variable<String>(status.value);
     }
+    if (syncedToServer.present) {
+      map['synced_to_server'] = Variable<bool>(syncedToServer.value);
+    }
     if (subscribedAt.present) {
       map['subscribed_at'] = Variable<int>(subscribedAt.value);
     }
@@ -1414,6 +1484,7 @@ class CalendarSubscriptionsCompanion
           ..write('category: $category, ')
           ..write('lastAirDate: $lastAirDate, ')
           ..write('status: $status, ')
+          ..write('syncedToServer: $syncedToServer, ')
           ..write('subscribedAt: $subscribedAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
@@ -2275,6 +2346,7 @@ typedef $$CalendarSubscriptionsTableCreateCompanionBuilder =
       Value<String> category,
       Value<String> lastAirDate,
       Value<String> status,
+      Value<bool> syncedToServer,
       required int subscribedAt,
       Value<int> rowid,
     });
@@ -2290,6 +2362,7 @@ typedef $$CalendarSubscriptionsTableUpdateCompanionBuilder =
       Value<String> category,
       Value<String> lastAirDate,
       Value<String> status,
+      Value<bool> syncedToServer,
       Value<int> subscribedAt,
       Value<int> rowid,
     });
@@ -2350,6 +2423,11 @@ class $$CalendarSubscriptionsTableFilterComposer
 
   ColumnFilters<String> get status => $composableBuilder(
     column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get syncedToServer => $composableBuilder(
+    column: $table.syncedToServer,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -2418,6 +2496,11 @@ class $$CalendarSubscriptionsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get syncedToServer => $composableBuilder(
+    column: $table.syncedToServer,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get subscribedAt => $composableBuilder(
     column: $table.subscribedAt,
     builder: (column) => ColumnOrderings(column),
@@ -2464,6 +2547,11 @@ class $$CalendarSubscriptionsTableAnnotationComposer
 
   GeneratedColumn<String> get status =>
       $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<bool> get syncedToServer => $composableBuilder(
+    column: $table.syncedToServer,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<int> get subscribedAt => $composableBuilder(
     column: $table.subscribedAt,
@@ -2527,6 +2615,7 @@ class $$CalendarSubscriptionsTableTableManager
                 Value<String> category = const Value.absent(),
                 Value<String> lastAirDate = const Value.absent(),
                 Value<String> status = const Value.absent(),
+                Value<bool> syncedToServer = const Value.absent(),
                 Value<int> subscribedAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => CalendarSubscriptionsCompanion(
@@ -2540,6 +2629,7 @@ class $$CalendarSubscriptionsTableTableManager
                 category: category,
                 lastAirDate: lastAirDate,
                 status: status,
+                syncedToServer: syncedToServer,
                 subscribedAt: subscribedAt,
                 rowid: rowid,
               ),
@@ -2555,6 +2645,7 @@ class $$CalendarSubscriptionsTableTableManager
                 Value<String> category = const Value.absent(),
                 Value<String> lastAirDate = const Value.absent(),
                 Value<String> status = const Value.absent(),
+                Value<bool> syncedToServer = const Value.absent(),
                 required int subscribedAt,
                 Value<int> rowid = const Value.absent(),
               }) => CalendarSubscriptionsCompanion.insert(
@@ -2568,6 +2659,7 @@ class $$CalendarSubscriptionsTableTableManager
                 category: category,
                 lastAirDate: lastAirDate,
                 status: status,
+                syncedToServer: syncedToServer,
                 subscribedAt: subscribedAt,
                 rowid: rowid,
               ),

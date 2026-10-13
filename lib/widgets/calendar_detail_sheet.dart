@@ -746,7 +746,11 @@ class _NextUpdate extends ConsumerWidget {
     final tmdbId = d?.tmdbId;
     final sum = (tmdbId == null || tmdbId.isEmpty)
         ? null
-        : ref.watch(librarySummaryProvider(tmdbId)).value;
+        : ref
+              // ★ 同上：`tmdbId|title` —— 本地时刻表按剧名查
+              .watch(librarySummaryProvider(
+                  '$tmdbId|${(entry.titleCn ?? '').isEmpty ? entry.title : entry.titleCn}'))
+              .value;
     // 副标题：库内已入库集数优先（那是"你手上有几集"）
     final libN = sum?.episodeCount;
     final total = d?.episodeCount;

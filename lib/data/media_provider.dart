@@ -423,16 +423,50 @@ class SeriesRef {
 class LibrarySummary {
   const LibrarySummary({
     required this.episodeCount,
+    this.title = '',
     this.lastEpisode,
+    this.lastSeason,
+    this.unplayedCount,
     this.nextAirDate,
     this.days = const {},
   });
 
+  /// **剧名**（Emby 的 `Name`）。
+  ///
+  /// ## 为什么摘要要带剧名
+  /// `librarySummaryProvider` 的第三级来源是**本地时刻表**
+  /// （`anime_timelines`，按剧名查）⇒ 需要剧名。
+  /// 摘要本来就在查这部剧，顺手带名字**零额外请求**。
+  final String title;
+
   /// **已入库集数**（库里实际有几集）。
   final int episodeCount;
 
-  /// **已更新到第几集**（库内最大集号；null = 拿不到集号）。
+  /// **最后一集的集号**（null = 拿不到）。
+  ///
+  /// ## ⚠️ 这是**季内集号**，不是"全剧第几集"（真机踩到）
+  /// ```
+  /// 《赛尔号》已入库 349 集，但 IndexNumber 的 max = 52
+  /// ```
+  /// Emby 的 `IndexNumber` 是**季内集号**（`ParentIndexNumber` 才是季号）
+  /// ⇒ 多季剧取 max 会得到一个远小于总集数的数，
+  /// 用户看到"349 集 · 更新至第 52 集"会觉得数据错。
+  /// ⇒ 显示时必须配合 [lastSeason]（多季带季号，见 `_progressText`）。
   final int? lastEpisode;
+
+  /// 最后一集的**季号**（`ParentIndexNumber`；null = 未知/单季）。
+  final int? lastSeason;
+
+  /// **未看集数**（null = 拿不到）。
+  ///
+  /// ## 为什么放进 `LibrarySummary`
+  /// 追剧卡片的进度行要显示"已看 X/Y · 剩 Z"。
+  /// 原来进度**另走一条链**（`getItems(limit:1000)`）——
+  /// 那条链有**截断 bug**（HK 5711 部 ⇒ 只取前 1000 ⇒ 一斩苍穹查不到）。
+  /// 而 `getLibrarySummary` **本来就在查这部剧的 Episodes**
+  /// （实测 `/Shows/{id}/Episodes` 响应带 `UserData.Played`）
+  /// ⇒ 顺手数出来，**零额外请求**、且**逐部精确**（不受任何 limit 影响）。
+  final int? unplayedCount;
 
   /// **下次更新日**（`yyyy-MM-dd`；null = 本周已无更新 / 拿不到）。
   final String? nextAirDate;

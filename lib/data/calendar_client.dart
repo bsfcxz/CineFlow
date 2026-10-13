@@ -800,6 +800,25 @@ class CalendarClient {
       'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 '
       'Mobile/15E148 Safari/604.1';
 
+  /// **桌面 UA** —— 优酷 **PC 频道页**要用它（UA 与页面形态必须匹配）。
+  ///
+  /// ## ★ 为什么必须区分（2026-10-13 实测）
+  /// 优酷按 UA 给**不同形态**的页面：
+  /// | UA | 页面 | `//v.youku.com/video?s=` 链接 |
+  /// |---|---|---|
+  /// | 移动 | `m.youku.com/ku/webcomic` 217KB | ❌ **0 个** |
+  /// | 桌面 | `www.youku.com/ku/webcomic` 1.56MB | ✅ **92 个** |
+  ///
+  /// 移动端把链接换成了 `//m.youku.com/alipay_video/id_xxx.html`，
+  /// 而那些页面里**没有"每周X N点"**（实测 3/3 无）⇒ 拿不到时刻。
+  ///
+  /// ⚠️ 所以**请求 PC 页必须用桌面 UA** ——
+  ///    用移动 UA 请求 PC 地址会拿到移动版内容（又没链接了）。
+  static const _uaDesktop =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+      'AppleWebKit/537.36 (KHTML, like Gecko) '
+      'Chrome/120.0.0.0 Safari/537.36';
+
   /// 缓存 TTL —— **按"是否本周"分档**（调研取证：MoviePilot 用 6h）。
   ///
   /// ## 为什么要分档
@@ -1269,10 +1288,43 @@ class CalendarClient {
         if (depth > 10 || o == null) return;
         if (o is Map) {
           final t = o['title'];
-          final de = o['desc'];
-          if (t is String && de is String && de.isNotEmpty) {
-            final parsed = _parseWeeklyDesc(de);
-            if (parsed != null && seen.add(t)) {
+          // ★★ 字段名**兼容两种**（2026-10-13 实测服务端已改）
+          //
+          // ## 事故：解析突然变 0 条
+          // 原来只读 `desc`；实测当前响应里**没有 `desc`**，而是：
+          // ```
+          // $.items[0].video[0].data[0].description: str = '高中生侦探工藤新一…'
+          // ```
+          // ⇒ 解析 0 条（原本 24/24），卡片时刻退化成"平台惯例"（不准）。
+          //
+          // ## 为什么两个都试（而不是直接换掉）
+          // 服务端已改过一次 ⇒ 可能再改回去。两个键名都认，任一边生效。
+          // ★★ **两个候选字段都试解析**（2026-10-13 实测修正）
+          //
+          // ## 为什么不能简单 `??`
+          // 实测字段路径与内容：
+          // ```
+          // $.items[].video[].data[].desc  ×40 处 → "每周一周五10:00更新一集"  ← 要的
+          // $.items[].video[].data[].description    → 剧情简介（**不含"每周"**）
+          // ```
+          // 若写 `description ?? desc`：`description` 非 null 但**不含"每周"**
+          // ⇒ `_parseWeeklyDesc` 返回 null ⇒ **仍然 0 条**。
+          // ⇒ 正确做法：**逐个候选试解析**，谁能解出"每周"就用谁。
+          final cands = <String>[
+            if (o['desc'] is String) o['desc'] as String,
+            if (o['description'] is String) o['description'] as String,
+            if (o['descV2'] is String) o['descV2'] as String,
+          ];
+          (int, String)? parsed;
+          for (final de in cands) {
+            if (de.isEmpty) continue;
+            final r0 = _parseWeeklyDesc(de);
+            if (r0 != null) {
+              parsed = r0;
+              break;
+            }
+          }
+          if (t is String && parsed != null && seen.add(t)) {
               rows.add(AnimeTimeline(
                 title: t,
                 platform: 'iqiyi',
@@ -1281,7 +1333,6 @@ class CalendarClient {
                 sourceId: (o['album_id'] ?? '').toString(),
                 updatedAt: now,
               ));
-            }
           }
           for (final v in o.values) {
             walk(v, depth + 1);
@@ -1374,19 +1425,62 @@ class CalendarClient {
     int maxSeries = 60,
   }) async {
     try {
-      // ① 频道页拿单剧链接（移动端：小、且有 SSR）
-      final r = await _dio.get<String>(
-        'https://m.youku.com/ku/webcomic',
-        options: Options(responseType: ResponseType.plain, headers: {
-          'User-Agent': _uaMobile,
-          'Referer': 'https://www.youku.com/',
-        }),
-      );
-      if (r.statusCode != 200 || r.data == null) {
-        debugPrint('[Timeline] 优酷频道页失败 HTTP ${r.statusCode}');
+      // ① 频道页拿单剧链接（**PC 页** —— 2026-10-13 实测修正）
+      //
+      // ## 为什么从移动端换成 PC 页
+      // | 入口 | 大小 | `//v.youku.com/video?s=` 链接数 |
+      // |---|---|---|
+      // | `m.youku.com/ku/webcomic`（原用）| 217KB | ❌ **0 个** |
+      // | `www.youku.com/ku/webcomic`（改用）| 1.56MB | ✅ **92 个** |
+      //
+      // 移动端把链接换成了 `//m.youku.com/alipay_video/id_xxx.html`，
+      // 而那些页面里**没有"每周X N点"**（实测 3/3 无）⇒ 拿不到时刻。
+      // PC 页仍保留旧形态，且详情页实测 5/8 命中（抽 8 个）：
+      // ```
+      // ✅ 沧元图 周5 10:00｜一斩苍穹 周1 10:00｜光阴之外 周7 10:00
+      // ✅ 师兄啊师兄 周4 10:00｜东大高武学院 周4 10:00
+      // ❌ 神墓年番 / 云深不知梦 / 排球少年 ← **本来就没有"每周"**（非解析失败）
+      // ```
+      //
+      // ## 代价与为何可接受
+      // PC 页 1.56MB（移动端 217KB，**7 倍**）—— 但只在
+      // "索引时刻表"时跑一次（**按平台 TTL**，不是每次进页面）⇒ 可接受。
+      //
+      // ## 回退
+      // 两个入口都试，**谁给出链接就用谁** ——
+      // 任一边再改形态都还有另一边。
+      var html = '';
+      for (final entry in [
+        // (url, ua) —— PC 优先（有链接），移动端兜底
+        ('https://www.youku.com/ku/webcomic', _uaDesktop),
+        ('https://m.youku.com/ku/webcomic', _uaMobile),
+      ]) {
+        try {
+          final r = await _dio.get<String>(
+            entry.$1,
+            options: Options(responseType: ResponseType.plain, headers: {
+              'User-Agent': entry.$2,
+              'Referer': 'https://www.youku.com/',
+            }),
+          );
+          if (r.statusCode == 200 && r.data != null) {
+            // 有旧形态链接才算"可用入口"（否则换下一个）
+            if (RegExp(r'href="(//v\.youku\.com/video\?s=[^"&]+)')
+                .hasMatch(r.data!)) {
+              html = r.data!;
+              debugPrint('[Timeline] 优酷频道页用 ${entry.$1}（${html.length} 字节）');
+              break;
+            }
+            debugPrint('[Timeline] 优酷 ${entry.$1} 无旧形态链接，试下一个');
+          }
+        } catch (e) {
+          debugPrint('[Timeline] 优酷 ${entry.$1} 失败: ${_friendly(e)}');
+        }
+      }
+      if (html.isEmpty) {
+        debugPrint('[Timeline] 优酷：所有频道页入口都拿不到单剧链接');
         return 0;
       }
-      final html = r.data!;
       // 抓 `//v.youku.com/video?s=xxx` 形式的单剧链接（去重、限量）
       final links = <String>[];
       final seen = <String>{};

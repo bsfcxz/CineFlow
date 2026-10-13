@@ -17,6 +17,9 @@ import '../data/session_store.dart';
 import '../data/models.dart';
 import '../pan115/pan115_browser_page.dart';
 import '../pan115/pan115_store.dart';
+// `reindexTimelines` —— 手动强制重跑三源时刻表索引。
+// 与追剧页**共用同一套逻辑**，避免「一处改了另一处没改」。
+import 'tracking_page.dart' show reindexTimelines;
 import '../state/providers.dart';
 import 'account_manager_page.dart';
 
@@ -228,6 +231,35 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                   context,
                   MaterialPageRoute(builder: (_) => const AppearancePage()),
                 ),
+              ),
+              // ★ 从服务端收藏恢复订阅（uninstall 事故的补救，见 AGENTS.md §6.9）
+              //
+              // ## 为什么会有这个入口
+              // 本地 `calendar_subscriptions` 曾被误清空（21 部订阅）；
+              // 但**服务端 Emby 收藏还在**（订阅时"库里命中 ⇒ 同时写收藏"）
+              // ⇒ 可以从收藏反查 tmdbId 重建订阅。
+              //
+              // ## 诚实说明（覆盖范围有限）
+              // 只能恢复"**订阅时库里有**"的那些 —— 当时才写了收藏。
+              // 库里没有的（先订阅、等入库）当时没写收藏 ⇒ 恢复不了。
+              _SettingItem(
+                icon: Icons.restore_rounded,
+                color: const Color(0xFF00E5A0),
+                title: '恢复追剧订阅',
+                sub: '从 Emby 服务端收藏重建本地订阅（误清空后使用）',
+                onTap: () => _restoreSubs(context, ref),
+              ),
+              // ★ 「更新时刻表」—— 手动强制重跑三大源索引
+              //
+              // ## 为什么需要
+              // 索引**按平台 TTL**（24h）⇒ 订阅的剧改档后，用户要等一天才生效。
+              // 给一个手动入口 ⇒ 立刻刷新（也便于确认索引是否真的在工作）。
+              _SettingItem(
+                icon: Icons.schedule_rounded,
+                color: const Color(0xFF5B8DEF),
+                title: '更新时刻表',
+                sub: '重新抓取 B站/爱奇艺/优酷 的连载更新时间',
+                onTap: () => _reindexTimelines(context, ref),
               ),
               _SettingItem(
                 icon: Icons.info_outline_rounded,
@@ -487,34 +519,86 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                     style: TextStyle(fontSize: 11, color: Cf.text3)),
               ),
               for (final a in list)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Row(children: [
-                    Icon(
-                      (cur != null &&
-                              SessionStore.accountKey(cur) ==
-                                  SessionStore.accountKey(a))
-                          ? Icons.check_circle_rounded
-                          : Icons.circle_outlined,
-                      size: 13,
-                      color: (cur != null &&
-                              SessionStore.accountKey(cur) ==
-                                  SessionStore.accountKey(a))
-                          ? Cf.accent
-                          : Cf.text3,
+                Builder(builder: (ctx) {
+                  final isCur = cur != null &&
+                      SessionStore.accountKey(cur) ==
+                          SessionStore.accountKey(a);
+                  return InkWell(
+                    // ★ 整行可点（不只是圆点）——
+                    //   圆点只有 13px，就算扩到 48dp，用户也习惯点"那一行"。
+                    //   `InkWell` 自带水波纹 ⇒ 有按压反馈。
+                    onTap: () async {
+                      if (isCur) {
+                        // 已选中的那台点了要有反馈 —— 静默无反应会让用户
+                        // 以为"又点不动"（这正是本次报障的观感）。
+                        ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+                          const SnackBar(
+                              content: Text('已是当前服务器'),
+                              duration: Duration(seconds: 1)),
+                        );
+                        return;
+                      }
+                      try {
+                        await ref.read(sessionProvider.notifier).switchTo(a);
+                        if (ctx.mounted) {
+                          ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+                            SnackBar(
+                                content: Text('已切换到 ${a.user.name}'),
+                                duration: const Duration(seconds: 1)),
+                          );
+                        }
+                      } catch (e) {
+                        if (ctx.mounted) {
+                          ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+                            SnackBar(content: Text('切换失败：$e')),
+                          );
+                        }
+                      }
+                    },
+                    borderRadius: BorderRadius.circular(Cf.radiusSm),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 6),
+                      child: Row(children: [
+                        // 命中区 ≥48dp：视觉仍是 13px 图标，
+                        // 用 `CfTapTarget` 扩命中区（AGENTS §6.4.1）。
+                        //  ⚠️ 不用裸 `GestureDetector` —— 本仓库审计过
+                        //     5 处裸手势最小仅 16×16（既点不中又无反馈）。
+                        // size 36 + 上下 padding 6×2 = **48dp** 行高
+                        //（AGENTS §6.4.1：可点区域 ≥48dp；视觉圆点仍 13px）
+                        CfTapTarget(
+                          size: 36,
+                          semanticLabel: isCur
+                              ? '${a.user.name}，当前服务器'
+                              : '切换到 ${a.user.name}',
+                          onTap: null, // 交给外层 InkWell，避免双重触发
+                          child: Icon(
+                            isCur
+                                ? Icons.check_circle_rounded
+                                : Icons.circle_outlined,
+                            size: 13,
+                            color: isCur ? Cf.accent : Cf.text3,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            '${a.user.name} · '
+                            '${Uri.tryParse(a.serverUrl)?.host ?? a.serverUrl}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 11,
+                                color: isCur ? Cf.text : Cf.text2),
+                          ),
+                        ),
+                        if (!isCur)
+                          Icon(Icons.chevron_right_rounded,
+                              size: 15, color: Cf.text3),
+                      ]),
                     ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        '${a.user.name} · '
-                        '${Uri.tryParse(a.serverUrl)?.host ?? a.serverUrl}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11, color: Cf.text2),
-                      ),
-                    ),
-                  ]),
-                ),
+                  );
+                }),
             ],
           ),
         );
@@ -726,5 +810,84 @@ class _AddressChip extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// **从服务端收藏恢复本地订阅**（写操作，先二次确认）。
+///
+/// ## 为什么用对话框确认
+/// 这是**写操作**（往订阅表加行）⇒ 不该点一下就执行。
+///
+/// ## 幂等
+/// `restoreSubscriptionsFromFavorites` 内部按 `tmdbId` 去重，
+/// 重复点不会重复写（只报"恢复了 0 部"）。
+Future<void> _restoreSubs(BuildContext context, WidgetRef ref) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      backgroundColor: Cf.surface,
+      title: const Text('恢复追剧订阅'),
+      content: const Text(
+        '将从两台 Emby 服务端的**收藏**重建本地订阅。\n\n'
+        '只有"订阅时库里已有"的剧才恢复得了 —— '
+        '库里没有的当时没写收藏。\n\n'
+        '已有订阅不会重复添加。',
+        style: TextStyle(fontSize: 13, height: 1.6),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('取消')),
+        FilledButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('开始恢复')),
+      ],
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  messenger?.showSnackBar(const SnackBar(
+      content: Text('正在读取服务端收藏…'), duration: Duration(seconds: 1)));
+  try {
+    final n = await restoreSubscriptionsFromFavorites(ref: ref);
+    // 订阅表变了 ⇒ 让「追剧」Tab 与首页「我的追剧」重拉
+    ref.invalidate(subscriptionsProvider);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(SnackBar(
+        content: Text(n > 0
+            ? '已恢复 $n 部订阅'
+            : '没有可恢复的（可能都已存在，或收藏里没有库内剧）')));
+  } catch (e) {
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(SnackBar(content: Text('恢复失败：$e')));
+  }
+}
+
+/// **手动强制重跑三大源的更新时刻表索引**。
+///
+/// ## 与追剧页 `_ensureTimelineIndexed` 的关系
+/// 两处**共用** `reindexTimelines`（顶层函数）——
+/// 避免"一处改了源、另一处没改"（本仓库踩过"修了但没修全"）。
+///
+/// ## 为什么值得给用户
+/// 索引默认按 **24h TTL** 跳过；订阅的剧改档后用户要等一天。
+/// 手动入口能立刻刷新，也便于用户自助确认功能是否正常。
+Future<void> _reindexTimelines(BuildContext context, WidgetRef ref) async {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  messenger?.showSnackBar(const SnackBar(
+      content: Text('正在更新时刻表（B站/爱奇艺/优酷）…'),
+      duration: Duration(seconds: 2)));
+  try {
+    final n = await reindexTimelines(ref: ref);
+    // 追剧页要重新读一次时刻表（否则卡片上的时刻还是旧的）
+    ref.invalidate(subscriptionsProvider);
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(SnackBar(
+        content: Text(n > 0
+            ? '时刻表已更新（$n 条）'
+            : '时刻表已是最新（本次 0 条新增）')));
+  } catch (e) {
+    messenger?.hideCurrentSnackBar();
+    messenger?.showSnackBar(SnackBar(content: Text('更新失败：$e')));
   }
 }

@@ -132,6 +132,25 @@ class CalendarSubscriptions extends Table {
   ///    而存原始值会让 UI 每次都要做映射（多一处可能漏的地方）。
   TextColumn get status => text().withDefault(const Constant(''))();
 
+  /// 「**是否在服务端收藏里出现过**」—— 双向同步的安全阀门。
+  ///
+  /// ## 用户要求
+  /// > "emby 服务端中的我的收藏 = 我的追剧，我的追剧 = 收藏。**要互相同步**哇。"
+  ///
+  /// ## ⚠️ 为什么不能"服务端没有就删本地"
+  /// 本地可能有"**库里没有**"的**外部订阅**（先订阅、等入库）——
+  /// 那些在服务端**没有**对应收藏（订阅时库里没命中 ⇒ 按规则不写收藏）。
+  /// 若按"服务端没有就删"，会把它们**全删掉**（正是上次 uninstall 的痛）。
+  ///
+  /// ## 判据
+  /// | 服务端 | 本列 | 动作 |
+  /// |---|---|---|
+  /// | 有 | 任意 | upsert + 置 **true** |
+  /// | 没有 | **true** | 用户在服务端**取消**了 ⇒ **删本地** |
+  /// | 没有 | false | 外部订阅 ⇒ **保留** |
+  BoolColumn get syncedToServer =>
+      boolean().withDefault(const Constant(false))();
+
   /// 订阅时间（Unix 秒）。
   IntColumn get subscribedAt => integer()();
 
@@ -197,12 +216,13 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
 
   @override
+  // v4 → v5：订阅表加 `syncedToServer`（**收藏 ⇄ 追剧 双向同步**的安全阀门）。
   // v3 → v4：新增 `anime_timelines`（动漫更新时刻索引表）。
   //
   // ⚠️ **升版本必须同时写迁移**（本仓库为此踩过坑：
   //    schemaVersion 升了但 addColumn 漏写 ⇒ 运行时崩溃）——
   //    见下方 `onUpgrade` 里的长注释。
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -269,6 +289,21 @@ class AppDatabase extends _$AppDatabase {
           //   但仍按纪律写迁移（老用户升级不该崩）。
           if (from < 4) {
             await m.createTable(animeTimelines);
+          }
+          // v4 → v5：订阅表加 `syncedToServer`（双向同步用）。
+          // ⚠️ 条件同样是 `from < 5`（不是 `== 4`）——
+          //    "需不需要加这列" = "是不是从 v5 之前升上来的"。
+          if (from < 5) {
+            // ⚠️ 用 `customStatement` 而不是 `m.addColumn` ——
+            //    drift 的 `addColumn` 要求 `GeneratedColumn<Object>`，
+            //    而 `BoolColumn` 是 `GeneratedColumn<bool>`；
+            //    Dart 泛型**不变** ⇒ 类型不匹配（编译错，实测）。
+            //    SQLite 的 `ADD COLUMN ... DEFAULT 0` 是标准语法，直接发即可。
+            //    （`0` 是常量默认值 —— SQLite 限制默认值必须是常量，正好满足。）
+            await customStatement(
+              'ALTER TABLE calendar_subscriptions '
+              'ADD COLUMN synced_to_server INTEGER NOT NULL DEFAULT 0',
+            );
           }
           if (from < 3) {
             await m.addColumn(calendarSubscriptions, calendarSubscriptions.status);
@@ -606,6 +641,49 @@ class AppDatabase extends _$AppDatabase {
 
   /// 清空该表（重新索引前用；失败时不该留半套数据）。
   Future<void> clearTimelines() => delete(animeTimelines).go();
+
+  /// **批量标记「已在服务端出现过」**（双向同步用）。
+  ///
+  /// `keys` 是 `(source, sourceId, mediaType)` 三元组 —— 与主键同构。
+  Future<void> markSubsSynced(Set<(String, String, String)> keys) async {
+    if (keys.isEmpty) return;
+    await batch((b) {
+      for (final (src, sid, mt) in keys) {
+        b.update(
+          calendarSubscriptions,
+          const CalendarSubscriptionsCompanion(syncedToServer: Value(true)),
+          where: (t) =>
+              t.source.equals(src) &
+              t.sourceId.equals(sid) &
+              t.mediaType.equals(mt),
+        );
+      }
+    });
+  }
+
+  /// **批量删除订阅**（用户在服务端取消收藏时调用）。
+  ///
+  /// ⚠️ 只应删「`syncedToServer == true`」的那些（见 sync 的三条规则）——
+  ///    外层负责筛选，这里只管删。
+  Future<void> deleteSubscriptions(
+      Set<(String, String, String)> keys) async {
+    if (keys.isEmpty) return;
+    await batch((b) {
+      for (final (src, sid, mt) in keys) {
+        // ⚠️ drift 的批量删除是 **`deleteWhere`**（实测 drift-2.31 源码：
+        //    `void deleteWhere<T,D>(TableInfo<T,D> table,
+        //     Expression<bool> Function(T) where)`）。
+        //    `delete(table, row)` 是"按主键删一条"的另一个方法。
+        b.deleteWhere<CalendarSubscriptions, CalendarSubscription>(
+          calendarSubscriptions,
+          (t) =>
+              t.source.equals(src) &
+              t.sourceId.equals(sid) &
+              t.mediaType.equals(mt),
+        );
+      }
+    });
+  }
 
   Future<List<CalendarSubscription>> allSubscriptions() {
     return (select(calendarSubscriptions)

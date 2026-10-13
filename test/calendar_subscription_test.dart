@@ -28,9 +28,13 @@ void main() {
       // ⚠️ 版本号会随新增列递增（v2 加表 → v3 加 status 列）
       //    断言"至少 2"而不是写死 —— 写死会让每次加列都要改测试，
       //    反而容易在改的时候顺手放宽成"任意值"（那可就不是守卫了）。
+      // 合法版本枚举（v2 加表 / v3 加 status / v4 加 anime_timelines /
+      // v5 加 syncedToServer —— **每次升版本都要在这里补一行**，
+      // 逼着自己同步确认迁移也写了，这正是该测试的用意）
       expect(c.contains('schemaVersion => 2') ||
               c.contains('schemaVersion => 3') ||
-              c.contains('schemaVersion => 4'), isTrue,
+              c.contains('schemaVersion => 4') ||
+              c.contains('schemaVersion => 5'), isTrue,
           reason: '★★★ 加了 CalendarSubscriptions 表 ⇒ 必须 >= 2');
       expect(c.contains('CalendarSubscriptions'), isTrue);
     });

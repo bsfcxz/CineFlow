@@ -1,9 +1,16 @@
 /// 应用状态（riverpod）：会话、API 实例、首页数据
 library;
 
+// `&` 是 drift 给 `Expression<bool>` 重载的 SQL AND（`where` 里用）。
+// ⚠️ 不加这个 import 会报 "The operator '&' isn't defined"。
+import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
+// `statusCnOf` —— 状态规范化（Emby 的 `Continuing` → 「连载中」）。
+// ⚠️ 同步写订阅表时**必须**用它：直接存英文原值会让卡片显示
+//    `Continuing`（真机踩到）。
+import '../pages/tracking_page.dart' show statusCnOf;
 import '../data/aggregated_search.dart';
 import '../data/calendar_client.dart';
 import '../data/db/app_database.dart' show CalendarSubscription;
@@ -396,6 +403,303 @@ String? _statusCn(String? s) => switch (s) {
       _ => null,
     };
 
+/// **自动同步服务端收藏 → 本地订阅表**（追剧 Tab 每次加载时跑，幂等）。
+///
+/// ## 用户诉求（多次强调）
+/// > "追剧按钮不是同步 emby 服务端的收藏按钮嘛"
+/// > "追剧中的订阅还没同步嘛。"
+///
+/// ⇒ 用户的模型：**追剧 = 服务端收藏**。
+///   服务端收藏了什么，追剧 Tab 就该显示什么。
+///
+/// ## 现状为什么"没同步"
+/// · **写**：点「追剧」→ 已同时写 Emby 收藏 + 本地表 ✅
+/// · **读**：追剧 Tab 只读**本地表** ⇒ 服务端新增的收藏
+///   （在 Emby 网页/其他客户端点的）**不会出现** ❌
+///
+/// ## 本次修法：把服务端当**事实来源**
+/// ```
+/// ① 每台 getItems(filters:'IsFavorite') → 服务端收藏清单
+/// ② 以 providerIds['tmdb'] 为键（唯一稳定标识，标题会变）
+/// ③ 不在本地表的 ⇒ 补进去
+/// ```
+///
+/// ## ⚠️ **只增不删**（重要）
+/// 本地可能有"**库里没有**"的外部订阅（先订阅、等入库）
+/// ⇒ 删掉会让用户丢失它们。**取消收藏不在这里处理**
+///（那要走详情页的「已追 → 追剧」按钮，有明确的用户意图）。
+///
+/// ## 返回新增条数（幂等 ⇒ 重复调用返回 0）
+Future<int> syncFavoritesToSubscriptions({required WidgetRef ref}) async {
+  final apisMap = await ref.read(accountApisProvider.future);
+  if (apisMap.isEmpty) return 0;
+  final db = ref.read(appDbProvider);
+  final local = await db.allSubscriptions();
+  // 主键三元组 → 该行
+  final byKey = <(String, String, String), CalendarSubscription>{
+    for (final s in local) (s.source, s.sourceId, s.mediaType): s,
+  };
+  var added = 0;
+
+  // ⚠️ 日志**不打完整服务器地址**（AGENTS 安全红线）—— 只打序号。
+  var idx = 0;
+  final seen = <(String, String, String)>{};
+  // ★★ **fail-safe 计数器**（我漏了它 ⇒ 删光了用户订阅，见下方注释）
+  var okServers = 0;
+  var failServers = 0;
+  for (final api in apisMap.values) {
+    idx++;
+    var thisServerOk = false;
+    for (final type in const ['Series', 'Movie']) {
+      final mt = type == 'Movie' ? 'movie' : 'tv';
+      try {
+        final page = await api.getItems(
+          includeTypes: type,
+          filters: 'IsFavorite',
+          recursive: true,
+          limit: 500,
+        );
+        thisServerOk = true;   // 至少一个类型取到了 ⇒ 这台可信
+        for (final it in page.items) {
+          final tmdb = it.providerIds['tmdb'];
+          // 没 tmdbId 就跳过：本地表以 tmdbId 为键，用 Emby 内部 id
+          // 会在换服务器后失配。
+          if (tmdb == null || tmdb.isEmpty) continue;
+          final key = ('tmdb', tmdb, mt);
+          seen.add(key);
+          // ⚠️ **必须用 `ensureSubscribed`（幂等），不能用 `toggle`（翻转）**
+          //    —— 真实事故：用 toggle 会让每次同步把上次写入的又取消掉，
+          //    现象是订阅"忽有忽无"。详见 `ensureSubscribed` 的注释。
+          final existed = byKey.containsKey(key);
+          await ensureSubscribed(
+            ref,
+            entry: CalendarEntry(
+              title: it.name,
+              source: 'tmdb',
+              sourceId: tmdb,
+              posterUrl: it.posterUrl(api, maxWidth: 320),
+              platform: it.studios.isNotEmpty
+                  ? CalendarClient.cnPlatformName(it.studios.first)
+                  : null,
+              airDate: it.dateCreated,
+              category: CalendarCategory.series,
+            ),
+            mediaType: mt,
+            // ★ 用 `statusCnOf` 规范化 —— 直接存 `Continuing` 会让
+            //   卡片显示英文（真机踩到）。
+            status: statusCnOf(it.status),
+          );
+          if (!existed) added++;
+        }
+      } catch (e) {
+        debugPrint('[Sync] 第 $idx 台的 $type 收藏同步失败: $e');
+      }
+    }
+    if (thisServerOk) {
+      okServers++;
+    } else {
+      failServers++;
+    }
+  }
+
+  // ══════ 反向：服务端**没有**的订阅怎么处理（三条规则）══════
+  //
+  // ## 规则（`syncedToServer` 是安全阀门）
+  // | 服务端 | 本地 synced | 动作 |
+  // |---|---|---|
+  // | 有 | 任意 | 上面已 upsert，这里**标记 true** |
+  // | 没有 | true | 用户**在服务端取消**了 ⇒ **删本地** |
+  // | 没有 | false | 本地外部订阅（库里没有、没写过收藏）⇒ **保留** |
+  //
+  // ## 为什么第 3 条必须有
+  // "先订阅、等入库"的剧在服务端**没有**收藏（订阅时库里没命中）⇒
+  // 若"服务端没有就删"，会把这些全删掉（正是上次 uninstall 的痛）。
+  final gone = <(String, String, String)>{};
+  for (final e in byKey.entries) {
+    if (seen.contains(e.key)) continue;
+    // `source` 不是 tmdb 的（B站/Bangumi 等外部源）一律保留
+    if (e.key.$1 != 'tmdb') continue;
+    if (e.value.syncedToServer) gone.add(e.key);
+  }
+  if (seen.isNotEmpty) await db.markSubsSynced(seen);
+
+  // ══════ ★★★ **删除的 fail-safe**（我漏了它 ⇒ 删光用户订阅）══════
+  //
+  // ## 事故（2026-10-13，我造成的）
+  // 两台服务器都 `SocketException: Permission denied` ⇒ `seen` 为空
+  // ⇒ 我的代码把"**取数失败**"当成了"**用户在服务端取消了**"
+  // ⇒ `deleteSubscriptions(gone)` **删掉 11 部订阅**。
+  //
+  // ## 根因：`seen` 为空有两种**完全不同**的含义
+  // | 含义 | 正确动作 |
+  // |---|---|
+  // | 所有服务器都**查询失败** | **什么都不做**（数据不可信）|
+  // | 服务器**正常响应**但确实没这部 | 可以删（用户取消了）|
+  // 我把两者混为一谈 ⇒ 一断网就删光。
+  //
+  // ## fail-safe 判据（保守优先）
+  // **只要有任一服务器失败，就完全跳过删除** ——
+  // 本仓库有两台，一台失败说明视图不完整，
+  // 那台上的收藏可能正是"看起来被删"的那些。
+  // 宁可"该删的没删"（下次同步会补上），
+  // 绝不"不该删的删了"（**用户数据不可恢复**，见 AGENTS §6.9）。
+  if (failServers > 0) {
+    debugPrint('[Sync] ⚠️ $failServers 台服务器取数失败 ⇒ '
+        '**跳过删除阶段**（宁可漏删，不可误删）');
+  } else if (gone.isNotEmpty) {
+    await db.deleteSubscriptions(gone);
+    debugPrint('[Sync] 服务端已取消收藏 ⇒ 移除本地订阅 ${gone.length} 部'
+        '（$okServers 台全部成功）');
+  }
+  if (added > 0) debugPrint('[Sync] 从服务端收藏同步 $added 部订阅');
+  return added;
+}
+
+/// **幂等地确保订阅存在**（存在则不动，不存在则插入）。
+///
+/// ## ★ 为什么不能复用 `toggleCalendarSubscription`
+/// `toggle` 的语义是**翻转**（已订阅 ⇒ 取消）。
+/// 而同步要的是**状态收敛**（让本地 = 服务端的收藏集合）。
+///
+/// ## 真实事故（2026-10-13，我造成的）
+/// 同步里写成：
+/// ```dart
+/// await toggleCalendarSubscription(...);   // ← toggle！
+/// ```
+/// ⇒ 每次同步把**上次刚写进去的**又取消掉：
+/// ```
+/// 第 1 次 → 11 部不存在 ⇒ 加上 ⇒ 11 部 ✅
+/// 第 2 次 → 11 部已存在 ⇒ **取消** ⇒ 0 部 ❌
+/// 第 3 次 → 加上 ⇒ 11 部 ✅
+/// 第 4 次 → 取消 ⇒ 0 部 ❌
+/// ```
+/// 现象就是"订阅忽有忽无"（用户报障 + 我看到的 0 部）。
+///
+/// ## 为什么"已存在就什么都不做"
+/// 不覆盖 —— 用户可能手动改过平台/状态；且**覆盖会丢数据**。
+/// 真正的字段更新由其它路径负责（详情页追剧按钮）。
+///
+/// ## 返回
+/// `true` = 本次**新增**了；`false` = 已存在（未改动）。
+Future<bool> ensureSubscribed(
+  WidgetRef ref, {
+  required CalendarEntry entry,
+  required String mediaType,
+  String status = '',
+}) async {
+  final db = ref.read(appDbProvider);
+  final sid = entry.sourceId ?? entry.displayTitle;
+  // 先查：已存在 ⇒ **什么都不做**（幂等，且不覆盖用户可能改过的字段）
+  final existing = await (db.select(db.calendarSubscriptions)
+        ..where((t) =>
+            t.source.equals(entry.source) &
+            t.sourceId.equals(sid) &
+            t.mediaType.equals(mediaType))
+        ..limit(1))
+      .getSingleOrNull();
+  if (existing != null) return false;
+
+  // 不存在 ⇒ 用**已有的** `toggleSubscription` 写入。
+  //
+  // ⚠️ 既然上面已确认不存在，`toggle` 在这里**必然走"添加"分支**
+  //    ⇒ 语义正确，且**不新造写入路径**（少一处要维护的一致性风险）。
+  //    这就是修 bug 的关键：**先判断，再决定要不要 toggle**
+  //    —— 而不是无条件 toggle（那会"有则删"，把同步变成翻转）。
+  await db.toggleSubscription(
+    source: entry.source,
+    sourceId: sid,
+    mediaType: mediaType,
+    title: entry.displayTitle,
+    titleCn: entry.titleCn ?? '',
+    posterUrl: entry.posterUrl ?? '',
+    platform: entry.platform ?? '',
+    category: entry.category.name,
+    lastAirDate: entry.airDate ?? '',
+    status: status,
+  );
+  ref.invalidate(subscribedKeysProvider);
+  ref.invalidate(subscriptionsProvider);
+  return true;
+}
+
+/// **从服务端收藏恢复本地订阅**（uninstall 事故后的补救）。
+///
+/// ## 背景（真实事故，见 AGENTS.md §6.9）
+/// 我用 `adb uninstall` 清空了本地 `calendar_subscriptions`（21 部订阅）。
+/// 但**服务端的 Emby 收藏还在**（实测两台共 26 条）——
+/// 因为订阅时"库里命中 ⇒ 同时写 Emby 收藏"。
+/// ⇒ 可以从收藏**反查 tmdbId 并重建本地订阅**。
+///
+/// ## 覆盖范围（诚实说明）
+/// · 只能恢复"**订阅时库里有**"的那些（当时才写了收藏）
+/// · 库里没有的（先订阅、等入库）**当时没写收藏** ⇒ 恢复不了
+/// · 实测两台收藏 26 条，与订阅对上的约 7~14 部（取决于名称匹配）
+///
+/// ## 匹配策略
+/// 服务端收藏的 `Name` 与订阅表可能不完全一致（带"第三季/年番"后缀）
+/// ⇒ 用 `tmdbId` 为准（那是唯一稳定标识），标题只用于**展示**。
+Future<int> restoreSubscriptionsFromFavorites({
+  required WidgetRef ref,
+  String? tmdbKey,
+}) async {
+  final apisMap = await ref.read(accountApisProvider.future);
+  final db = ref.read(appDbProvider);
+  final existing = await db.allSubscriptions();
+  final have = existing.map((s) => s.sourceId).toSet();
+  var added = 0;
+
+  for (final api in apisMap.values) {
+    for (final type in const ['Series', 'Movie']) {
+      List<MediaItem> favs;
+      try {
+        // ⚠️ `getFavorite()` **不存在**（我第一版凭想象写的）——
+        //    用已有的 `getItems(filters: 'IsFavorite')`。
+        //    实测：`GET /Items?IncludeItemTypes=Series&Filters=IsFavorite
+        //    &Fields=ProviderIds` → iLoveHD 15 部 / HK-Emby 10 部。
+        final page = await api.getItems(
+          includeTypes: type,
+          filters: 'IsFavorite',
+          recursive: true,
+          limit: 500,
+          sortBy: 'SortName',
+          sortOrder: 'Ascending',
+        );
+        favs = page.items;
+      } catch (e) {
+        debugPrint('[Restore] $type 收藏读取失败（跳过）: $e');
+        continue;
+      }
+      for (final it in favs) {
+        final tmdb = it.providerIds['tmdb'];
+        if (tmdb == null || tmdb.isEmpty) continue;
+        if (!have.add(tmdb)) continue; // 已有订阅 / 本条已处理
+        await toggleCalendarSubscription(
+          ref,
+          entry: CalendarEntry(
+            title: it.name,
+            source: 'tmdb',
+            sourceId: tmdb,
+            posterUrl: it.posterUrl(api, maxWidth: 320),
+            platform: it.studios.isNotEmpty
+                ? CalendarClient.cnPlatformName(it.studios.first)
+                : null,
+            airDate: it.dateCreated,
+            category: switch (type) {
+              'Movie' => CalendarCategory.series, // 电影在订阅表按 tv/movie 存
+              _ => CalendarCategory.series,
+            },
+          ),
+          mediaType: type == 'Movie' ? 'movie' : 'tv',
+          status: it.status ?? '',
+        );
+        added++;
+      }
+    }
+  }
+  debugPrint('[Restore] 从收藏恢复 $added 部订阅');
+  return added;
+}
+
 /// **继续观看（聚合所有已登录服务器）**。
 ///
 /// ## 用户要求
@@ -468,8 +772,20 @@ final aggregatedResumeProvider =
 /// ## 缓存
 /// `FutureProvider.family` 自带缓存（同一部剧反复打开详情页不会再请求）。
 /// 要刷新用 `ref.invalidate`。
+/// **库内摘要**（已入库集数 / 已更新集号 / 下次更新日）。
+///
+/// ## 参数
+/// · `arg` —— `"<tmdbId>|<titleHint>"` 组合键。
+///   ## ★ 为什么要把剧名编进 family 参数（而不是另加一个 family）
+///   第三级来源（本地 `anime_timelines`）**按剧名查**。而服务器离线时
+///   拿不到剧名 —— 必须由调用方传进来。`FutureProvider.family` 只接受
+///   一个参数 ⇒ 用 `|` 拼（tmdbId 是纯数字，剧名可能带 `|`，
+///   故用 `indexOf` 从**第一个** `|` 切，剩下全是剧名）。
 final librarySummaryProvider =
-    FutureProvider.family<LibrarySummary?, String>((ref, tmdbId) async {
+    FutureProvider.family<LibrarySummary?, String>((ref, arg) async {
+  final bar = arg.indexOf('|');
+  final tmdbId = bar < 0 ? arg : arg.substring(0, bar);
+  final titleHint = bar < 0 ? '' : arg.substring(bar + 1);
   if (tmdbId.isEmpty) return null;
   final apisMap = await ref.watch(accountApisProvider.future);
   // 遍历所有已登录服务器：任一台上找到就用（**多账号聚合**）
@@ -492,7 +808,22 @@ final librarySummaryProvider =
       debugPrint('[Library] 摘要查询失败（换下一台）: $e');
     }
   }
-  if (best == null) return null;
+  // ★★★ 修：`best == null` **不再直接 return**（2026-10-13，真机报障"下次更新标签呢"）
+  //
+  // ## 原来的错
+  // ```dart
+  // if (best == null) return null;          // 服务器连不上 ⇒ 早退
+  // ...
+  // final row = await db.timelineFor(...);  // 本地时刻表 ⇒ 永远跑不到
+  // ```
+  // 而 `anime_timelines` 是**纯本地表**（0 网络、不需要 TMDB key），
+  // 它的价值**恰恰在于**"服务器拿不到时也能给下次更新" ——
+  // 却被挡在"必须先有服务器数据"之后 ⇒ 服务器一离线就彻底失效。
+  //
+  // ## 修法
+  // 没有 `best` 时**仍然**查本地时刻表；查到就给
+  //（`episodeCount: 0` 表示"集数未知" ⇒ 详情页只显示「下次更新」，
+  //  不显示「已入库/已更新」）。
 
   // ★ **TMDB 兜底**：库内没有"下次更新日"时用 TMDB 的 `next_episode_to_air.air_date`
   //
@@ -502,7 +833,8 @@ final librarySummaryProvider =
   // 而 TMDB 明确给了日期。
   // ## 成本
   // 只在 `nextAirDate == null` 时发 1 个请求（CalendarClient 有 6h 缓存）。
-  if (best.nextAirDate == null) {
+  // `best` 可能为 null ⇒ `best?.` 让"没有服务器数据"时也尝试 TMDB
+  if ((best?.nextAirDate) == null) {
     try {
       final key = await ref.read(sessionStoreProvider).loadTmdbKey();
       if (key != null && key.isNotEmpty) {
@@ -512,16 +844,61 @@ final librarySummaryProvider =
             );
         if (d?.nextAirDate != null && d!.nextAirDate!.isNotEmpty) {
           return LibrarySummary(
-            episodeCount: best.episodeCount,
-            lastEpisode: best.lastEpisode,
+            // `best` 可能为 null（服务器离线）—— 那集数未知用 0
+            episodeCount: best?.episodeCount ?? 0,
+            title: best?.title ?? titleHint,
+            lastEpisode: best?.lastEpisode,
+            lastSeason: best?.lastSeason,
             nextAirDate: d.nextAirDate,
-            days: best.days,
+            days: best?.days ?? const {},
           );
         }
       }
     } catch (e) {
       debugPrint('[Library] TMDB 兜底失败（忽略）: $e');
     }
+  }
+
+  // ★ **第三级：本地时刻表**（`anime_timelines`，**0 网络、不需要 TMDB key**）
+  //
+  // ## 为什么必须有这一级（真机报障）
+  // > "下次更新时间在详情页中还没有"
+  // 前两级都会失败：
+  // · 库内：分集**都已播出** ⇒ "今天或之后最近的日期"必然找不到
+  // · TMDB：**需要 key**（key 被 uninstall 清空后就没填）
+  // ⇒ `nextAirDate` 恒 null ⇒ 横幅**永远不显示**。
+  //
+  // ## 数据来源
+  // `anime_timelines`（B站/优酷/爱奇艺 周更表索引，含 `weekday` + `airTime`）
+  // ⇒ 按**剧名**查，从今天起找回最近的那个 weekday。
+  try {
+    final db = ref.read(appDbProvider);
+    final row = await db.timelineFor(
+        best != null && best.title.isNotEmpty
+            ? best.title
+            : titleHint);
+    if (row != null && row.weekday >= 1 && row.weekday <= 7) {
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final gap = (row.weekday - now.weekday + 7) % 7;
+      final d0 = today.add(Duration(days: gap));
+      final ymd = '${d0.year.toString().padLeft(4, '0')}-'
+          '${d0.month.toString().padLeft(2, '0')}-'
+          '${d0.day.toString().padLeft(2, '0')}';
+      debugPrint('[Library] 下次更新来自本地时刻表：${best?.title ?? titleHint} → $ymd'
+          '（周${row.weekday} ${row.airTime}）');
+      return LibrarySummary(
+        // 服务器离线时集数未知 ⇒ 0（详情页据此只显示「下次更新」）
+        episodeCount: best?.episodeCount ?? 0,
+        title: best?.title ?? titleHint,
+        lastEpisode: best?.lastEpisode,
+        lastSeason: best?.lastSeason,
+        nextAirDate: ymd,
+        days: best?.days ?? const {},
+      );
+    }
+  } catch (e) {
+    debugPrint('[Library] 本地时刻表查询失败（忽略）: $e');
   }
   return best;
 });

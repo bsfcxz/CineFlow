@@ -9,10 +9,14 @@ import 'package:go_router/go_router.dart';
 
 import '../core/router.dart';
 import '../core/theme.dart';
+import '../widgets/media_tags.dart';
 import '../data/emby_provider.dart';
 import '../data/media_provider.dart';
-import '../data/calendar_client.dart' show CalendarEntry,
-    CalendarCategory;
+// ⚠️ `show` 选择器会**屏蔽其它名字** —— 漏写就报 "Undefined class"。
+//    这里需要 `CalendarClient.cnPlatformName`（平台中文名）。
+//    （这个坑本轮已踩第 4 次：CalendarEntry / AnimeTimeline / ShowWeek / 本次）
+import '../data/calendar_client.dart'
+    show CalendarCategory, CalendarClient, CalendarEntry;
 import '../data/models.dart';
 import '../player/player_routes.dart';
 import '../state/providers.dart';
@@ -509,46 +513,177 @@ class _DetailPageState extends ConsumerState<DetailPage> {
   Widget _libraryInfo(MediaItem item) {
     final tmdbId = item.providerIds['tmdb'];
     if (tmdbId == null || tmdbId.isEmpty) return const SizedBox.shrink();
-    final sum = ref.watch(librarySummaryProvider(tmdbId)).value;
+    // ★ 传剧名（`tmdbId|title`）—— 第三级来源（本地时刻表）**按剧名查**，
+      //   服务器离线时拿不到剧名，必须由调用方给（零额外请求）。
+      final sum = ref
+          .watch(librarySummaryProvider('$tmdbId|${item.name}'))
+          .value;
     if (sum == null || sum.episodeCount <= 0) return const SizedBox.shrink();
+
+    // ★ **「下次更新」横幅**（用户截图规格）—— 独立一块，不是普通信息行
+    //
+    // ## 用户截图
+    // ```
+    // 🕐  下次更新：**今天 周一 20:00**
+    //     10月12日 · 芒果TV 更新 · 你还有 24 集未看
+    // ```
+    // ## 我上一版错在哪
+    // 把"已入库/已更新/下次更新"做成**三行 key-value** ⇒ 样式没了
+    //（用户："这个更新时间的详情页也没了"）。
+    // ## 只在**连载中 + 有下次更新日**时显示
+    // 已完结的剧没有"下次更新"（显示它会是假信息）。
+    final nextCard = _nextUpdateCard(item, sum);
     final rows = <(String, String)>[
       ('已入库', '${sum.episodeCount} 集'),
-      if (sum.lastEpisode != null) ('已更新', '第 ${sum.lastEpisode} 集'),
-      if (sum.nextAirDate != null)
-        ('下次更新', _nextLabel(sum.nextAirDate!)),
+      // ⚠️ `lastEpisode` 是**季内集号** ⇒ 多季必须带季号
+      //
+      // ## 真机实证的矛盾
+      // ```
+      // 赛尔号：已入库 349 集   但「已更新 第 52 集」
+      // ```
+      // `IndexNumber` 是季内集号（`ParentIndexNumber` 才是季号）
+      // ⇒ 取裸 max 会远小于总集数 ⇒ 显示 `S{季} 第 {集} 集` 才不误导。
+      if (sum.lastEpisode != null)
+        (
+          '已更新',
+          (sum.lastSeason != null && sum.lastSeason! > 1)
+              ? 'S${sum.lastSeason} 第 ${sum.lastEpisode} 集'
+              : '第 ${sum.lastEpisode} 集',
+        ),
     ];
     return Padding(
       padding: const EdgeInsets.fromLTRB(Cf.gap4, Cf.gap4, Cf.gap4, 0),
-      child: Container(
-        padding: const EdgeInsets.all(Cf.gap4),
-        decoration: BoxDecoration(
-          color: Cf.surface,
-          borderRadius: BorderRadius.circular(Cf.radiusMd),
-          border: Border.all(color: Cf.border),
+      child: Column(children: [
+        if (nextCard != null) ...[nextCard, const SizedBox(height: Cf.gap3)],
+        Container(
+          padding: const EdgeInsets.all(Cf.gap4),
+          decoration: BoxDecoration(
+            color: Cf.surface,
+            borderRadius: BorderRadius.circular(Cf.radiusMd),
+            border: Border.all(color: Cf.border),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final (k, v) in rows)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(children: [
+                    SizedBox(
+                      width: 64,
+                      child: Text(k,
+                          style: Cf.caption.copyWith(color: Cf.text3)),
+                    ),
+                    Expanded(
+                      child: Text(v,
+                          style: Cf.caption.copyWith(
+                              fontWeight: FontWeight.w700, color: Cf.text)),
+                    ),
+                  ]),
+                ),
+            ],
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final (k, v) in rows)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(children: [
-                  SizedBox(
-                    width: 64,
-                    child: Text(k,
-                        style: Cf.caption.copyWith(color: Cf.text3)),
-                  ),
-                  Expanded(
-                    child: Text(v,
-                        style: Cf.caption.copyWith(
-                            fontWeight: FontWeight.w700, color: Cf.text)),
-                  ),
-                ]),
-              ),
+      ]),
+    );
+  }
+
+  /// **「下次更新」横幅**（用户截图规格：时钟 + 粉色大字 + 灰色副标题）。
+  ///
+  /// ## 稿子 CSS
+  /// ```css
+  /// .next-card { background: linear-gradient(135deg,
+  ///                rgba(255,77,141,.14), rgba(168,85,247,.10));
+  ///              border: 1px solid rgba(255,77,141,.28);
+  ///              border-radius: 14px; padding: 14px }
+  /// .next-card h4 { font-size: 14px; font-weight: 800; color: var(--brand) }
+  /// .next-card p  { font-size: 11.5px; color: var(--text-dim) }
+  /// ```
+  ///
+  /// ## 返回 null 的情况（**都不编造**）
+  /// · 已完结（没有"下次更新"）
+  /// · 拿不到下次更新日
+  Widget? _nextUpdateCard(MediaItem item, LibrarySummary sum) {
+    final ymd = sum.nextAirDate;
+    // ⚠️ 库内分集**全是已播出的** ⇒ 库内算不出"下次更新"，
+    //    必须靠 TMDB 的 `next_episode_to_air` 兜底
+    //    （`librarySummaryProvider` 已内置兜底，但它**需要 TMDB Key**）。
+    //    ⇒ 没有 key 时这里为空，用户在热播页填 key 后就会出现。
+    if (ymd == null || ymd.isEmpty) return null;
+    // 已完结 ⇒ 不显示（显示"下次更新"会是假信息）
+    final ended = (item.status ?? '').toLowerCase().contains('ended');
+    if (ended) return null;
+
+    final dt = DateTime.tryParse(ymd);
+    // 主标题：`下次更新：今天 周一 20:00`
+    final label = _nextLabel(ymd);
+    final wd = dt == null
+        ? ''
+        : ' 周${const ['', '一', '二', '三', '四', '五', '六', '日'][dt.weekday]}';
+    // 时刻：用**库内平台**推常规时刻（认不出就不带，不编）
+    final plat = _platformOf(item);
+    final at = plat == null ? null : platformAirTime(plat);
+    final head = '下次更新：$label$wd${at == null ? '' : ' $at'}';
+
+    // 副标题：`10月12日 · 芒果TV 更新 · 你还有 24 集未看`
+    final parts = <String>[
+      if (dt != null) '${dt.month}月${dt.day}日',
+      if (plat != null) '$plat 更新',
+      _remainingText(item),
+    ];
+    return Container(
+      padding: const EdgeInsets.all(Cf.gap4),
+      decoration: BoxDecoration(
+        // 稿子：粉→紫的淡渐变底 + 粉色描边
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Cf.accent.withValues(alpha: 0.14),
+            Cf.accent3.withValues(alpha: 0.10),
           ],
         ),
+        border: Border.all(color: Cf.accent.withValues(alpha: 0.28)),
+        borderRadius: BorderRadius.circular(Cf.radiusLg - 2),
       ),
+      child: Row(children: [
+        Icon(Icons.schedule_rounded, size: 22, color: Cf.accent),
+        const SizedBox(width: Cf.gap3),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(head,
+                  style: Cf.title.copyWith(
+                      fontWeight: FontWeight.w800, color: Cf.accent)),
+              if (parts.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(parts.join(' · '),
+                    style: Cf.caption.copyWith(color: Cf.text3)),
+              ],
+            ],
+          ),
+        ),
+      ]),
     );
+  }
+
+  /// `你还有 N 集未看`（拿不到就返回空串，**不编**）。
+  static String _remainingText(MediaItem item) {
+    final left = item.unplayedItemCount;
+    if (left == null || left <= 0) return '';
+    return '你还有 $left 集未看';
+  }
+
+  /// 取条目的**播出平台**（中文名；null = 认不出）。
+  ///
+  /// 与 `media_cards.dart` 的 `_platformOf` 同源（`Studios` → `cnPlatformName`）。
+  static String? _platformOf(MediaItem item) {
+    for (final st in item.studios) {
+      final cn = CalendarClient.cnPlatformName(st);
+      if (cn.isNotEmpty) return cn;
+    }
+    return null;
   }
 
   /// 「下次更新」的文案：今天/明天/日期。
