@@ -198,16 +198,16 @@ if (Test-Path $decoderPy) {
             # ⚠️ 这里是**已知待办**（缺 truehd/mlp/pgssub/mov_text）——
             #    不把它算成"门禁失败"（那会让整个 check-dev 常年红），
             #    而是打印成醒目提示，确保每次收工都看见。
-            Warn2 'libmpv 解码器：缺少必需解码器（已知待办 —— 需重编 libmpv.so）'
+            Warn 'libmpv 解码器：缺少必需解码器（已知待办 —— 需重编 libmpv.so）'
             $decOut | Where-Object { $_ -match '^\s*·|缺少|修法|①|②|③' } |
                 Select-Object -First 10 |
                 ForEach-Object { Write-Host "      $($_.ToString().Trim())" -ForegroundColor DarkYellow }
         }
     } else {
-        Warn2 'libmpv 解码器：跳过（找不到 python）'
+        Warn 'libmpv 解码器：跳过（找不到 python）'
     }
 } else {
-    Warn2 "libmpv 解码器：跳过（缺 $decoderPy）"
+    Warn "libmpv 解码器：跳过（缺 $decoderPy）"
 }
 
 # --- 明文凭据守卫（扫**被 gitignore 的文件**）---

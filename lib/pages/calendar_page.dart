@@ -66,56 +66,67 @@ class _CalendarPageState extends ConsumerState<CalendarPage> {
     final cur = await store.loadTmdbKey() ?? '';
     if (!mounted) return;
     final ctl = TextEditingController(text: cur);
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('TMDB API Key'),
-        content: Column(
+    // ⚠️ `saved` 必须声明在 `try` **外面** —— 里面用 `final` 声明的话，
+    //    出了 try 就不可见（我第一版犯过：报 `Undefined name 'saved'`）。
+    bool? saved;
+    try {
+      saved = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+          title: const Text('TMDB API Key'),
+          content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              '追剧日历的**国产剧集**数据来自 TMDB。\n'
-              '免费申请：themoviedb.org → 设置 → API\n\n'
-              '（Key 只存在本机安全存储，不会上传）',
-              style: Cf.caption.copyWith(color: Cf.text3),
-            ),
-            const SizedBox(height: Cf.gap2),
-            TextField(
-              controller: ctl,
-              // 与弹幕 AppSecret 同款处理：输入时遮蔽
-              obscureText: true,
-              decoration: const InputDecoration(
-                labelText: 'API Key (v3 auth)',
-                hintText: '32 位十六进制',
-              ),
-            ),
+          Text(
+          '追剧日历的**国产剧集**数据来自 TMDB。\n'
+          '免费申请：themoviedb.org → 设置 → API\n\n'
+          '（Key 只存在本机安全存储，不会上传）',
+          style: Cf.caption.copyWith(color: Cf.text3),
+          ),
+          const SizedBox(height: Cf.gap2),
+          TextField(
+          controller: ctl,
+          // 与弹幕 AppSecret 同款处理：输入时遮蔽
+          obscureText: true,
+          decoration: const InputDecoration(
+          labelText: 'API Key (v3 auth)',
+          hintText: '32 位十六进制',
+          ),
+          ),
           ],
-        ),
-        actions: [
+          ),
+          actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('取消'),
           ),
           // 清空（不再用 TMDB 时）
           if (cur.isNotEmpty)
-            TextButton(
-              onPressed: () async {
-                await store.saveTmdbKey('');
-                if (ctx.mounted) Navigator.pop(ctx, true);
-              },
-              child: const Text('清除'),
-            ),
-          FilledButton(
-            onPressed: () async {
-              await store.saveTmdbKey(ctl.text);
-              if (ctx.mounted) Navigator.pop(ctx, true);
-            },
-            child: const Text('保存'),
+          TextButton(
+          onPressed: () async {
+          await store.saveTmdbKey('');
+          if (ctx.mounted) Navigator.pop(ctx, true);
+          },
+          child: const Text('清除'),
           ),
-        ],
-      ),
-    );
+          FilledButton(
+          onPressed: () async {
+          await store.saveTmdbKey(ctl.text);
+          if (ctx.mounted) Navigator.pop(ctx, true);
+          },
+          child: const Text('保存'),
+          ),
+          ],
+          ),
+          );
+    } finally {
+      // ★ 必须 dispose（审计发现：原来创建后从不释放 ⇒ 每次开对话框
+      //   泄漏一个 TextEditingController 及其 ValueNotifier 监听）。
+      //   ⚠️ 放在 finally —— dialog 里 TextField 仍持有它，
+      //   提前 dispose 会崩。
+      ctl.dispose();
+    }
     if (saved == true) {
       ref.invalidate(calendarWeekProvider);
       if (mounted) {

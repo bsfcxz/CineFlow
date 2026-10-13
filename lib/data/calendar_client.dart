@@ -2779,7 +2779,14 @@ Future<ShowWeek> fetchWeekEpisodes(
         st = meta['status'] as String?;
         final seasons = (meta['seasons'] as List?) ?? const [];
         if (seasons.isEmpty) return ShowWeek(status: st);
-        final sn = (seasons.last as Map)['season_number'];
+        // ⚠️ **不能写 `seasons.last as Map`**（审计发现）：
+        //    `seasons` 是 `dynamic` 列表，**元素类型不可信** ——
+        //    TMDB 改结构时 `as Map` 直接抛异常 ⇒ 被外层 catch 变成
+        //    "周历拉取失败" ⇒ **周历静默变空**（正是"体能之巅"那类问题）。
+        //    ⇒ 类型不符时**降级返回**（status 已经拿到了，不浪费）。
+        final lastSeason = seasons.last;
+        if (lastSeason is! Map) return ShowWeek(status: st);
+        final sn = lastSeason['season_number'];
         if (sn == null) return ShowWeek(status: st);
 
         // ② 一次请求拿该季全部分集（用 append_to_response 省一次往返）
