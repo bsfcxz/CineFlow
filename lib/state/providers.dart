@@ -11,6 +11,10 @@ import 'package:flutter/foundation.dart' show debugPrint;
 // ⚠️ 同步写订阅表时**必须**用它：直接存英文原值会让卡片显示
 //    `Continuing`（真机踩到）。
 import '../pages/tracking_page.dart' show statusCnOf;
+// `danmakuClientProvider` —— 复用用户已配好的弹幕源
+// （弹弹play 兼容 API 已统一 20+ 平台，见 platform_episodes.dart）
+import '../danmaku/danmaku_providers.dart';
+import '../data/platform_episodes.dart';
 import '../data/aggregated_search.dart';
 import '../data/calendar_client.dart';
 import '../data/db/app_database.dart' show CalendarSubscription;
@@ -772,6 +776,120 @@ final aggregatedResumeProvider =
 /// ## 缓存
 /// `FutureProvider.family` 自带缓存（同一部剧反复打开详情页不会再请求）。
 /// 要刷新用 `ref.invalidate`。
+/// **平台侧集数缓存**（`标题 → PlatformEpisodes`，内存 + TTL）。
+///
+/// ## 为什么需要缓存
+/// 一次追剧页加载会对**每部订阅**查一次（2 次请求/部）。
+/// 上游是**第三方免费实例** —— 反复拉会被限流
+/// （本仓库踩过"42 并发请求全部超时"，见 `AI-MEMORY.md`）。
+/// 而平台集数**一天最多变几次** ⇒ 30 分钟 TTL 足够且省得多。
+class PlatformEpisodesCache {
+  final Map<String, PlatformEpisodes?> _mem = {};
+  final Map<String, int> _at = {};
+  static const _ttlMs = 30 * 60 * 1000;
+
+  PlatformEpisodes? get(String key, int nowMs) {
+    final t = _at[key];
+    if (t == null || nowMs - t > _ttlMs) return null;
+    return _mem[key];
+  }
+
+  bool has(String key, int nowMs) {
+    final t = _at[key];
+    return t != null && nowMs - t <= _ttlMs;
+  }
+
+  void put(String key, PlatformEpisodes? v, int nowMs) {
+    _mem[key] = v;
+    _at[key] = nowMs;
+  }
+}
+
+/// 进程内单例（页面重建不丢缓存）
+final _platformCache = PlatformEpisodesCache();
+
+/// **批量取平台集数**（给追剧页用）。
+///
+/// ## 参数
+/// · `titles` —— 订阅的剧名列表（通常 ≤ 30 部）
+///
+/// ## 行为
+/// · 并发限制 **4**（对上游友好；`danmakuClient` 内部串行不住的话会打爆）
+/// · 命中缓存的不再请求
+/// · 单个失败只影响那一部（`null` 值也会写缓存 ⇒ 缺字段的剧不会反复重试）
+/// · 未配置弹幕源 ⇒ 直接返回空 Map（不是错误）
+///
+/// ## 返回
+/// `标题 → PlatformEpisodes?`（值为 null = 查过但拿不到）
+Future<Map<String, PlatformEpisodes?>> fetchPlatformEpisodesBatch({
+  required WidgetRef ref,
+  required List<String> titles,
+}) async {
+  final out = <String, PlatformEpisodes?>{};
+  if (titles.isEmpty) return out;
+
+  // ★★ **必须等配置就绪**（本仓库第 8 次踩同一个坑）
+  //
+  // ## 坑的形状
+  // `danmakuClientProvider` 内部：
+  // ```dart
+  // final cfg = ref.watch(danmakuConfigProvider).value;  // AsyncNotifierProvider
+  // if (cfg == null || !cfg.isUsable) return null;       // 未就绪 ⇒ null
+  // ```
+  // `AsyncNotifierProvider` 首次读是 `loading` ⇒ `.value == null`
+  // ⇒ client 为 null ⇒ 我原来 `if (client == null) return out;` **静默跳过**。
+  //
+  // 现象：chips 不出现、**日志也没有**（连"[Platform]"都不打）——真机实测踩到。
+  //
+  // ⇒ 规约（`AGENTS.md` §6 与 `AI-MEMORY.md` 反复记）：**读 provider 要
+  //   `await ...future`，不要读 `.value`**。
+  final cfg = await ref.read(danmakuConfigProvider.future);
+  if (!cfg.isUsable) {
+    debugPrint('[Platform] 弹幕源不可用（${cfg.kind.name}）⇒ 跳过平台集数');
+    return out;
+  }
+  final client = ref.read(danmakuClientProvider);
+  if (client == null) {
+    debugPrint('[Platform] 客户端未就绪 ⇒ 跳过');
+    return out;
+  }
+  final now = DateTime.now().millisecondsSinceEpoch;
+
+  // ① 先吃缓存
+  final todo = <String>[];
+  for (final t in titles) {
+    final k = t.trim();
+    if (k.isEmpty) continue;
+    if (_platformCache.has(k, now)) {
+      out[k] = _platformCache.get(k, now);
+    } else {
+      todo.add(k);
+    }
+  }
+  if (todo.isEmpty) return out;
+
+  // ② 限并发 4（与 danmaku 匹配同一策略）
+  const batchSize = 4;
+  for (var i = 0; i < todo.length; i += batchSize) {
+    final batch = todo.skip(i).take(batchSize).toList();
+    await Future.wait(batch.map((t) async {
+      PlatformEpisodes? r;
+      try {
+        r = await client.fetchPlatformEpisodes(t);
+      } catch (e) {
+        debugPrint('[Platform] 「$t」查询失败（忽略）: $e');
+        r = null;
+      }
+      out[t] = r;
+      // ⚠️ **null 也写缓存** —— 否则缺数据的剧每次进页面都重试
+      _platformCache.put(t, r, now);
+    }));
+  }
+  debugPrint('[Platform] 平台集数：请求 ${todo.length} 部，'
+      '缓存命中 ${titles.length - todo.length} 部');
+  return out;
+}
+
 /// **库内摘要**（已入库集数 / 已更新集号 / 下次更新日）。
 ///
 /// ## 参数

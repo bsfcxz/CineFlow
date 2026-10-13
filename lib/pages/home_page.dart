@@ -134,10 +134,16 @@ class HomePage extends ConsumerWidget {
               top: 0,
               left: 0,
               right: 0,
-              child: SafeArea(
-                bottom: false,
-                child: const _HomeTopBar(),
-              ),
+              // ★ `_HomeTopBar` 自己管 SafeArea（方案 4：把**状态栏区**纳入渐变）
+              //
+              // ## 为什么层级要对调（原来是 `SafeArea > _HomeTopBar`）
+              // `SafeArea` 在外 ⇒ 整个顶栏被**推到状态栏下方**
+              // ⇒ 状态栏那一条（约 24–40dp）**裸露无渐变** ⇒
+              //    浅色轮播图轮到时白色状态栏图标看不清。
+              //
+              // 现在：`_HomeTopBar`（渐变的 Container）在外，从 y=0 铺起；
+              // `SafeArea` 在里面只负责把**图标**推到状态栏下方。
+              child: const _HomeTopBar(),
             ),
           ]),
         ),
@@ -153,39 +159,56 @@ class _HomeTopBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Container(
-      height: 52,
-      padding: const EdgeInsets.symmetric(horizontal: 18),
+      // ⚠️ **不能写 height: 52** —— 那会装不下「状态栏 + 52」而溢出。
+      //    改成自适应：内部 `SafeArea` 撑开高度，`SizedBox(height: 52)`
+      //    只约束**内容区**（图标那一行）。
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
+          // ★ 起点在 y=0（屏幕物理顶端）⇒ **状态栏区也被遮罩**
+          //
+          // ## 为什么渐变要盖住状态栏（用户要的效果）
+          // 状态栏图标是**写死的浅色**（`main.dart:49`
+          // `statusBarIconBrightness: Brightness.light`）。
+          // 深色海报上没问题，但轮播到**浅色图**时白图标就看不见了。
+          // 这里用一层"顶部深 → 透明"的渐变托底，成本远低于动态取色。
           colors: [Color(0xD90B1020), Color(0x000B1020)],
         ),
       ),
-      child: Row(children: [
-        const Spacer(),
-        // ⚠️ 原先是裸 `GestureDetector` + 22px 图标 —— **可点区域只有图标本身**
-        // （22×22，约为标准的 1/5），且没有任何按压反馈。
-        // 这是实打实的可用性缺陷（LinPlayer 的已知陷阱表里就有
-        // 「触摸目标点不中 → 必须 ≥48dp」这一条，Material 同要求）。
-        // 改用 IconButton：theme 里已约束 minimumSize 48×48，
-        // 并自带涟漪反馈，视觉尺寸仍是 22。
-        IconButton(
-          tooltip: '搜索',
-          onPressed: () => context.push(Routes.search),
-          icon: const Icon(Icons.search_rounded, size: 24),
-          color: Cf.text2,
-          visualDensity: VisualDensity.compact,
+      child: SafeArea(
+        bottom: false, // 底部导航栏由 `home_shell` 管，这里只管顶部
+        child: SizedBox(
+          height: 52,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            child: Row(children: [
+              const Spacer(),
+              // ⚠️ 原先是裸 `GestureDetector` + 22px 图标 —— **可点区域只有图标本身**
+              // （22×22，约为标准的 1/5），且没有任何按压反馈。
+              // 这是实打实的可用性缺陷（LinPlayer 的已知陷阱表里就有
+              // 「触摸目标点不中 → 必须 ≥48dp」这一条，Material 同要求）。
+              // 改用 IconButton：theme 里已约束 minimumSize 48×48，
+              // 并自带涟漪反馈，视觉尺寸仍是 22。
+              IconButton(
+              tooltip: '搜索',
+              onPressed: () => context.push(Routes.search),
+              icon: const Icon(Icons.search_rounded, size: 24),
+              color: Cf.text2,
+              visualDensity: VisualDensity.compact,
+              ),
+              IconButton(
+              tooltip: '我的',
+              // 图标按钮必须有无障碍名称（tooltip 即 semantics label）
+              onPressed: () => ref.read(homeTabProvider.notifier).set(2),
+              icon: const Icon(Icons.settings_rounded, size: 20),
+              color: Cf.text2,
+              visualDensity: VisualDensity.compact,
+              ),
+              ]),
+          ),
         ),
-        IconButton(
-          tooltip: '我的',
-          // 图标按钮必须有无障碍名称（tooltip 即 semantics label）
-          onPressed: () => ref.read(homeTabProvider.notifier).set(2),
-          icon: const Icon(Icons.settings_rounded, size: 20),
-          color: Cf.text2,
-          visualDensity: VisualDensity.compact,
-        ),
-      ]),
+      ),
     );
   }
 }

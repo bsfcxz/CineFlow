@@ -30,6 +30,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../data/platform_episodes.dart';
 import '../data/db/app_database.dart';
 import 'danmaku_async.dart';
 import 'danmaku_config.dart';
@@ -448,6 +449,56 @@ class DanmakuClient {
       return (list.first['episodeId'] as num?)?.toInt();
     } catch (_) {
       // 搜索失败 = "暂无弹幕"，不是错误（与官方路径同口径）
+      return null;
+    }
+  }
+
+  // ------------------------------------------------------------------
+
+  /// **取「平台侧」的番剧更新信息**（周几 / 平台集数 / 是否在播 / 播出平台）。
+  ///
+  /// ## ★ 为什么复用弹幕源的端点
+  /// 用户："我接的不是 danmu_api 里面的嘛"。
+  /// 弹弹play 兼容 API 的 `/api/v2/bangumi/{id}` 已经包含
+  /// **20+ 平台**（腾讯/优酷/爱奇艺/B站/芒果/咪咕…）统一后的番剧数据：
+  /// ```
+  /// metadata: ["话数: 26", "放送星期: 星期日", "在线播放平台: 腾讯视频", …]
+  /// episodes: [{episodeNumber, episodeTitle, airDate} × N]
+  /// isOnAir: false
+  /// ```
+  /// ⇒ 不必逐家逆平台私有协议（那条路走过：腾讯要 H38/H42/Uk 三个头 + Cookie，
+  ///   优酷要 UA 与页面配对，爱奇艺字段名还会变）。
+  ///
+  /// ## 与 `_findEpisodeIdViaProxy` 的关系
+  /// 两者**都是** search→bangumi 两次请求，但**目的不同**：
+  /// · 那个要 `episodeId`（去取弹幕）
+  /// · 这个要 `metadata`/`episodes.length`（去显示平台信息）
+  /// ⇒ 暂不合并：合并会让"只要弹幕"的路径被迫解析无关字段。
+  ///
+  /// ## 返回
+  /// `null` = 拿不到（未配源 / 搜不到 / 上游改字段）。
+  /// **这不是错误** —— 调用方退回已有逻辑，不向用户报错。
+  Future<PlatformEpisodes?> fetchPlatformEpisodes(String title) async {
+    final kw = title.trim();
+    if (kw.isEmpty) return null;
+    try {
+      final searchRaw =
+          await _get('/api/v2/search/anime', query: {'keyword': kw});
+      final searchMap = _tryMap(searchRaw);
+      if (searchMap == null) return null;
+      final animes = (searchMap['animes'] as List?) ?? const [];
+      final list0 = animes.whereType<Map<String, dynamic>>().toList();
+      if (list0.isEmpty) return null;
+      // 取第一个：上游已按相关度排序（与 `_findEpisodeIdViaProxy` 同策略）
+      final animeId = (list0.first['animeId'] as num?)?.toInt();
+      if (animeId == null) return null;
+
+      final detailRaw = await _get('/api/v2/bangumi/$animeId');
+      final detailMap = _tryMap(detailRaw);
+      if (detailMap == null) return null;
+      return parseBangumi(detailMap);
+    } catch (_) {
+      // 拿不到平台信息 ≠ 错误（与 `_findEpisodeIdViaProxy` 同口径）
       return null;
     }
   }

@@ -37,6 +37,43 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- ══════ ★ OAuth 回调（自定义 Scheme）══════
+                 用于接收 OAuth2 授权码（目前面向 Trakt；任何第三方登录/授权通用）。
+
+                 ## Scheme 取值理由
+                 `com.cineflow.app` 与 `applicationId` **完全一致** ⇒
+                 天然唯一，不会被其它 App 抢占（`cineflow://` 这类通用词会撞车）。
+
+                 ## 为什么挂在 MainActivity、而不是新建 OAuthCallbackActivity
+                 本项目是 Flutter：Dart 侧用 `app_links` 接收 URI，
+                 回调必须落到**承载 Flutter 引擎的 Activity**（即本 Activity）。
+                 新建 Kotlin Activity 需手动把 URI 桥接回 Flutter，多一层出错点。
+                 （Tivi 是原生 Kotlin，所以它能写独立 Activity —— 不可照搬。）
+
+                 ## 为什么不需要改 launchMode
+                 MainActivity 已是 `singleTop` ⇒ 浏览器授权后跳回**不会新开实例**，
+                 而是复用现有实例触发 `onNewIntent` —— `app_links` 正是监听它。
+
+                 ## ⚠️ debug/release 为什么只注册一个
+                 `build.gradle.kts` 里**没有** `applicationIdSuffix`
+                 ⇒ debug 与 release 包名相同 ⇒ 一个 scheme 即可。
+                 （Tivi 注册两个是因为它的 debug 有 `app.tivi.debug` 后缀。） -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <!-- BROWSABLE 必需：授权页在**浏览器**里，要能唤起本 App -->
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <!--
+                  `com.cineflow.app://auth/oauth2callback`
+                     scheme=com.cineflow.app  host=auth  path=/oauth2callback
+                  OAuth 提供方的 Redirect URI 就填**这一整串**。
+                -->
+                <data
+                    android:scheme="com.cineflow.app"
+                    android:host="auth"
+                    android:path="/oauth2callback"/>
+            </intent-filter>
         </activity>
         <!-- 媒体会话服务（K3）：通知栏 / 蓝牙耳机键 / 后台播放。
              ⚠️ `foregroundServiceType="mediaPlayback"` 必须与 manifest 里的

@@ -1531,17 +1531,30 @@ class CalendarClient {
     }
   }
 
-  /// 从优酷单剧详情页解析「每周X N点」（**实测 5/5 命中**）。
+  /// 从优酷单剧详情页解析「每周X N点」。
   ///
-  /// ## 抓什么
-  /// SSR 文案形如：
-  /// `更新至13/26话，每周一10点SVIP更新，周二10点VIP可看`
-  /// ⇒ 正则取**第一个** `每周X` + `N点`（那是正式更新时间；
-  ///    后面的"周二10点VIP可看"是会员抢先，不是首播）。
+  /// ## ★ 取哪个时间：**SVIP 优先**（用户 2026-10-13 明确要求）
+  /// > "我们按他的 **svip 更新时间**作为提醒，即最新、最早的更新时间。"
   ///
-  /// ## 为什么取第一个
-  /// 「SVIP 抢鲜」在前、「VIP/免费」在后 ⇒ 第一个是**最早可看**的时刻，
-  /// 与卡片"每周X 20:00"的语义（用户看剧的时间点）一致。
+  /// ## 为什么不能取"第一个"（原写法，实测 **2/5 部取错**）
+  /// 优酷文案的**顺序不固定**：
+  /// ```text
+  /// 一斩苍穹   更新至13/26话，每周一10点SVIP更新，周二10点VIP可看    ← SVIP 在前 ✅
+  /// 沧元图     更新至98/129话，每周五10点SVIP更新，周六10点VIP可看    ← SVIP 在前 ✅
+  /// 光阴之外   更新至43/78话，每周日10点VIP更新，每周六10点SVIP抢先看  ← SVIP 在**后** ❌
+  /// 师兄啊师兄 更新至162/169话，每周四10点VIP更新，每周三10点SVIP抢先看 ← SVIP 在**后** ❌
+  /// ```
+  /// `firstMatch` 撞运气：后两条拿到 **VIP 的周日/周四**，
+  /// 而 SVIP（周六/周三）**更早**，那才是真正的更新时间。
+  ///
+  /// ## 三级优先级
+  /// 1. 匹配附近含 `SVIP` ⇒ **用它**（= 最早可看的时刻）
+  /// 2. 无 SVIP 标记 ⇒ 退回**首个匹配**（保持原行为，不乱猜顺序）
+  /// 3. 全无 ⇒ `null`（调用方退回平台惯例 20:00）
+  ///
+  /// ## 顺带
+  /// 正则同时接受 `点`/`时`/`:` 并解析**分钟**（实测样本都是整点，
+  /// 但不该把 `:00` 硬编码 —— 万一有半点的剧就会显示错）。
   static AnimeTimeline? _parseYoukuSeries(String html, int nowMs) {
     // 剧名：`<title>…</title>` 去掉站点后缀
     String title = '';
@@ -1553,19 +1566,41 @@ class CalendarClient {
           .trim();
     }
     if (title.isEmpty) return null;
-    // 「每周X N点」（实测形态：每周一10点 / 每周五10点）
-    final mw = RegExp(r'每周([一二三四五六日])(\d{1,2})\s*点').firstMatch(html);
-    if (mw == null) return null;
+
+    // 「每周X N点」——一次收全部匹配，再按优先级挑
+    final all = RegExp(r'每周([一二三四五六日])(\d{1,2})\s*[:点时]?(\d{2})?')
+        .allMatches(html)
+        .toList();
+    if (all.isEmpty) return null;
+
+    // ★ SVIP 优先（用户要求"按 SVIP 更新时间"）
+    RegExpMatch? pick;
+    for (final m in all) {
+      // 匹配点前后 ±14 字符内出现 SVIP ⇒ 这条就是 SVIP 时间
+      final lo = (m.start - 14).clamp(0, html.length);
+      final hi = (m.end + 14).clamp(0, html.length);
+      final seg = html.substring(lo, hi);
+      if (seg.contains('SVIP') || seg.contains('svip')) {
+        pick = m;
+        break;
+      }
+    }
+    // 退路：无 SVIP 标记 ⇒ 首个匹配（原行为）
+    pick ??= all.first;
+
     const cn = '一二三四五六日';
-    final wd = cn.indexOf(mw.group(1)!) + 1;
+    final wd = cn.indexOf(pick.group(1)!) + 1;
     if (wd < 1 || wd > 7) return null;
-    final hh = int.tryParse(mw.group(2)!) ?? 0;
+    final hh = int.tryParse(pick.group(2)!) ?? 0;
     if (hh < 0 || hh > 23) return null;
+    final mmRaw = pick.group(3);
+    final mm = mmRaw == null ? 0 : (int.tryParse(mmRaw) ?? 0).clamp(0, 59);
     return AnimeTimeline(
       title: title,
       platform: 'youku',
       weekday: wd,
-      airTime: '${hh.toString().padLeft(2, '0')}:00',
+      airTime: '${hh.toString().padLeft(2, '0')}:'
+          '${mm.toString().padLeft(2, '0')}',
       sourceId: '',
       updatedAt: nowMs,
     );
@@ -2638,7 +2673,68 @@ class CalendarClient {
   /// ## ⚠️ 为什么只查**最新一季**
   /// 老季的集日期早已过去，与"本周更新"无关。
   /// 查全部季会让请求数随季数增长（《你好，星期六》5 季）。
-  Future<ShowWeek> fetchWeekEpisodes(
+  /// **只取 TMDB 的剧集状态**（`Returning Series` / `Ended` / …）。
+///
+/// ## ★ 为什么要单独取（不与 `fetchWeekEpisodes` 绑一起）
+/// 真机实测（体能之巅）：
+/// ```
+/// [Calendar] 周历分集拉取失败 (1423191): 超时      ← 反复超时
+/// ```
+/// `fetchWeekEpisodes` 要打 **2 次** TMDB（`/tv/{id}` + `append_to_response`），
+/// 超时风险高；而**状态只需要第 1 次**。
+///
+/// 两者绑一起 ⇒ **周历失败连带状态也拿不到** ⇒ 退回 Emby 的过期值
+/// ⇒ 「体能之巅」明明 TMDB `status='Ended'`（本机实测），卡片却显示"连载中"。
+/// ⇒ 这正是 §6.9.1「取数失败 ≠ 数据为空」的同一类错。
+///
+/// ## 与 `fetchWeekEpisodes` 的差异（刻意为之）
+/// | | `fetchWeekEpisodes` | 本方法 |
+/// |---|---|---|
+/// | 请求数 | 2 | **1** |
+/// | 超时 | 8s / 10s | **6s / 6s**（更短）|
+/// | 失败返回 | 空 `ShowWeek()` | **null**（语义不同：null=没拿到）|
+/// | 缓存键 | `weekep:...`（按周）| `tvstatus:...`（**不按周**：状态与周无关）|
+///
+/// ## 返回
+/// TMDB 原始 `status` 字符串；`null` = 拿不到（**不编**）。
+Future<String?> fetchTvStatus(String tmdbId, {required String apiKey}) async {
+  if (tmdbId.isEmpty || apiKey.isEmpty) return null;
+  // 状态与"本周"无关 ⇒ 缓存键**不带周**（与 `weekep` 相反）
+  final cacheKey = 'tvstatus:$tmdbId';
+  try {
+    final cached = await cache?.get(cacheKey);
+    if (cached != null && cached.isNotEmpty) return cached;
+  } catch (_) {
+    // 缓存读失败不该阻断主流程
+  }
+  try {
+    final r = await _dio.get<String>(
+      'https://api.themoviedb.org/3/tv/$tmdbId',
+      queryParameters: {'api_key': apiKey, 'language': 'zh-CN'},
+      options: Options(
+          responseType: ResponseType.plain,
+          headers: {'User-Agent': _ua},
+          // ⚠️ 比 `fetchWeekEpisodes` 更短：这只是"锦上添花"的状态查询，
+          //    不能因为它让追剧页长时间等待（实测 TMDB 在国内常超时）。
+          sendTimeout: const Duration(seconds: 6),
+          receiveTimeout: const Duration(seconds: 6)),
+    );
+    if (r.statusCode != 200 || r.data == null) return null;
+    final meta = jsonDecode(r.data!) as Map;
+    final st = meta['status'] as String?;
+    if (st == null || st.isEmpty) return null;
+    // ⚠️ 只缓存**成功**结果（失败也缓存会让状态错 6 小时）
+    try {
+      await cache?.put(cacheKey, st, ttl: cacheTtl);
+    } catch (_) {}
+    return st;
+  } catch (e) {
+    debugPrint('[Calendar] 状态拉取失败 ($tmdbId): ${_friendly(e)}');
+    return null; // 拿不到 ⇒ null（调用方退回 Emby，**不编**）
+  }
+}
+
+Future<ShowWeek> fetchWeekEpisodes(
     String tmdbId, {
     required String apiKey,
     DateTime? weekStart,

@@ -2184,7 +2184,7 @@ with_genres=10764|10767   → 8 条  ✅（任一即可）
 | 用 `startswith('已看电影')` 找卡片 | 实际标签是 `'11 \| 已看电影'` ⇒ **永远 False** |
 
 ⇒ **改法（一举解决 UX + 可验证性）**：把延迟从 SnackBar 改成**就地常驻显示**
-（`<server-A> 57ms`，带颜色分级）。真机截图实证 57ms（服务端实测 53ms，一致）。
+（`<Emby-A> 57ms`，带颜色分级）。真机截图实证 57ms（服务端实测 53ms，一致）。
 
 > 这正是 §8.4 说的"**验证手段本身没有被验证**" —— 危害比"没验证"更大：
 > 我确信自己在验证，实际一直在测一个恒为假的东西。
@@ -2225,7 +2225,7 @@ check-dev.ps1     21 项全过，退出码 0
   + 平台（腾讯视频↗ / B站↗ / 爱奇艺↗ / 湖南卫视↗ / 芒果TV↗）+ 平台补查 19/20 条
 - ✅ 详情弹层：简介/导演/主演/类型/国家/平台/集数/首播/更新 + 「去 腾讯视频 观看」
 - ✅ 「我的」四格全可点（4/4 打开列表页）；「继续观看」在「制片公司」之前
-- ✅ 地址就地显示延迟 `<server-A> 57ms`（绿色）
+- ✅ 地址就地显示延迟 `<Emby-A> 57ms`（绿色）
 - ✅ 无崩溃
 
 ## 未完成 / 已知限制
@@ -2438,7 +2438,7 @@ check-dev.ps1     21 项全过，退出码 0
 它是 7×7 的**纯装饰 Container** —— 但视觉上"绿点=在线"，
 用户会自然去点。⇒ 改为可点（**点它 = 测延迟**），
 用 `CfTapTarget(size:44)` 撑命中区（7px 圆点裸放点不中）。
-真机实证：点后显示 `la6.<server-B> | 205ms`。
+真机实证：点后显示 `<Emby-B> | 205ms`。
 
 ## 四、详情页追剧 → 同步到服务端库（用户要求）
 > "我点的详情页的追剧小星星如果在服务端的库内存在的应该同步进去"
@@ -2509,8 +2509,8 @@ check-dev.ps1     21 项全过
 真机（Redmi K40，截图实证）：
 - ✅ 配色 5 套可选，点「粉」后标题/背景/文字全部跟随
 - ✅ 我的页：继续观看/服务端播放列表/制片公司/统计四格 全部已删
-- ✅ 小圆点可点 → `la6.<server-B> | 205ms`
-- ✅ **多账号生效**：`已登录 2 台服务器 | bsfc · la6.<server-B> | bsfc · <server-A>`
+- ✅ 小圆点可点 → `<Emby-B> | 205ms`
+- ✅ **多账号生效**：`已登录 2 台服务器 | bsfc · <Emby-B> | bsfc · <Emby-A>`
 - ✅ 无崩溃
 
 ## 未完成 / 已知限制
@@ -3172,3 +3172,185 @@ audit_tokens --check  通过（圆角收敛 4 档，0 处不合目标）
 4. `_ensureTimelineIndexed` 与顶层 `reindexTimelines` 有**部分重复逻辑**
    （都调三个 indexer）—— 可再收敛，本轮未做。
 
+---
+
+## 2026-10-13（下半场）平台集数 / SVIP 周几 / 状态判定解耦 / 状态栏渐变 / OAuth Scheme
+
+### ① 「平台集数 + 库内集数」并排显示（用户要求）
+
+**用户原话**："显示平台数和库内数，这样我知道我库内的集数，也就可以去获取没在库的数了。"
+
+**数据源的关键转折**：用户提醒"我接的不是 danmu_api 里面的嘛" —— 我们**已在用**
+的内置弹幕源（`danmaku-api.152468.xyz`，`DanmakuClient.kPublicProxyBase`）
+就是 danmu_api 的公共实例，它的 `/api/v2/bangumi/{id}` **已经统一了 20+ 平台**。
+
+**我走过的弯路（必须记下来，避免重犯）**：
+我此前逐家逆平台私有协议，全部**不必要**：
+| 平台 | 我逆出来的成果 | 真相 |
+|---|---|---|
+| 腾讯 | 需 `H38`/`H42`/`Uk` 三头 + Cookie + `vversion_name=8.2.96` | 上游已统一 |
+| 优酷 | 移动端链接形态变更、PC/移动页内容不同、UA 配对 | 上游已统一 |
+| 爱奇艺 | 字段 `desc` → `description` 变更 | 上游已统一 |
+
+⇒ **教训**：先看**已有依赖**能做什么，再去逆协议。
+
+**新模块 `lib/data/platform_episodes.dart`**（含 9 例单测）：
+```
+PlatformEpisodes { title, weekday, updated, aired, airedWeekday,
+                   totalEpisodes, platform, isOnAir, airDate }
+```
+
+**`episodes[]` 含未播出预约集**（用户报障"遮天今天更新 185 集，不是你标的 190"）：
+```
+遮天 episodes 总数 = 190，其中 airDate <= 今天 = **185**
+未来 5 集：第186集 2026-10-20 … 第190集 2026-11-17
+⇒ 必须只数已播（`aired`），不能数长度（`updated`）
+```
+
+### ② SVIP 周几规则 —— 含**我自己的算法错误**
+
+**用户规则**："凡是 svip 提前更新的，vip 只能第二天更新的这种，我们都以他**最新的更新时间**为准写入日历。"
+
+**我第一版错在哪**（用户让我自查，查出来的）：
+```dart
+// 错：取"离今天最近的下一次"
+gap = (wd - today + 7) % 7;   // 小者优先
+```
+今天周二时，一斩苍穹候选 = {周一(SVIP), 周二(airDate=VIP)}：
+`gap(周二)=0 < gap(周一)=6` ⇒ **选中周二** ❌，而用户明确"周二这边你不应该显示了"。
+
+**根因**：用户说的"最早"是 **SVIP 比 VIP 早一天** 那个"早"，
+**不是"距离今天多远"** —— 两个不同语义，不能混用。
+
+**正确规则（按来源优先级，不是比 gap）**：
+| 优先级 | 来源 | 遮天 | 一斩苍穹 | 仙逆 |
+|---|---|---|---|---|
+| ① | **本地时刻表**（优酷文案**显式写 SVIP**）| — | **周一** ✅ | — |
+| ② | `airDate`（danmu）| **周二** ✅ | 周二 | **周日** ✅ |
+| ③ | 「放送星期」= **VIP**（较晚）| 周三 | — | 周一 |
+| ④ | 库内周历 | — | — | — |
+
+**用户独立确认**："仙逆在周日会提前更新的 svip" ⇒ **印证**了
+「`airDate` = SVIP、放送星期 = VIP」这条规律（三源交叉验证）。
+
+**实测两类文案顺序相反**（所以不能只看一边）：
+```
+遮天（腾讯）  VIP会员每周三10点更新。SVIP会员每周二…     ⇒ 周三是 VIP、周二是 SVIP
+一斩苍穹（优酷）每周一10点SVIP更新，周二10点VIP可看        ⇒ 周一是 SVIP、周二是 VIP
+```
+
+### ③ 状态判定**解耦**于周历请求（体能之巅的真根因）
+
+**用户报障**："体能之巅：百人大挑战是已经完结的，你不是验证过嘛。"
+
+**真根因**（真机 logcat 实证）：
+```
+[Calendar] 周历分集拉取失败 (1423191): 超时      ← 反复超时
+[Calendar] 状态拉取失败 (210905): 超时           ← 体能之巅
+[TmdbStatus] 拿到 9/15 部的状态                   ← 只有 60% 成功
+```
+`fetchWeekEpisodes` 要打 **2 次** TMDB（`/tv/{id}` + `append_to_response`）；
+超时 ⇒ 返回**空 `ShowWeek()`** ⇒ `week?.statusCn` 为 null ⇒ 退回 Emby 的旧值。
+
+⇒ **`week` 同时承担两件事**（要求不同却绑一起）：
+| 用途 | 要求 |
+|---|---|
+| 周历分桶（`days`）| 高：必须拉成功 |
+| 状态判定（`statusCn`）| 低：**一个字符串**，1 次请求就够 |
+
+**修法**：`CalendarClient.fetchTvStatus(tmdbId, apiKey:)` —— 只打 1 次、
+超时更短、失败返回 `null`（语义不同于空 `ShowWeek`）。
+`_statusCn` 判据链：`isOnAir` → **`tmdbStatus`** → `week.statusCn` → Emby。
+
+⚠️ 这仍是 §6.9.1「**取数失败 ≠ 数据为空**」的同一类错 —— 第 N 次复现。
+
+### ④ 实测结论：TVDB / Trakt **在设备上不可用**
+
+| 源 | 设备侧 | PC 侧 | 结论 |
+|---|---|---|---|
+| 内置弹幕源 | ✅ 200（2.9s）| ✅ | **在用** |
+| TMDB | ⚠️ 时通时不通（000~200）| ✅ | **在用**（现靠它判完结）|
+| TVDB | ❌ **000**（全系域名超时）| ⚠️ 网页可通 | ❌ 不可用 |
+| Trakt | ❌ **403** | ❌ 403 | ❌ 不可用 |
+
+**Trakt 的 403 性质**（决定性判据）：
+```
+响应头: Cf-Placement: remote-IAD、Server: cloudflare
+       **零个** Trakt 自有响应头（无 x-request-id）
+body  : 9 字节 "Forbidden"（HTML 拦截页时为 5482 字节）
+⇒ **Cloudflare 边缘拦截**，请求没到 Trakt 业务层
+⇒ 与"缺 API key"（会是 JSON 401）**性质完全不同**
+同一分钟对照：trakt.tv 网页 200（58KB）、TMDB 200、弹幕源 200
+⇒ 不是网络整体故障，是 `api.trakt.tv` 子域被独立策略拦截
+```
+⇒ **注册 Client ID 也解决不了**（key 从未被读取）。
+用户仍要求接 Trakt（"慢慢来"）⇒ 先完成**前置能力**（见 ⑤）。
+
+### ⑤ OAuth Scheme 已注册（通用能力，不只为 Trakt）
+
+**用户问**："我的项目有没有 Tivi 那种 Scheme？" ⇒ **没有**（唯一的
+`android:scheme="https"` 在 `<queries>` 里，是 url_launcher 用的）。
+
+**定下的 Scheme**：`com.cineflow.app://auth/oauth2callback`
+| 项 | Tivi | 本项目 | 为什么不同 |
+|---|---|---|---|
+| scheme | `app.tivi` | `com.cineflow.app` | 与 `applicationId` 一致 ⇒ 天然唯一 |
+| **几个** | **两个**（debug/release）| **一个** | `build.gradle.kts` **无** `applicationIdSuffix` |
+| 挂在哪 | 新建 `OAuthCallbackActivity` | **`.MainActivity`** | Flutter 回调必须落到承载引擎的 Activity |
+
+`launchMode="singleTop"` 本项目**已有** ⇒ 授权后跳回不新开实例。
+iOS：本项目 **无 `ios/` 目录**（Android-only）⇒ Info.plist 那条不适用。
+
+**用户填 Trakt 后台时多写了 `https://` 前缀** ⇒ 畸形 URI，需改回：
+```
+❌ https://com.cineflow.app://auth/oauth2callback
+✅ com.cineflow.app://auth/oauth2callback
+```
+**Trakt 后台还给了"不安全重定向 URI"警告** —— 那是自定义 Scheme 的
+**固有特性**（任何 App 都能声明同一 scheme 截获授权码）。
+官方建议的解法是 **App Links / Universal Links**（HTTPS + `assetlinks.json`
+数字资产校验）。**PKCE 已能缓解**该风险（截获的 code 换不到 token，
+因为 `code_verifier` 只在客户端）。⇒ 对**只读公开数据**（我们不需要
+用户 Trakt 账号的任何权限）风险可接受。
+
+### ⑥ 首页状态栏纳入渐变（用户方案 4）
+
+**用户要的**："背景图全屏铺满，UI 内容用 SafeArea 保护。"
+
+**现状对照**：本项目**已经**是 Stack + `Positioned.fill`（比用户贴的
+`extendBodyBehindAppBar` 方案更干净）。**唯一缺口**：`SafeArea` 在外
+⇒ 顶栏被推到状态栏下方 ⇒ **状态栏那一条无渐变** ⇒
+浅色轮播图时白色状态栏图标看不清。
+
+**修法**：层级对调 —— `Container(gradient)` 在外（从 y=0 铺起），
+`SafeArea` 内移只负责把图标推下去。
+⚠️ `Container` **不能写 `height: 52`**（装不下"状态栏 + 52"会溢出），
+改成自适应 + 内部 `SizedBox(height: 52)` 约束内容区。
+
+**像素验证**（不靠肉眼）：
+```
+y=0    亮度 0.0061   ← 最暗（渐变起点 0xD90B1020）
+y=280  亮度 0.0714   ← 渐变淡出
+单调性：13/14 段不回落 ⇒ 连续覆盖（不是阶跃）
+状态栏图标对比度：18.97:1 / 19.23:1（WCAG AA 要求 ≥ 4.5:1）✅
+RenderFlex overflowed: 0 次 ✅
+```
+
+### ⑦ PUBLIC 仓库的**私有地址脱敏**（安全红线）
+
+仓库 `bsfcxz/CineFlow` 是 **PUBLIC**，而 `docs/AI-MEMORY.md` 里
+**已在历史提交中**含私有服务器地址（`a93ca87`、`20129c1`，已推送）：
+```
+<server-A>  →  <Emby-A>   （3 处）
+la6.<server-B>  →  <Emby-B>   （3 处）
+```
+本次已脱敏。**历史提交里仍有**（未改历史，避免 force-push）。
+扫描确认 **TMDB key / TVDB key / Trakt Client ID / Emby 密码均未入库** ✅
+
+### 本轮踩到的 3 个**自伤**（都靠验证手段挡住）
+
+| # | 我的错 | 谁抓到 |
+|---|---|---|
+| 1 | `as String?` 硬转（上游给 int 就崩）| **单测 ⑤**（fixture 用 `animeTitle: 123`）|
+| 2 | 删除残留时**全文件按模式扫**，误删卡片在用的 `add` ⇒ 4 error | analyze |
+| 3 | `ref.read(p).value` 在 AsyncNotifier 未就绪时是 null ⇒ 静默跳过（第 8 次）| **真机 dump + 零日志** |

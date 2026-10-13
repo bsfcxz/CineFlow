@@ -20,6 +20,8 @@
 /// ⇒ 日历那栏**只显示订阅的**，不是整周热播榜。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../data/emby_provider.dart';
 import '../data/media_provider.dart';
@@ -36,6 +38,7 @@ import 'detail_page.dart';
 //    show 选择器会**屏蔽其它名字**，漏写就报 "Undefined class"
 //    （编译器看不到，但文件里确实有）。
 import '../data/aggregated_search.dart';
+import '../data/platform_episodes.dart';
 import '../data/calendar_client.dart'
     show CalendarEntry, CalendarCategory, ShowWeek;
 // ⚠️ show 选择器会**屏蔽其它名字**——漏写就报 'Undefined class'
@@ -84,6 +87,8 @@ bool isLiveish(String? raw) {
   final cn = statusCnOf(raw);
   return cn == '连载中' || cn == '未知';
 }
+
+
 
 /// **强制重新索引三大源的更新时刻表**（供「我的 → 更新时刻表」调用）。
 ///
@@ -485,13 +490,6 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
   /// 顺带把最新状态**回写**订阅表（见 `_loadAll`）。
   Map<String, ShowWeek> _weeks = {};
 
-  /// `sourceId → (未看集数, 总集数)`。
-  ///
-  /// ⚠️ 总集数是 **-1 表示未知**（`MediaItem` 目前没映射 `ChildCount`）
-  /// ⇒ UI 只显示"剩 N 集"，**不编造分母**（"已看 8/12" 里的 12 拿不到）。
-  /// 要给 `MediaItem` 加 `ChildCount` 解析才能显示完整进度。
-  Map<String, (int, int)> _progress = {};
-
   /// sourceId → **下次更新日**（yyyy-MM-dd；第 ② 段顺手算）。
   Map<String, String> _libNext = {};
 
@@ -503,6 +501,24 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
 
   /// `sourceId → 时刻表条目`（B站官方索引；决定卡片的精确时刻）。
   Map<String, AnimeTimeline> _timeline = {};
+
+  /// `sourceId → 平台侧信息`（周几 / 平台集数 / 是否在播 / 播出平台）。
+  ///
+  /// 数据源是**内置弹幕源**（见 `_loadPlatform`）；
+  /// 空 Map = 还没拿到 / 未配置弹幕源 —— 卡片据此退回库内口径。
+  Map<String, PlatformEpisodes?> _platform = {};
+
+  /// `sourceId → TMDB 的剧集状态`（`Ended` / `Returning Series` …）。
+  ///
+  /// ## ★ 为什么与 `_weeks` **分开存**（真机实证）
+  /// `_weeks` 来自 `fetchWeekEpisodes`（**2 次** TMDB 请求），
+  /// 实测频繁超时：`[Calendar] 周历分集拉取失败 (1423191): 超时`
+  /// ⇒ 周历失败会**连带状态也拿不到** ⇒ 退回 Emby 的过期 `Status`
+  /// ⇒ 「体能之巅」TMDB 说 `Ended`，卡片却显示"连载中"。
+  ///
+  /// 现在状态**单独查**（`fetchTvStatus`，1 次请求 / 6s 超时）
+  /// ⇒ 周历挂了状态照样准。这是 §6.9.1「取数失败 ≠ 数据为空」。
+  Map<String, String> _tmdbStatus = {};
 
   bool _loading = true;
 
@@ -604,6 +620,11 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
     // ⚠️ 第 ④ 段的旧 `getItems(limit:1000)` 反查**已废** ——
     //    那条链有截断 bug（HK 5711 部 ⇒ 只取前 1000），
     //    现在改用逐部精确的 `unplayedCount`（见第 ② 段的说明）。
+    // ⚠️ **当前无 UI 消费方**（2026-10-13）。
+    // 原本给卡片底部"已看 X/Y"用，但用户要求改成
+    // 「已入库集数 · 平台更新数」（见 `_libraryBar`）⇒ 那行不再需要它。
+    // **保留计算**的理由：它来自 `sum.unplayedCount`（第 ② 段顺手得来，
+    // 零额外请求），且"继续观看"将来可能要按未看数排序。
     final prog = <String, (int, int)>{};
     final api = ref.read(embyApiProvider);
     var inLib = 0;
@@ -618,6 +639,21 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
             return <String, SeriesRef>{};
           }
         }));
+
+        // ★ **平台侧信息**（周几 / 平台集数）—— 与库内集数**并行**拿。
+        //
+        // ## 为什么要"平台数 + 库内数"都显示（用户明确要求）
+        // > "显示平台数和库内数，这样我知道我库内的集数，
+        // >  也就可以去获取没在库的数了。"
+        // ⇒ 两数相减 = **你缺几集**，用户可据此去补。
+        //
+        // ## 为什么放在这里（而不是单独一段）
+        // 它和第 ② 段用**同一份** `subs`（订阅列表），放一起省一次遍历；
+        // 且 `_loadAll` 内顺序执行，`await` 它会拖长首屏 ⇒ 用**不阻塞**的方式：
+        // 先**不 await**，让它在后台跑完再 setState（见下面的 `_loadPlatform`）。
+        unawaited(_loadPlatform(subs));
+        // ★ TMDB 状态也**后台**拉（独立于周历；见 `_tmdbStatus`）
+        unawaited(_loadTmdbStatus());
 
         // ② 对订阅的剧逐部查（限并发 6，本机请求快）
         final tmdbSubs =
@@ -853,7 +889,6 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
     ref.read(libraryEpisodeCountProvider.notifier).set(libCount);
     setState(() {
       _weeks = weeks;
-      _progress = prog;
       _libNext = libNext;
       _libPlat = libPlat;
       _libMaxEp = libMaxEp;
@@ -934,6 +969,120 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
     }
   }
 
+  /// **拉 TMDB 的剧集状态**（独立于周历，见 `_tmdbStatus` 的说明）。
+  ///
+  /// ## 为什么值得单独一次请求
+  /// 用户的报障「体能之巅已完结却显示连载中」根因就是**周历超时连带状态丢失**。
+  /// 而状态只需 `/tv/{id}` 一次请求（周历要 2 次）⇒ 成功率高得多。
+  ///
+  /// ## 限并发
+  /// 与平台信息同理：限 **4** —— TMDB 在国内响应慢，并发高了全都会超时。
+  Future<void> _loadTmdbStatus() async {
+    final subs = await ref.read(subscriptionsProvider.future);
+    if (subs.isEmpty) return;
+    // ⚠️ TMDB Key 走 `sessionStore`（**不是** provider）——
+    //    与本文件 804 行 `_loadAll` 的既有用法一致。
+    final key = await ref.read(sessionStoreProvider).loadTmdbKey();
+    if (key == null || key.isEmpty) return;
+    // ⚠️ `calendarClientProvider` 返回**非空**类型（provider 内部保证），
+    //    所以不写 `if (client == null)` —— analyze 会报 dead_code。
+    final client = ref.read(calendarClientProvider);
+
+    // ⚠️ `CalendarSubscription` **没有 tmdbId 列**（读 `.g.dart` 确认）：
+    //    `source == 'tmdb'` 时 `sourceId` **就是** tmdbId；
+    //    `source == 'emby'` 时 `sourceId` 是 Emby SeriesId ⇒ 需要反向映射。
+    final byTmdb = <String, String>{};   // tmdbId → sourceId
+
+    // ① tmdb 源的：sourceId 直接用
+    for (final s in subs) {
+      if (s.source == 'tmdb' && s.sourceId.isNotEmpty) {
+        byTmdb[s.sourceId] = s.sourceId;
+      }
+    }
+
+    // ② emby 源的：用 `mapSeriesTmdbToId()` 反查（它已翻页取全 5710 条）
+    final embySubs = subs.where((x) => x.source != 'tmdb').toList();
+    if (embySubs.isNotEmpty) {
+      try {
+        // ⚠️ `embyApiProvider` 是 `Provider<MediaProvider?>`（未登录时为 null）
+        //    ⇒ 必须判空，否则 analyze 报 "receiver can be null"。
+        final api = ref.read(embyApiProvider);
+        if (api == null) {
+          debugPrint('[TmdbStatus] 无 Emby 会话，跳过 emby 源反查');
+        } else {
+        final map = await api.mapSeriesTmdbToId();
+        // map 是 `tmdbId → SeriesRef` ⇒ 反查 `seriesId → tmdbId`
+        final rev = <String, String>{};
+        map.forEach((tmdb, ref0) => rev[ref0.seriesId] = tmdb);
+        for (final s in embySubs) {
+          final tmdb = rev[s.sourceId];
+          if (tmdb != null && tmdb.isNotEmpty) byTmdb[tmdb] = s.sourceId;
+        }
+        }
+      } catch (e) {
+        debugPrint('[TmdbStatus] 映射反查失败（跳过 emby 源）: $e');
+      }
+    }
+    if (byTmdb.isEmpty) {
+      debugPrint('[TmdbStatus] 无可用 tmdbId，跳过');
+      return;
+    }
+
+    final out = <String, String>{};
+    final ids = byTmdb.keys.toList();
+    const batch = 4;
+    for (var i = 0; i < ids.length; i += batch) {
+      final chunk = ids.skip(i).take(batch).toList();
+      await Future.wait(chunk.map((id) async {
+        try {
+          final st = await client.fetchTvStatus(id, apiKey: key);
+          if (st != null && st.isNotEmpty) out[byTmdb[id]!] = st;
+        } catch (_) {
+          // 拿不到就跳过（不阻断其它剧）
+        }
+      }));
+    }
+    if (!mounted || out.isEmpty) return;
+    setState(() => _tmdbStatus = {..._tmdbStatus, ...out});
+    debugPrint('[TmdbStatus] 拿到 ${out.length}/${ids.length} 部的状态');
+  }
+
+  /// **拉「平台侧」信息**（周几 / 平台集数 / 是否在播 / 播出平台）。
+  ///
+  /// ## 为什么不 await（在 `_loadAll` 里 `unawaited`）
+  /// 上游是**第三方免费实例**（`danmaku-api.152468.xyz`），
+  /// 且每部要 **2 次请求**（search→bangumi）⇒ 11 部 = 22 次。
+  /// 若 await 它，首屏会被拖住（本仓库踩过"42 并发全部超时"）。
+  /// ⇒ **后台跑，拿到再 setState**；首屏永远不等它。
+  ///
+  /// ## 失败语义
+  /// 单个失败只影响那一部（`null` 也会写进缓存 ⇒ 不反复重试）；
+  /// 整个失败就保持空 Map ⇒ 卡片退回库内口径（**不报错、不伪装**）。
+  Future<void> _loadPlatform(List<CalendarSubscription> subs) async {
+    if (subs.isEmpty) return;
+    // 用**展示名**去搜（`titleCn` 优先，与 `_loadTimelineHits` 同口径）
+    final byTitle = <String, CalendarSubscription>{};
+    for (final s in subs) {
+      final t = (s.titleCn.isEmpty ? s.title : s.titleCn).trim();
+      if (t.isNotEmpty) byTitle[t] = s;
+    }
+    if (byTitle.isEmpty) return;
+    try {
+      final res = await fetchPlatformEpisodesBatch(
+        ref: ref,
+        titles: byTitle.keys.toList(),
+      );
+      if (!mounted) return;
+      final out = <String, PlatformEpisodes?>{};
+      for (final e in res.entries) {
+        final sub = byTitle[e.key];
+        if (sub != null) out[sub.sourceId] = e.value;
+      }
+      setState(() => _platform = out);
+    } catch (e) {
+      debugPrint('[Platform] 批量拉取失败（退回库内口径）: $e');
+    }
+  }
   /// 查"订阅剧在时刻表里的更新时刻"（**只读本地表，0 网络**）。
   Future<void> _loadTimelineHits() async {
     final db = ref.read(appDbProvider);
@@ -952,6 +1101,56 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
     if (mounted) setState(() => _timeline = hits);
   }
 
+  /// **生效周几**（State 级）—— **日历分桶 / 底栏角标 / 卡片** 三处共用。
+  ///
+  /// ## 用户规则（2026-10-13）
+  /// > 凡是 svip 提前更新的，vip 只能第二天更新的这种，
+  /// > 我们都以他**最新的更新时间**为准写入日历。
+  ///
+  /// ## 为什么必须是"取最早"（实测两个反向 case）
+  /// | 剧 | `airDate` 推的 | 「放送星期」| 真值（页面文案）|
+  /// |---|---|---|---|
+  /// | 遮天（腾讯）| **周二** | 周三 | 周二 = SVIP |
+  /// | 一斩苍穹（优酷）| 周二 | 空 | **周一** = SVIP（在本地时刻表）|
+  /// ⇒ 取"离今天最近的下一次"（gap 最小）才能同时覆盖。
+  ///
+  /// ## 为什么 State 里也要有一份（不能只留卡片的 getter）
+  /// 卡片的 `_weekday` 拿不到 State 的 `_weeks`/`_platform`；
+  /// 而分桶与角标在 State 里 ⇒ 两处必须**同一算法**，否则
+  /// 会出现"卡片说周二、日历排在周日"（用户已报此 bug）。
+  int? _effectiveWeekdayOf(String sourceId) {
+
+    // ★★ **按来源优先级取第一个**（不是比 gap —— 那是我上一版的错）
+    //
+    // ## 我上一版为什么错（用户让我自查查出来的）
+    // 我写的是"取**离今天最近**的下一次"（`gap = (wd-today+7)%7` 小者优先）。
+    // 今天周二时，一斩苍穹的候选 = {周一(SVIP), 周二(airDate=VIP)}
+    // ⇒ gap(周二)=0 < gap(周一)=6 ⇒ **选中周二** ❌
+    // 而用户明确："周二这边你不应该显示了" ⇒ 要**周一**。
+    //
+    // **根因**：用户说的"最新/最早"是 **SVIP 比 VIP 早一天** 那个"早"，
+    //          不是"距离今天多远"。两者是不同的语义。
+    //
+    // ## 正确规则
+    // ① `timeline.weekday`  —— 本地时刻表（**优酷文案里显式写了 SVIP**）
+    //                           实测一斩苍穹 = 周一（SVIP）
+    // ② `airedWeekday`      —— danmu `airDate`（实测遮天 = 周二 = SVIP）
+    // ③ `plat.weekday`      —— 「放送星期」= **VIP**（较晚 ⇒ 降级）
+    // ④ 库内周历             —— 兜底
+    final tl = _timeline[sourceId]?.weekday;
+    if (tl != null && tl >= 1 && tl <= 7) return tl;
+    final air = _platform[sourceId]?.airedWeekday;
+    if (air != null && air >= 1 && air <= 7) return air;
+    final wk = _platform[sourceId]?.weekday;
+    if (wk != null && wk >= 1 && wk <= 7) return wk;
+    final days = _weeks[sourceId]?.days;
+    if (days != null) {
+      final ks = days.keys.where((k) => k >= 1 && k <= 7).toList()..sort();
+      if (ks.isNotEmpty) return ks.first;
+    }
+    return null;
+  }
+
   /// 把"今日更新的订阅数"写进 `todayUpdateCountProvider`（底栏角标）。
   ///
   /// ## 判据（与周历 `_countOn` 完全一致）
@@ -963,8 +1162,10 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
     for (final s in subs) {
       // 已完结的跳过（与"连载中"统计卡同一口径）
       if (s.status == '已完结') continue;
-      final w = weeks[s.sourceId];
-      if (w != null && w.days.containsKey(today)) n++;
+      // ★ 与**分桶**同一判据（`_effectiveWeekdayOf`）——
+      //   原来用 `weeks[..].days.containsKey(today)`（只看库内）
+      //   ⇒ 会出现"周日显示了某剧，但底栏角标没 +1"的矛盾。
+      if (_effectiveWeekdayOf(s.sourceId) == today) n++;
     }
     // ★ 直接由调用方传入 `subs`（`_loadAll` 顶部已 `await ...future` 拿到）
     //
@@ -1059,10 +1260,16 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
         }
         final today = DateTime.now().weekday;
         // 该天要显示的订阅（按"今天/更新集号"排）
+        //
+        // ★ 分桶改用**生效周几**（平台 SVIP 优先 + 库内兜底）—— 用户报障：
+        //   "然后你周日怎么又显示凡人修仙传的更新了"
+        //   根因：原来只看 `_weeks`（**库内**周历）⇒
+        //         平台说周六、库内排到周日 ⇒ **周日多出一部**。
+        //   ⇒ 改用与卡片**同一个** `_effectiveWeekdayOf`（单一事实源），
+        //     否则又会出现"卡片说周二、日历排在周日"的矛盾。
         final onDay = <CalendarSubscription>[];
         for (final s in list) {
-          final w = _weeks[s.sourceId];
-          if (w != null && w.days.containsKey(_sel)) onDay.add(s);
+          if (_effectiveWeekdayOf(s.sourceId) == _sel) onDay.add(s);
         }
         return Column(children: [
           _WeekBar(
@@ -1094,7 +1301,6 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
                           itemBuilder: (_, i) => _SubTile(
                             sub: onDay[i],
                             week: _weeks[onDay[i].sourceId],
-                            progress: _progress[onDay[i].sourceId],
                             // ★ 库内集数（详情页「已入库」用）
                             // 库内集数（provider 里的；子级也能 watch）
                             libCount: ref
@@ -1103,6 +1309,14 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
                             libNext: _libNext[onDay[i].sourceId],
                             libPlatform: _libPlat[onDay[i].sourceId],
                             libMaxEp: _libMaxEp[onDay[i].sourceId],
+
+                            // ★ 平台侧信息（周几 / **平台集数** / 是否在播 / 播出平台）
+
+                            //   —— 用户要求"显示平台数和库内数"（两数相减=你缺几集）
+
+                            plat: _platform[onDay[i].sourceId],
+            // ★ TMDB 状态（独立于周历 —— 周历超时时它仍可用）
+            tmdbStatus: _tmdbStatus[onDay[i].sourceId],
                             timeline: _timeline[onDay[i].sourceId],
                             isToday: _sel == today,
                           ),
@@ -1243,11 +1457,13 @@ class _SubTile extends ConsumerWidget {
   const _SubTile({
     required this.sub,
     this.week,
-    this.progress,
     this.libCount,
     this.libNext,
     this.libPlatform,
     this.libMaxEp,
+    // ★ 平台侧信息（周几 / **平台集数** / 是否在播 / 播出平台）
+    this.plat,
+    this.tmdbStatus,
     this.timeline,
     this.isToday = false,
   });
@@ -1258,9 +1474,6 @@ class _SubTile extends ConsumerWidget {
   /// **库内已入库的集数**（null = 库里没有 / 未查到）⇒ 传给详情页显示「已入库」。
   final int? libCount;
 
-  /// `(已看集数, 总集数)`；null = Emby 里没匹配到（**不编数字**）。
-  final (int, int)? progress;
-
   /// 今天是否更新（左侧 3px 竖条用）。
   final bool isToday;
 
@@ -1269,8 +1482,11 @@ class _SubTile extends ConsumerWidget {
     // ⚠️ fallback **必须过 `statusCnOf`** —— 真机踩到：
     //    `week` 为 null（库内命中、未走日历）时，fallback 直接把
     //    Emby 的英文原值 `Continuing` 交给 UI ⇒ 卡片显示 "Continuing"。
-    final cn = week?.statusCn ??
-        (sub.status.isEmpty ? null : statusCnOf(sub.status));
+    // ★ **平台数据优先**（`isOnAir` 能纠正 Emby 的过期 `Status`）
+
+    //   真机实例：「体能之巅」Emby 说 Continuing，平台说已完结（见 `_statusCn`）。
+
+    final cn = _statusCn;
     final eps = week?.days.values.expand((x) => x).toList() ?? const <int>[];
     return GestureDetector(
       onTap: () => _open(context, ref),
@@ -1330,7 +1546,86 @@ class _SubTile extends ConsumerWidget {
   }
 
   /// 卡片内容（拆出来是为了让 [build] 只负责"包点击"）。
+  /// **「平台数 + 库内数」的 chips**（用户 2026-10-13 要求）。
+  ///
+  /// ## 用户原话
+  /// > "显示平台数和库内数，这样我知道我库内的集数，
+  /// >  也就可以去获取没在库的数了。"
+  ///
+  /// ## 三个数字的分工
+  /// · `mine`  = 库内最大集号（**你手上有几集**）
+  /// · `platN` = 平台已更新集数（**平台放到第几集**）
+  /// · 相减    = **你缺几集**（最可行动的数字）
+  ///
+  /// ## 三态
+  /// | 情形 | chips |
+  /// |---|---|
+  /// | 库内+平台，平台更多 | `E6` `平台 16 集` `缺 10 集` |
+  /// | 库内+平台，平台不多 | `E6` `平台 16 集` |
+  /// | 只有库内 | `更新至 E6`（原行为）|
+  /// | 只有平台 | `平台 16 集` |
+  /// | 都没有 | 空 |
+  ///
+  /// ## ⚠️ 为什么是方法而不是内联 `if {...}`
+  /// `Wrap(children: [...])` 是**表达式列表** —— 里面写多语句的
+  /// `if (x) { a(); b(); }` 会被 Dart 当成 **Set 字面量**
+  /// （实测报 `The element type 'Set<Widget>' can't be assigned to 'Widget'`）。
+  /// **平台侧"已更新到第几集"** —— ★ 用**已播出**数，不是上游总数。
+  ///
+  /// ## 用户报障
+  /// > "遮天周二是今天更新 **185** 集，不是你标注的平台更新 **190** 集"
+  ///
+  /// ## 实测根因
+  /// `episodes[]` **含未播出的预约集**（遮天有 5 集在未来：
+  /// 第186集 2026-10-20、第187集 2026-10-27 …
+  /// 直到 第190集 2026-11-17）⇒ 直接数长度会**超前 5 集**。
+  ///
+  /// ## 兜底
+  /// `aired` 拿不到（无 airDate 字段）时退回 `updated`（总数）
+  /// —— 那至少不是凭空编的。
+  int? get _platCount {
+    final p = plat;
+    if (p == null) return null;
+    return p.aired ?? p.updated;
+  }
+
+  List<Widget> _epChips(int mine, int? platN) {
+    if (mine > 0 && platN != null && platN > 0) {
+      return [
+        _chip('E$mine', Cf.accent),
+        _chip('平台 $platN 集', Cf.text2),
+        // **缺几集**单独一个 chip —— 那是最可行动的数字
+        if (platN > mine) _chip('缺 ${platN - mine} 集', Cf.warn),
+      ];
+    }
+    if (mine > 0) return [_chip('更新至 E$mine', Cf.accent)];
+    if (platN != null && platN > 0) {
+      return [_chip('平台 $platN 集', Cf.accent)];
+    }
+    return const [];
+  }
+
   Widget _content(String? cn, List<int> eps) {
+    // ★ 「平台数 + 库内数」的两个数字（用户 2026-10-13 要求）
+    //
+    // ## 用户原话
+    // > "显示平台数和库内数，这样我知道我库内的集数，
+    // >  也就可以去获取没在库的数了。"
+    //
+    // ## 三个数字的分工
+    // · `mine`  = 库内最大集号（**你手上有几集**）
+    // · `platN` = 平台已更新集数（**平台放到第几集**）
+    // · 相减    = **你缺几集**（可行动：去补）
+    //
+    // ⚠️ 必须在**方法体的语句区**声明 —— `children: [...]` 是表达式列表，
+    //    里面不能放 `final` 语句（实测报 `Expected an identifier`）。
+    final mine = (libMaxEp ?? 0) > 0
+        ? libMaxEp!
+        : (eps.isNotEmpty
+            ? eps.reduce((a, b) => a > b ? a : b)
+            : 0);
+    // ★ 用**已播出**数（用户："今天更新 185 集"，不是 190）
+    final platN = _platCount;
     return Padding(
       padding: const EdgeInsets.symmetric(
           horizontal: Cf.gap4, vertical: Cf.gap2),
@@ -1401,11 +1696,26 @@ class _SubTile extends ConsumerWidget {
               // ## 两级
               // 1. 库内最大集号（`libMaxEp`）—— 最准
               // 2. 没有 ⇒ 退回周历
-              if ((libMaxEp ?? 0) > 0)
-                _chip('更新至 E$libMaxEp', Cf.accent)
-              else if (eps.isNotEmpty)
-                _chip('更新至 E${eps.reduce((a, b) => a > b ? a : b)}',
-                    Cf.accent),
+              // ══════ ★ 「平台数 + 库内数」并排（用户 2026-10-13 要求）══════
+              //
+              // ## 用户原话
+              // > "显示平台数和库内数，这样我知道我库内的集数，
+              // >  也就可以去获取没在库的数了。"
+              //
+              // ## 三个数字的分工
+              // · `mine` = 库内最大集号（**你手上有几集**）
+              // · `plat.updated` = 平台已更新集数（**平台放到第几集**）
+              // · 两者相减 = **你缺几集**（可行动：去补）
+              //
+              // ## 文案三态（对齐现有风格）
+              // · 有库内+平台，且平台更多 ⇒ `E6` `平台 16 集` `缺 10 集`
+              // · 有库内+平台，平台不多   ⇒ `E6` `共 16 集`
+              // · 只有库内（现状）        ⇒ `更新至 E6`
+              // · 只有平台                ⇒ `平台 16 集`
+              // ⚠️ 用**局部函数返回列表**而不是 `if {...}` 语句块 ——
+              //    `children: [...]` 是**表达式列表**，多语句的 `{ }` 会被当成
+              //    **Set 字面量**（实测报 `Set<Widget> can't be assigned`）。
+              ..._epChips(mine, platN),
             ]),
             // ★ 「下次更新」提醒（2026-10-12 用户指出少了这个）
             //
@@ -1435,7 +1745,7 @@ class _SubTile extends ConsumerWidget {
               ]),
             ],
             const SizedBox(height: 6),
-            _progressBar(),
+            _libraryBar(),
           ]),
         ),
       ]),
@@ -1507,6 +1817,32 @@ class _SubTile extends ConsumerWidget {
       final head = when.isEmpty ? '下次更新：${cn[dd]}' : '下次更新：$when ${cn[dd]}';
       return at == null ? head : '$head $at';
     }
+
+    // ③ **平台「放送星期」**（本项接线：卡片周几用平台数据）
+    //
+    // ## 为什么加这一级
+    // ①② 都依赖**库内分集日期**。实测「财神窦占龙」库里只有 6 集、
+    // 若那几集没有 `PremiereDate` ⇒ ①② 全空 ⇒ 卡片**什么都不显示**。
+    // 而平台侧（弹弹play 聚合）有「放送星期: 星期日」（实测「仙逆」= 星期一、
+    // 「完美世界」= 星期五）⇒ **比不显示有用**。
+    //
+    // ## 优先级仍在最后
+    // 库内日期是**你自己的库**的事实（最贴实际），平台周几是通用排期表
+    // ⇒ 有库内数据时不覆盖（避免"库里明明给了 10-15，却显示周X"的矛盾）。
+    // ⚠️ 走 `_weekday`（**平台优先 + 库内兜底**）而不是 `plat?.weekday`：
+    //    平台没给「放送星期」时（实测一斩苍穹/财神窦占龙）还能退回库内周历。
+    final pw = _weekday;
+    if (pw != null) {
+      final gap = (pw - today + 7) % 7;
+      final when = switch (gap) {
+        0 => '今天',
+        1 => '明天',
+        _ => '',
+      };
+      final head =
+          when.isEmpty ? '下次更新：${cn[pw]}' : '下次更新：$when ${cn[pw]}';
+      return at == null ? head : '$head $at';
+    }
     return null; // **不显示**"待定"
   }
 
@@ -1524,14 +1860,166 @@ class _SubTile extends ConsumerWidget {
   /// **库内最大集号**（"更新至 EN"用 —— **以库为准**，用户明确要求）。
   final int? libMaxEp;
 
+  /// **平台侧信息**（周几 / 平台集数 / 是否在播 / 播出平台）。
+  ///
+  /// 数据源是**内置弹幕源**（弹弹play 兼容 API）——
+  /// 它已统一 20+ 平台，无需逐家对接。
+  /// null = 还没拿到 / 未配源 ⇒ 卡片退回**库内口径**。
+  final PlatformEpisodes? plat;
+
+  /// **TMDB 剧集状态**（`Ended` / `Returning Series` …；null = 没拿到）。
+  ///
+  /// ## 为什么与 `week?.statusCn` 并存
+  /// `week` 依赖 `fetchWeekEpisodes` **成功**（2 次请求，实测常超时）；
+  /// 本字段来自**独立**的 1 次请求 ⇒ 周历挂了它还在。
+  /// 判据链见 `_statusCn`。
+  final String? tmdbStatus;
   /// **时刻表条目**（B站官方索引；`null` = 没索引到）。
   final AnimeTimeline? timeline;
 
-  /// 生效的平台名（**库内优先** —— 那是最准的）。
-  String get _platform =>
-      (libPlatform != null && libPlatform!.isNotEmpty)
-          ? libPlatform!
-          : sub.platform;
+  /// 生效的平台名（**多平台合并** —— 用户："多平台都显示，现在只显示第一个"）。
+  ///
+  /// ## 为什么要合并
+  /// 两个来源各有一半信息：
+  /// · **Emby `Studios`**（经 `libPlatform`/`sub.platform` 传入）—— 可能有**多个**
+  ///   （实测「财神窦占龙」= `iQiyi` + `bilibili`）
+  /// · **平台源**（`plat?.platform`）—— 通常是**单个**（`在线播放平台: 腾讯视频`）
+  /// ⇒ 取并集、去重、保持顺序（库内在前，因为那是你自己库的原始数据）。
+  ///
+  /// ⚠️ 去重是**必须的**：两个来源常给同一个平台（如都为"腾讯视频"），
+  ///    不去重会显示 `腾讯视频 · 腾讯视频`。
+  String get _platform {
+    // ⚠️ 用 `mergePlatforms`（**别名归一后再去重**）而不是纯字符串比较 ——
+    //    真机踩到：Emby 给 `Youku`、平台源给 `优酷` ⇒ 纯字符串比较会显示
+    //    `Youku · 优酷`（同一平台两次）。见 `kPlatformAlias`。
+    final merged = mergePlatforms([libPlatform, sub.platform, plat?.platform]);
+    return merged.join(' · ');
+  }
+
+  /// **生效的连载状态**（中文）—— **平台数据优先于 Emby**。
+  ///
+  /// ## ★ 为什么要用平台数据纠正 Emby（真机实例）
+  /// 「体能之巅：百人大挑战」（用户报障"好像已经完结了，怎么还显示连载中"）：
+  /// | 来源 | 判定 |
+  /// |---|---|
+  /// | **Emby `Status`** | `Continuing`（**缓存了 2 年的旧值**，`EndDate` 为空）|
+  /// | **TMDB**（本机实测）| `Ended`、末集 **2024-04-02** |
+  /// | **平台源 `isOnAir`** | `false` |
+  /// ⇒ Emby 的值**确定过期**（服务器只在扫描时抓一次元数据，之后不跟上游更新）。
+  ///
+  /// ## 判据
+  /// · `isOnAir == true`  ⇒ `连载中`
+  /// · `isOnAir == false` ⇒ `已完结`
+  /// · 拿不到 ⇒ 退回 Emby 的 `statusCnOf(...)`（**不猜**）
+  String get _statusCn {
+    // ① 平台源 `isOnAir` —— 最快（已在内存里，无额外请求）
+    final on = plat?.isOnAir;
+    if (on == true) return '连载中';
+    if (on == false) return '已完结';
+
+    // ② **TMDB 状态**（独立于周历）—— 真机修「体能之巅」的关键一级
+    //
+    // ## 为什么必须在 ③ 之前
+    // `week?.statusCn` 依赖 `fetchWeekEpisodes` **成功**（2 次请求）；
+    // 实测它频繁超时（`周历分集拉取失败: 超时`）⇒ 状态一起丢。
+    // 而 TMDB 这里只 1 次请求（6s 超时）⇒ **更可能拿到**。
+    final tm = tmdbStatus;
+    if (tm != null && tm.isNotEmpty) {
+      final cn = statusCnOf(tm);
+      // ⚠️ `statusCnOf` 对认不出的英文返回「未知」——
+      //    那种情况**继续往下兜底**，不要把"未知"当结论。
+      if (cn != '未知') return cn;
+    }
+
+    // ③ 周历里捎带的状态（可能因超时为空）
+    // ④ Emby 快照（最后一档，可能过期）
+    return statusCnOf(
+        week?.statusCn ?? (sub.status.isEmpty ? null : sub.status));
+  }
+
+  /// **生效的周几**（1..7；null = 都不知道）。
+  ///
+  /// ## 优先级：平台「放送星期」优先，库内周历兜底
+  /// · **平台源**（`metadata` 的 `放送星期: 星期日`）—— 权威播出日
+  /// · **库内周历**（分集 `PremiereDate` 推出的 `week`）—— 只覆盖**已入库**的集
+  ///   （实测「财神窦占龙」库里 6 集 ⇒ 只能推出已播的那几天）
+  /// ⇒ 平台有就用平台，没有才用库内。
+  ///
+  /// ⚠️ 实测**并非每部都有**「放送星期」（一斩苍穹/财神窦占龙 就没有）
+  ///    ⇒ 缺时返回 null，UI 不显示（不编）。
+  /// 候选周几（多个来源；最终由 `_weekday` **取最早**）。
+  List<int> get _weekdayCandidates {
+    final out = <int>[];
+    // 去重加入（同一周几可能被多个来源给出）
+    void add(int? wd) {
+      if (wd != null && wd >= 1 && wd <= 7 && !out.contains(wd)) out.add(wd);
+    }
+
+    // ① **本地时刻表** —— 优酷/爱奇艺详情页文案里**显式写了 SVIP**
+    //    实测一斩苍穹：文案「每周一10点SVIP更新，周二10点VIP可看」⇒ 周一 ✅
+    //    （这条最权威：它是平台自己写的 SVIP 标记，不是我们推断的）
+    add(timeline?.weekday);
+    // ② `airDate` 推的周几 —— 实测遮天 = 周二 = **SVIP 提前更新日** ✅
+    add(plat?.airedWeekday);
+    // ③ 平台「放送星期」—— 实测遮天 = 周三 = **VIP 正式日**（较晚 ⇒ 降级）
+    add(plat?.weekday);
+    // ④ 库内周历兜底
+    final days = week?.days;
+    if (days != null) {
+      final ks = days.keys.where((k) => k >= 1 && k <= 7).toList()..sort();
+      for (final k in ks) {
+        add(k);
+      }
+    }
+    return out;
+  }
+
+  /// **生效的周几** —— 用户规则："以 **SVIP** 的更新时间为准"。
+  ///
+  /// ## 用户原话（2026-10-13）
+  /// > 凡是 svip 提前更新的，vip 只能第二天更新的这种，
+  /// > 我们都以他**最新的更新时间**为准写入日历。
+  ///
+  /// ## ★ 为什么是"按来源优先级"而不是"比 gap"（我踩过的坑）
+  /// 我第一版写的是"取**离今天最近**的下一次"（`gap = (wd-today+7)%7` 小者优先）。
+  /// 今天周二时，一斩苍穹的候选 = {周一(SVIP), 周二(airDate)}：
+  /// ```
+  /// gap(周二)=0  <  gap(周一)=6   ⇒ 选中周二  ❌
+  /// ```
+  /// 而用户明确"周二这边你不应该显示了" ⇒ 要**周一**。
+  ///
+  /// **根因**：用户说的"最早"是 **SVIP 比 VIP 早一天** 那个"早"，
+  /// 不是"距离今天多远"—— 两者是**不同的语义**，不能混用。
+  ///
+  /// ## 优先级（越前越权威）
+  /// ① `timeline`（本地时刻表：优酷文案**显式写 SVIP**）② `airDate`
+  /// ③ 放送星期（= VIP，较晚）④ 库内周历
+  ///
+  /// ## 实测两个反向 case
+  /// | 剧 | `airDate` 推的 | 「放送星期」| 真值（页面文案）|
+  /// |---|---|---|---|
+  /// | 遮天（腾讯）| **周二** | 周三 | 周二（SVIP）|
+  /// | 一斩苍穹（优酷）| 周二 | 空 | **周一**（SVIP，在本地时刻表里）|
+  /// ⇒ 只看 `airDate` 会漏一斩苍穹；只看「放送星期」会漏遮天。
+  ///   **只有"取最早"能同时覆盖两者**。
+  ///
+  /// ## "最早"怎么比（周几是循环的）
+  /// 真实语义 = 「**离今天最近的下一次**」⇒ `(wd - today + 7) % 7`，小者更早。
+  int? get _weekday {
+    // ★ **按来源优先级取第一个**（与 State 的 `_effectiveWeekdayOf` 同规则）
+    //
+    // ## 我上一版为什么错（自查）
+    // 写成"取离今天最近的下一次"⇒ 周二时一斩苍穹会选中**周二(VIP)**，
+    // 而用户要**周一(SVIP)**（"周二这边你不应该显示了"）。
+    // "SVIP 早一天"的"早" ≠ "离今天近"。
+    //
+    // ## 优先级
+    // ① 本地时刻表（优酷文案显式写 SVIP）② airDate ③ 放送星期(VIP) ④ 库内
+    for (final wd in _weekdayCandidates) {
+      if (wd >= 1 && wd <= 7) return wd;
+    }
+    return null;
+  }
 
   /// **生效的更新时刻**（`HH:mm`；null = 不知道）。
   ///
@@ -1577,42 +2065,57 @@ class _SubTile extends ConsumerWidget {
                 color: const Color(0xFF7DD96F))),
       );
 
-  Widget _progressBar() {
-    final p = progress;
-    if (p == null) {
-      // Emby 里没有这部剧 ⇒ **不编造进度**，如实说明
-      return Text('不在媒体库 · 无法显示进度',
-          style: Cf.micro.copyWith(fontSize: 10, color: Cf.text3));
-    }
-    final (unplayed, total) = p;
-    // 总集数未知（-1）⇒ 只显示剩余，**不编分母**
-    if (total <= 0) {
-      // ⚠️ 文案**不断言用户行为**（真机观察：库里集被批量标 `Played`
-      //    ⇒ 显示"已看完"会让用户以为 App 乱说）。
-      //    ⇒ 只陈述**数据事实**："无未看集"。
-      return Text(unplayed == 0 ? '无未看集' : '剩 $unplayed 集',
-          style: Cf.micro.copyWith(
-              fontSize: 10,
-              color: unplayed == 0 ? Cf.success : Cf.text3));
-    }
-    final played = (total - unplayed).clamp(0, total);
+  /// **库内 / 平台的集数对比条**（用户 2026-10-13 要求）。
+  ///
+  /// ## 用户原话
+  /// > "应该显示的不是 7/7 已看，而是**已入库集数和平台更新数**。"
+  ///
+  /// ## 与旧实现（`_progressBar`）的区别
+  /// | | 旧 | 新 |
+  /// |---|---|---|
+  /// | 分子 | 已看集数 | **已入库集数**（`libCount`）|
+  /// | 分母 | 库内总集数 | **平台更新数**（`plat.updated`）|
+  /// | 语义 | 我看了多少 | **我收藏了几成** |
+  ///
+  /// ⇒ 用户要的是后者：一眼看出"库里差几集没收到"（差多少已在 chips 里显示）。
+  ///
+  /// ## 三态（缺数据不编，§5.3/§5.5）
+  /// · 库内+平台 ⇒ 画条 + `已入库 7 集 · 平台 18 集`
+  /// · 只有其一 ⇒ 只显示文字（**不画条**，因为没有分母）
+  /// · 都没有     ⇒ 不显示
+  Widget _libraryBar() {
+    final mine = libCount ?? libMaxEp;
+    // ★ 用**已播出**数（用户："今天更新 185 集"，不是 190）
+    final platN = _platCount;
+    if (mine == null && platN == null) return const SizedBox.shrink();
+
+    // 文字部分
+    final parts = <String>[
+      if (mine != null) '已入库 $mine 集',
+      if (platN != null && platN > 0) '平台 $platN 集',
+    ];
+    final text = Text(parts.join(' · '),
+        style: Cf.micro.copyWith(fontSize: 10, color: Cf.text3));
+
+    // 只有一边 ⇒ 不画条（分母未知，画出来是假进度）
+    if (mine == null || platN == null || platN <= 0) return text;
+
+    // 两边都有 ⇒ 画「库内 / 平台」占比
+    final ratio = (mine / platN).clamp(0.0, 1.0);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       ClipRRect(
         borderRadius: BorderRadius.circular(Cf.radiusXs),
         child: LinearProgressIndicator(
-          value: total == 0 ? 0.0 : (played / total).clamp(0.0, 1.0),
+          value: ratio,
           minHeight: 3,
           backgroundColor: const Color(0x1AFFFFFF),
+          // 收满 ⇒ 绿（与"无未看集"同色系）；没收满 ⇒ 品牌色
           valueColor: AlwaysStoppedAnimation(
-              unplayed == 0 ? Cf.success : Cf.accent),
+              ratio >= 1.0 ? Cf.success : Cf.accent),
         ),
       ),
       const SizedBox(height: 3),
-      // ⚠️ `已追完` 改为 `无未看集` —— 见上面同处的说明：
-      //    `unplayed == 0` 只证明"库里没有未看的集"，
-      //    **不能**推出"用户看完了"（库里可能被批量标记）。
-      Text(unplayed == 0 ? '已看 $played/$total · 无未看集' : '已看 $played/$total · 剩 $unplayed 集',
-          style: Cf.micro.copyWith(fontSize: 10, color: Cf.text3)),
+      text,
     ]);
   }
 
