@@ -776,6 +776,12 @@ class _TrackingCard extends StatelessWidget {
                   : Image.network(
                       poster,
                       fit: BoxFit.cover,
+                      // ★ 减少解码量：显示 140dp，海报原图常见 500×750
+                      //   （`cacheWidth` 是物理像素 ⇒ × DPR；不写死数字以适配平板/折叠屏）
+                      cacheWidth:
+                          (140 * MediaQuery.devicePixelRatioOf(context))
+                              .round()
+                              .clamp(420, 1080),
                       // 失败降级为占位（§6.4.1：不留破图）
                       errorBuilder: (_, __, ___) => _fallback(),
                       loadingBuilder: (context, child, p) =>

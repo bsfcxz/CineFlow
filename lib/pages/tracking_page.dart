@@ -1226,13 +1226,38 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
   }
 
   /// 某天有更新的订阅数（给周历小红点用）。
-  int _countOn(int weekday) {
+  ///
+  /// ## ★ 必须与**分桶**用同一判据（真机踩到）
+  /// 原实现只看 `_weeks.values`（**库内**周历）：
+  /// ```dart
+  /// for (final w in _weeks.values) {
+  ///   if (w.days.containsKey(weekday)) n++;     // ❌ 旧判据
+  /// }
+  /// ```
+  /// ⇒ 真机出现：**周三徽标显示 5，列表却是「这一天没有订阅剧更新」**
+  ///   （分桶已改用 `_effectiveWeekdayOf`，徽标还是旧的）。
+  ///
+  /// ⇒ 现在统一走 `_effectiveWeekdayOf`（**单一事实源**）。
+  ///   这是本仓库反复强调的"同一事实必须收敛到一个函数"
+  ///   —— 本轮我改了分桶与底栏角标，**漏了这个徽标**，靠真机截图才发现。
+  /// ## ★ 必须与列表用**同一份订阅集**（真机踩到第二次）
+  /// 我第一次只把它从 `_weeks` 换成"全部订阅的并集"，但**仍与列表不一致**：
+  /// ```dart
+  /// final list = all.where(按 widget.only 过滤)...   // 列表只显示"连载中"侧
+  /// for (final s in _allSubsForCount)                 // ❌ 徽标算了两侧
+  /// ```
+  /// ⇒ 真机截图：**周三徽标 1、列表「这一天没有订阅剧更新」**。
+  ///
+  /// ⇒ 现在由 `build` 把**过滤后的** `list` 传进来 ⇒ 两处**必然一致**。
+  int _countOn(int weekday, List<CalendarSubscription> list) {
     var n = 0;
-    for (final w in _weeks.values) {
-      if (w.days.containsKey(weekday)) n++;
+    for (final s in list) {
+      if (_effectiveWeekdayOf(s.sourceId) == weekday) n++;
     }
     return n;
   }
+
+
 
   @override
   Widget build(BuildContext context) {
@@ -1276,7 +1301,9 @@ class _SubscribedCalendarState extends ConsumerState<_SubscribedCalendar> {
             selected: _sel,
             today: today,
             loading: _loading,
-            countOn: _countOn,
+            // ★ 传**过滤后的** `list` —— 与下面的 `onDay` 分桶同源，
+            //   否则徽标与列表会不一致（真机踩到：徽标 1、列表空）。
+            countOn: (wd) => _countOn(wd, list),
             onSelect: (d) => setState(() => _sel = d),
           ),
           const Divider(height: 1),
@@ -1491,7 +1518,7 @@ class _SubTile extends ConsumerWidget {
     return GestureDetector(
       onTap: () => _open(context, ref),
       behavior: HitTestBehavior.opaque,
-      child: _content(cn, eps),
+      child: _content(context, cn, eps),
     );
   }
 
@@ -1605,7 +1632,9 @@ class _SubTile extends ConsumerWidget {
     return const [];
   }
 
-  Widget _content(String? cn, List<int> eps) {
+  /// ⚠️ 需要 `context`（`Image.network` 的 `cacheWidth` 要乘
+  /// `devicePixelRatioOf(context)` —— 见其中说明）。
+  Widget _content(BuildContext context, String? cn, List<int> eps) {
     // ★ 「平台数 + 库内数」的两个数字（用户 2026-10-13 要求）
     //
     // ## 用户原话
@@ -1653,8 +1682,23 @@ class _SubTile extends ConsumerWidget {
             height: 80,
             child: sub.posterUrl.isEmpty
                 ? _fb()
+                // ★ `cacheWidth` 减少解码量（流畅度优化）
+                //
+                // ## 为什么这里收益最大
+                // 显示只有 56×80，而海报原图常见 500×750 ⇒
+                // 原来按**原始像素**解码（≈8.9 倍多余的像素）⇒ 一屏十几张时
+                // 解码耗时与内存都放大。
+                //
+                // ## 为什么用 `devicePixelRatio` 动态算而不是写死
+                // `cacheWidth` 单位是**物理像素**，须 × DPR；且折叠屏/平板的
+                // DPR 与屏宽都不同 ⇒ 写死数字会糊。
+                // `clamp` 下限 240：极低 DPR 时也给足清晰度。
                 : Image.network(sub.posterUrl,
                     fit: BoxFit.cover,
+                    cacheWidth:
+                        (56 * MediaQuery.devicePixelRatioOf(context))
+                            .round()
+                            .clamp(240, 720),
                     errorBuilder: (_, __, ___) => _fb(),
                     loadingBuilder: (c, ch, p) => p == null ? ch : _fb()),
           ),
