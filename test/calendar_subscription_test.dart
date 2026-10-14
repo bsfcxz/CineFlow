@@ -78,8 +78,20 @@ void main() {
       expect(c.contains('if (from == 2)'), isFalse,
           reason: '★★★ from == 2 是**错的**（真实事故）');
       // 加列必须用 addColumn（不能 drop+create，那会丢用户订阅）
-      expect(c.contains('m.addColumn(calendarSubscriptions'), isTrue,
-          reason: '★★★ 加列要用 addColumn 保住已有订阅数据');
+      //
+      // ⚠️ 断言守的是**本意**（"用 ALTER 保数据"），不是**字面量** ——
+      //    我后来把加列改成幂等版 `_addColumnIfMissing`，原来匹配
+      //    `m.addColumn(calendarSubscriptions` 的写法**假失败**了。
+      //    （与本文件下面"逐表检查"那条注释同一类问题：断言绑字面量
+      //      会在重构时假失败，绑本意才守得住。）
+      expect(c.contains('addColumn'), isTrue,
+          reason: '★★★ 加列要用 ALTER ADD COLUMN（保住已有订阅数据）');
+      expect(c.contains('_addColumnIfMissing('), isTrue,
+          reason: '★★★ 加列必须走**幂等版** —— 裸 addColumn 会在'
+              'user_version 落后时重复加列 ⇒ duplicate column 崩溃（用户上报）');
+      // 严禁重建表（那是"丢用户订阅"的做法）
+      expect(c.contains('dropTable'), isFalse,
+          reason: '★★★ 迁移里不许 dropTable —— 那会清掉用户已订阅的剧');
     });
 
     test('★★ 新表必须注册进 @DriftDatabase', () {
@@ -203,4 +215,69 @@ void main() {
       expect(c.contains('_TrackingCard'), isTrue);
     });
   });
+  group('*** 迁移必须幂等（用户上报的真实崩溃）', () {
+    // ## 崩溃原文（用户在新手机上登录时报的）
+    // ```
+    // SqliteException(1): duplicate column name: status
+    // Causing statement: ALTER TABLE "calendar_subscriptions"
+    //                    ADD COLUMN "status" TEXT NOT NULL DEFAULT ''
+    // ```
+    //
+    // ## 根因（查 drift 源码确认）
+    // * `Migrator.addColumn`（drift migration.dart:473）直接 ALTER，
+    //   没有任何"列已存在"检查
+    // * 而 `onUpgrade` 的 `from < N` 条件假设 user_version 一定准确
+    // => 只要版本号落后于实际结构（开发期反复改 schema、从备份恢复、
+    //    跨设备复制库文件）=> 重复加列 => 启动即崩
+    //
+    // ## 为什么既有测试抓不到
+    // 既有测试只断言"有没有写迁移"，没断言"重复执行会不会炸"
+    // => 幂等性是个盲区。
+
+    test('加列必须走幂等版（_addColumnIfMissing）', () {
+      final c = code('lib/data/db/app_database.dart');
+      expect(c.contains('_addColumnIfMissing'), isTrue,
+          reason: '必须有幂等加列辅助 —— 否则 user_version 落后时重复加列崩溃');
+      expect(c.contains('Future<void> _addColumnIfMissing'), isTrue,
+          reason: '辅助方法本身要在');
+    });
+
+    test('onUpgrade 里禁止裸 m.addColumn', () {
+      final c = code('lib/data/db/app_database.dart');
+      // 只允许出现在幂等辅助方法内部（那里已经先查过列存在）
+      final bare = RegExp(r'await\s+m\.addColumn\(');
+      final hits = bare.allMatches(c).length;
+      expect(hits, lessThanOrEqualTo(1),
+          reason: '裸 m.addColumn 只能出现在 _addColumnIfMissing 里'
+              '（实测找到 ' + hits.toString() + ' 处）—— 别处出现就意味着'
+              '又埋了一个 duplicate column 崩溃');
+    });
+
+    test('手写 ALTER TABLE ADD COLUMN 也必须先查列存在', () {
+      final c = code('lib/data/db/app_database.dart');
+      final checks = RegExp(r'_columnNames\(').allMatches(c).length;
+      expect(checks >= 2, isTrue,
+          reason: '手写 ALTER 前必须查列（实测找到 ' +
+              checks.toString() + ' 处 _columnNames 调用，应至少 2 处：'
+              'status 与 synced_to_server）');
+    });
+
+    test('_healSchema 的 expected 必须覆盖所有新增列', () {
+      final c = code('lib/data/db/app_database.dart');
+      for (final col in const ['status', 'synced_to_server']) {
+        expect(c.contains("'" + col + "'"), isTrue,
+            reason: '自愈 expected 漏了 ' + col + ' => 该列永远不会被自动补上');
+      }
+    });
+
+    test('beforeOpen 自愈仍在（最后一道防线）', () {
+      final c = code('lib/data/db/app_database.dart');
+      expect(c.contains('beforeOpen:'), isTrue,
+          reason: '自愈是不依赖版本号的兜底 —— 删了它会退回'
+              '"版本号不对就永远修不好"的老问题');
+      expect(c.contains('PRAGMA table_info'), isTrue,
+          reason: '自愈靠实查 PRAGMA table_info（不信版本号）');
+    });
+  });
+
 }
