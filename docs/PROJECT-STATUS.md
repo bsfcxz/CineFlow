@@ -17,7 +17,7 @@
 
 ### 与原始计划书的关系
 
-原始计划书在 `C:\Users\<user>\Desktop\cineflow.html`（**注意：不在仓库内**，AGENTS.md 写的
+原始计划书在 `<workspace>\cineflow.html`（**注意：不在仓库内**，AGENTS.md 写的
 `../cineflow.html` 路径是错的，实际在上一层目录）。
 
 计划书 v2.0 定的是「Flutter + Go 内嵌服务层 + Synurang/FFI」架构与八阶段路线图。
@@ -317,4 +317,4 @@ APK 入口污染检测、PowerShell BOM 检测，都实测"制造问题→报红
 ---
 
 *本报告由实测数据生成（测试数量、代码行数、APK 指纹均为命令输出，非估算）。
-计划书原件见 `C:\Users\<user>\Desktop\cineflow.html`。*
+计划书原件见 `<workspace>\cineflow.html`。*

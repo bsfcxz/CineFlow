@@ -44,7 +44,10 @@ $ErrorActionPreference = 'Continue'
 # ---------- 定位 ffmpeg ----------
 $ff = $null; $fp = $null
 $candidates = @(
-    'C:\Users\<user>\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin'
+    # ⚠️ **不要硬编码某个人的 ffmpeg 绝对路径**：
+    #    · 隐私：会暴露开发机用户名
+    #    · **功能**：别人克隆后该路径必然不存在
+    #    ⇒ 只靠 PATH 里的 `ffmpeg`
 )
 foreach ($d in $candidates) {
     if (Test-Path (Join-Path $d 'ffmpeg.exe')) {

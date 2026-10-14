@@ -3000,7 +3000,7 @@ HK-Emby  2024-12-22T16:00:00.0000000Z   ← 16:00Z = 北京次日 00:00
 ④ Emby 进度（**也已聚合所有服务器**，取未看数较大者）
 ```
 
-## 五、真机验证（Redmi K40 / <device>）
+## 五、真机验证（Redmi K40）
 
 ```
 底栏：首页 | 追剧 | 热播🔥 | 我的                    ✅
@@ -3354,3 +3354,489 @@ RenderFlex overflowed: 0 次 ✅
 | 1 | `as String?` 硬转（上游给 int 就崩）| **单测 ⑤**（fixture 用 `animeTitle: 123`）|
 | 2 | 删除残留时**全文件按模式扫**，误删卡片在用的 `add` ⇒ 4 error | analyze |
 | 3 | `ref.read(p).value` 在 AsyncNotifier 未就绪时是 null ⇒ 静默跳过（第 8 次）| **真机 dump + 零日志** |
+
+---
+
+## 2026-10-14（下半场）Trakt 接入 / 背景底色六档 / WebView / 审计
+
+### ① Trakt 接入（设备码流程 + 内置 WebView）
+
+**用户要求**：接入 Trakt 登录与同步；Client ID **内置且"加密"**。
+
+#### ★ 先纠正我自己的两个错误结论（都靠实测推翻）
+| 我一度说 | 实测真相 |
+|---|---|
+| "**api.trakt.tv 被 Cloudflare 边缘拦截，注册 key 也没用**" | ❌ **错**。那是我用**假 key**（`'1234'`/64 个 `'a'`）测的。**真实 Client ID 一切正常**：`/shows/1388` → 200，设备侧 0.76~0.93s（比 TMDB 的 1.78s **快一倍**）|
+| "Client ID 加密内置能防止别人用你的应用" | ⚠️ **做不到**。实测：明文在 `POST /oauth/device/code` 的 body 里；换任意 UA / 伪造 Referer 都能拿到授权码（**服务端不校验来源**）。Trakt 自己也在 PKCE 应用页写着"**没有秘密要守护**" |
+
+#### 认证方式：**设备码流程**（不是 PKCE 回调）
+实测（`POST /oauth/device/code`）：
+```
+→ 200 { user_code:"KY5QEMVZ", verification_url:"https://auth.trakt.tv/activate",
+        expires_in:600, interval:6 }
+轮询 POST /oauth/device/token {code, client_id}:
+  400（**body 为空**）= 等待用户授权 ⇒ 继续轮询
+  404（**body 为空**）= 码无效/过期   ⇒ 重新申请
+  200               = 成功
+```
+★ **body 恒为空 ⇒ 只能靠 HTTP 状态码判**。
+⚠️ 不要写 `if (body['error'] == 'authorization_pending')` —— 那**永远不成立**。
+
+**为什么选设备码而不是 PKCE 回调**：
+1. 用户配置的重定向 URI 曾多写 `https://` 前缀（畸形）⇒ 设备码**没有回调**，绕开
+2. Trakt 后台对自定义 scheme 报「不安全重定向 URI」警告 ⇒ 设备码无此问题
+3. **不用装 `app_links`**（项目未装）
+
+**授权页能否嵌入**（实测）：
+```
+设备侧 GET /activate → 302 → /signin?callbackURL=%2Factivate
+该页 <title>登录 Trakt</title>，**无 X-Frame-Options / 无 CSP** ⇒ 可嵌入
+用 **htmx**（服务端渲染，非 SPA）⇒ 开 JS 即可，**不需要 URL 拦截**
+```
+⚠️ **必须给"在浏览器中打开"兜底**：Trakt 登录页支持 Google/Apple 登录，
+而 Google **明确禁止**在嵌入式 WebView 里做 OAuth（`disallowed_useragent`，
+判据是 UA 含 `; wv)`）⇒ 邮箱登录可用 WebView，Google 必须跳浏览器。
+
+**内置 Client ID 的"签名绑定混淆"**（用户要求 B 方案）：
+```
+key = SHA-256(签名证书SHA-256 | packageName | "cineflow.trakt.v1")
+密文 = base64(明文 XOR key)
+```
+· ✅ 挡住：换签名重打包、改包名搬运、`grep` 顺手拿走
+· ❌ **挡不住反编译**（签名指纹也在 APK 里）⇒ **是混淆，不是加密**
+  —— 代码注释里如实标注了（`builtin_secret.dart`）
+· 签名指纹用 `apksigner verify --print-certs` 核对过
+  （`088fef…1245`）；⚠️ **不要用 `dumpsys package` 的 `signatures=xxx`
+  ——那是另一个摘要**（实测不一致，会白做）
+
+**状态**：代码完成（analyze 0/0、test 1433 全绿、装机成功），
+但真机点「登录」得到 **HTTP 401**（PC 用同一 ID 是 200）
+⇒ 疑似该 Client ID 已被 Trakt 停用（用户改过重定向 URI 可能重建了应用）
+⇒ **待用户确认后台的当前 Client ID**。
+
+### ② 背景底色：**六档 + 自定义**（用户三次纠正后的最终形态）
+
+**用户原话演进**（我三次理解偏）：
+1. "背景色先写一下，白色，毛玻璃，透明（0-100）可自己调整"
+2. "不是哦 背景底色就 透明 半透明 白色 浅白这种"
+3. "再加上我目前的深色，黑色" + "做一个可以自己调节的"
+
+**最终六档**（`CfBgKind`）：
+| 档 | 背景 | 文字 |
+|---|---|---|
+| `dark` 深色 | 主题 bg（**= 改动前，默认**）| 主题浅色 |
+| `black` 黑色 | 纯黑 `0xFF000000`（OLED 省电）| 主题浅色 |
+| `clear` 透明 | alpha **0** | 主题浅色 |
+| `translucent` 半透明 | alpha 由 `bgOpacity`（0-100）| 主题浅色 |
+| `dimWhite` 浅白 | `0xFFF7F8FA` | **转深色** |
+| `solidWhite` 白色 | `0xFFFFFFFF` | **转深色** |
+| `custom` 自定义 | 用户选色 | **按亮度自动选** |
+
+**两条硬约束**（踩了出可见 bug）：
+1. **浅白/白色必须同时换文字为深色** —— 否则白底 + 浅字 = 对比度 0
+2. **透明/半透明只改 `bg`，不动 `surface`** —— 卡片要保持主题色才有层次
+
+**自定义档的文字色自动判断**（避免用户选亮色时白底白字）：
+```
+lum = 0.299R + 0.587G + 0.114B     （0-255）
+lum > 140 ⇒ 用深色文字
+```
+阈值 140 的依据：纯白 255 / 浅白 248 / 中灰 128 / 深蓝 15（中灰走浅字，
+其上浅字对比度 5.3:1 仍达标）。
+
+**UI**：六档按钮（每行 3 个）+ 透明度滑块（**仅透明/半透明显示**，
+其它档它对无效 ⇒ 显示了会让人以为坏了）+ 12 色调色板（仅自定义档显示）。
+
+**为什么需要 `CfBackground` 组件**（不只是改颜色）：
+`Cf.bg` 是 `Color` —— **做不到"模糊"**。全透明时下面也**必须有东西**。
+⇒ `cf_background.dart` 承载视觉实现（底图光斑 + 可选 `BackdropFilter`）。
+⚠️ **`Scaffold.backgroundColor` 必须透明**，否则盖住背景层
+（已在 `home_shell.dart` 设好）。
+
+### ③ 新增依赖：`webview_flutter`（用户批准）
+```
++ webview_flutter 4.14.1 / _android 4.14.1 / _platform_interface 2.15.1
+APK 增量：39.93 → 40.17 MB（Android 用系统 WebView，增量很小）
+```
+⚠️ 新增原生依赖 ⇒ **必须完整重建**（hot restart 无效）。
+
+### ④ 代码审计（本轮自查）
+
+**修掉的 3 个真隐患**：
+| # | 问题 | 后果 |
+|---|---|---|
+| 1 | `trakt_client.dart` 的 `r.data as Map` 硬转 | `validateStatus` 允许 4xx ⇒ 类型不可控 ⇒ 抛异常被吞成"申请失败"（误导）|
+| 2 | **Trakt 轮询的 dispose 竞态** | 后台 Future 可能正卡在 `await pollDeviceToken()`，此时用户关窗 ⇒ 我们 dispose 了 `ValueNotifier` ⇒ 请求返回后写它会抛 `used after being disposed`。<br>⇒ 修法：新增 `disposed` 标志（与 `cancelled` **分开**：前者=停止轮询，后者=不可再写 UI），并**先置 disposed 再 dispose** |
+| 3 | 我加的临时诊断日志 `[Bg] tap` | 调试垃圾，已清 |
+
+**保留的 `debugPrint`**（不是调试垃圾）：`[BuiltinSecret]` / `[Trakt]` 等
+是**错误可观测性**（第三方失败要能看到原因），与 `[Calendar]`/`[Platform]` 同款。
+
+**审计确认无问题的**：
+· 零凭据泄漏（15 个改动文件全扫）
+· 零 `print()` / TODO / FIXME
+· `cf_background.dart` 的 `BackdropFilter` 在 `build` 里创建 —— 但 `CfBackground`
+  是 `StatelessWidget` 且**只在档位变化时重建**（`bgStyleProvider` 驱动），
+  不是每帧 ⇒ 可接受
+
+### ⑤ 本轮踩的坑（值得记住）
+
+| # | 坑 | 教训 |
+|---|---|---|
+| 1 | **Kotlin 块注释可嵌套**（Java 不可）| 注释里写"斜杠+星号"会开新嵌套层 ⇒ `Unclosed comment`（指到文件末尾，极难定位）。**我踩两次**：第一次是路径通配，第二次是写警告时又写了那两个字符 |
+| 2 | **`adb` 坐标自动化在可滚动列表上不可靠** | 「我的」页滑动前后同一 y 对应不同卡片；`input swipe` duration 太长会被 MIUI 当**长按**（弹出小爱同学）；`keyevent BACK` 连按会退到桌面。⇒ **每次点击前重新截图确认**，或改用语义树（但 Flutter 语义树**间歇可用**）|
+| 3 | **`as X` 硬转在 4xx 分支上** | `validateStatus: (s) => s < 500` 时 `r.data` 类型不可控 ⇒ 必须 `is` 判断 |
+| 4 | **`ValueNotifier` 与后台 Future 的竞态** | dispose 后 Future 仍可能写 ⇒ 必须有独立的 `disposed` 标志 |
+
+### ⑥ 收工状态
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1433 全绿
+check-dev.ps1     **通过 21 项**（比上轮多 2 项：webview 产物 + 真机冒烟）
+真机              装机成功；六档背景 UI 与用户要求一致（截图确认）
+垃圾清理          TEMP 183 文件 11.2 MB + build/ 750→3.9 MB（保留 symbols/）
+                  设备截图 0 残留
+```
+**未提交**（用户要求"最后再提交"，等这轮审计完）。
+
+---
+
+## 2026-10-14（用户上报 4 个问题）——含**我自己的两次错误结论**
+
+### ① 🔴 `SqliteException: duplicate column name: status`（崩溃，已修）
+
+**用户原文**：用其他手机登录时发现
+```
+SqliteException(1): while executing, duplicate column name: status, SQL logic error (code 1)
+Causing statement: ALTER TABLE "calendar_subscriptions"
+                   ADD COLUMN "status" TEXT NOT NULL DEFAULT ''
+```
+
+#### 排查过程（**排除法**，每步都有依据）
+| 假设 | 结论 | 依据 |
+|---|---|---|
+| 新装库也会跑 `onUpgrade` | ❌ 排除 | drift 源码 `db_base.dart:128-138`：`if (wasCreated) onCreate **else if** (hadUpgrade) onUpgrade` ⇒ **互斥** |
+| `_healSchema` 重复补列 | ❌ 排除 | 它先 `PRAGMA table_info` 查存在性，已有会 `continue` |
+| v5 的 `customStatement` 加的是 status | ❌ 排除 | 它加的是 `synced_to_server`（且**无引号**）|
+| **`Migrator.addColumn` 生成的 SQL** | ✅ **命中** | 错误信息里列名**带双引号**（`"status"`）= drift 生成；我手写 SQL 不带引号 |
+
+#### 根因
+```
+drift `Migrator.addColumn`（migration.dart:473-483）**直接 ALTER，无"列已存在"检查**
+  ↓
+而 `onUpgrade` 的 `if (from < 3)` **假设 user_version 一定准确**
+  ↓
+只要库的 user_version **落后于实际结构**
+（开发期反复改 schema / 从备份恢复 / 跨设备复制库文件…）
+  ⇒ 重复加列 ⇒ **启动即崩**
+```
+
+#### 修法：**迁移幂等化**（不信版本号，实查结构）
+```dart
+Future<void> _addColumnIfMissing(Migrator m, TableInfo table, GeneratedColumn column) async {
+  final have = await _columnNames(table.actualTableName);   // PRAGMA table_info
+  if (have.contains(column.name)) return;                   // 已存在 ⇒ 跳过
+  await m.addColumn(table, column);
+}
+```
+⇒ `onUpgrade` 里**所有**加列（`status` + 手写的 `synced_to_server`）都改走它。
+
+#### 加 5 个守卫测试（`test/calendar_subscription_test.dart`）
+**为什么之前测不出来**：既有测试只断言"**有没有写**迁移"
+（`c.contains('if (from < 2)')`），**没断言"重复执行会不会炸"** ⇒ 幂等性是盲区。
+新增：禁裸 `m.addColumn`、禁 `dropTable`、`_healSchema` 必须覆盖所有新增列、`beforeOpen` 自愈必须在。
+
+⚠️ **修这个 bug 时又发现既有测试的一个"假失败"陷阱**：
+它断言 `c.contains('m.addColumn(calendarSubscriptions')`（**字面量**），
+我改成幂等版后它就红了 —— 而它的**本意**是"用 ALTER 保数据，别重建表"。
+⇒ 改成守本意（`contains('addColumn')` + `contains('_addColumnIfMissing(')` + `!contains('dropTable')`）。
+   这与该文件里既有的"逐表检查"注释**同一类问题**（绑字面量会在重构时假失败）。
+
+### ② 审计同类迁移风险（已修 2 处）
+
+| 检查项 | 结果 |
+|---|---|
+| `schemaVersion`(5) vs 迁移最大 `from < N`(5) | ✅ 匹配 |
+| 每张表都有对应迁移 | ✅ `from<2` createTable(calendar_subscriptions) / `from<4` createTable(animeTimelines) |
+| **`_healSchema` 的 expected 漏列** | ❌ **漏了 `synced_to_server`** ⇒ 已补 |
+| **`_healSchema` 的类型** | ❌ **统一按 `TEXT` 补**，而 `synced_to_server` 是 **INTEGER**(bool) ⇒ 已改为逐列 `(列名, 类型)` |
+
+⚠️ 第二条虽不报错（SQLite 类型宽松），但**语义错**：drift 按 bool 读它时
+`''` 与 `'0'` 行为不一致 ⇒ 潜在脏数据。
+
+### ③ 热播豆瓣数据"打不开" —— **我无法复现**（附证据）
+
+真机逐步验证（截图确认）：
+```
+① 热播 tab → 豆瓣列表      ✅ 正常（生化危机 7.3 / 神探之痕迹 6.8 / …）
+② 点第 1 条 → 详情页        ✅ 正常（简介/导演/主演/类型/制片国家全有）
+③ 点「在媒体库搜索」        ✅ 正常（"共 1 部" + 豆瓣结果 4 条）
+④ logcat                    ✅ 无异常
+```
+⇒ **需要用户补充**："打不开"具体是哪一步、什么现象（白屏？无反应？报错？）。
+
+### ④ 🔴 Emby 测延迟后切换账户访问不到数据（已修，**根因与我的第一判断不同**）
+
+#### ★ 我的**第一次判断是错的**（必须记下）
+我一度认为：
+> `embyApiProvider` 用 `ref.watch(sessionProvider).value`
+> ⇒ `AsyncLoading` 期间 `.value` 是 null ⇒ 假"未登录"
+
+**错**。riverpod 2.6.1 源码（`common.dart:205-217`）明确写着：
+```
+/// It will return the previous value during loading/error state.
+/// If there is no previous value, reading [value] during loading state
+/// will return null.
+T? get value;
+```
+⇒ `.value` **在 loading 期间返回上一次的值**，不会假 null。
+我据此加的"最后一次会话兜底"**已删除**（它基于错误前提，且会掩盖真问题）。
+
+#### 真机复现（决定性）
+```
+我在「我的」页点 <server-A> 那行的**地址**（本意：测延迟）
+⇒ 账号被切到 <server-B> （头部 11-128 → 2777，剧集 5713 → 2399）
+```
+⇒ **不是"切换坏了"，是"误切换"**。
+
+#### 根因：**手势冲突（嵌套可点区）**
+```dart
+return InkWell(              // 整行 ⇒ 切换账号
+  onTap: () => switchTo(a),
+  child: Row([...
+    _AddressChip(            // 地址 ⇒ 测延迟（内层）
+      onTap: () => _testLatency(...),
+    ),
+  ])
+)
+```
+两个可点区**嵌套**且语义不同（切换 vs 测延迟）⇒
+内层地址中：测延迟；地址**左右几像素**：**切换**！
+⇒ 用户想测延迟，手指稍偏就切了账号。
+
+#### 修法（三重）
+| 改动 | 解决 |
+|---|---|
+| 整行 `InkWell` → 普通 `Padding`（**不可点**）| 消除隐藏手势 |
+| 新增**显式「切换」按钮**（`InkWell` + ≥48dp）| 切换意图明确 |
+| 当前那台显示"当前"（不是"切换"）| 状态清晰 |
+
+#### 附带修的一处（**被守卫测试当场抓红**）
+我第一版用 `/Users/Me` 做"登录态校验" —— 守卫测试
+`profile_entries_test.dart:75` 记录了真机实测：
+```
+/System/Info/Public → ✅ HTTP 200（s1: 536ms / s2: 53ms）
+/Users/Me           → ❌ HTTP **500**   ← 不能用它测延迟
+```
+⇒ 改用 **`/Users/{id}/Views`**（**首页在用的端点** ⇒ "它 401"就等价于"首页打不开"）。
+⇒ 测延迟现在区分三种结论：**不可达 / 登录已失效 / 可用（显示延迟）**。
+
+⚠️ 这也说明该守卫测试**确实在起作用**（它拦住了一个会引入新 bug 的改动）。
+
+### ⑤ 收工状态
+```
+flutter analyze   0 error / 0 warning
+flutter test      **+1438 全绿**（比上轮 +5，都是本轮新增的幂等性守卫）
+check-dev.ps1     （见下）
+真机验证          点地址不再误切换（服务器名区域差异像素 0/14800）
+```
+
+### ⑦ ★★★ 补强：**运行时测试 + 反向注入**（依 §8.4 反自欺）
+
+上一轮我只加了 **5 个静态守卫测试**（`code(...).contains(...)`）。
+按 §8.4 的判据 ——
+> **这个结果，有没有可能在我删掉真代码之后依然成立？**
+
+静态测试**恰恰有可能**（它读的是源码文本，不是行为）。⇒ 本轮补了真验证。
+
+#### 新文件 `test/migration_runtime_test.dart`（4 例，用**真实 AppDatabase**）
+| 用例 | 造的场景 | 断言 |
+|---|---|---|
+| ★★★ | **结构新 + 版本旧(v2)** | 打开不抛 `duplicate column`，且 `synced_to_server` 被补上 |
+| ★★ | 全新库(v0) | 不走 `onUpgrade`；`createAll` 建出全部列 |
+| ★ | 老结构 + 版本已是 5 | 只能靠 `beforeOpen` 自愈 ⇒ status / synced_to_server 都补上 |
+| ★ | 结构 v2 + 版本 3 | 打开两次都不崩 |
+
+#### ★★ 造场景时我踩的两个坑（都会制造**假结果**）
+**坑 1：用 drift 自己造老库 ⇒ 测试自己制造了 duplicate**
+```dart
+final setup = AppDatabase(exec);
+await setup.customStatement(_v2Table);        // ← 第一次查询就触发 drift 打开！
+await setup.customStatement('ALTER TABLE … ADD COLUMN status …');
+```
+`customStatement` 是**第一次查询** ⇒ drift 走完整打开流程
+⇒ `onCreate` 的 `createAll()` **已建出带 status 的表**
+⇒ 我的 `CREATE TABLE IF NOT EXISTS` 无效 ⇒ 我那句 `ALTER … status` **撞上已存在的列**。
+**栈里 `test\migration_runtime_test.dart 61:17` 就是铁证** ——
+我一度以为"复现了用户的崩溃、修复无效"，实际是**测试代码自己报的错**。
+
+⇒ **正确做法：用裸 `sqlite3` 造老库**（drift 还没接管）：
+```dart
+final raw = sqlite3.openInMemory();     // 裸库
+raw.execute('CREATE TABLE …(v2 的列)');
+raw.execute('ALTER TABLE … ADD COLUMN status …');   // 结构已升级
+raw.execute('PRAGMA user_version = 2');             // 版本没跟上
+final db = AppDatabase(NativeDatabase.opened(raw)); // 这时才交给 drift
+```
+
+**坑 2：同一裸库被 `NativeDatabase.opened` 包装两次**
+⇒ `SqliteException(21): bad parameter or other API misuse`
+（drift 构造时注册自定义函数，对同一 handle 注册第二次即失败）。
+⇒ **每次打开都要新建裸库**。生产不受影响（每次都是新连接）。
+
+#### ★★★ 反向注入（证明测试**真的**能抓到这个 bug）
+```
+① 把 `_addColumnIfMissing(...)` 临时改回裸 `m.addColumn(...)`（= 修复前）
+② 跑测试 ⇒ **变红**，错误 = `duplicate column name: status`（与用户上报**逐字一致**）
+③ 还原（逐字断言内容一致）⇒ **转绿**
+```
+⇒ **双向证明**：旧代码红 / 新代码绿 ⇒ 修复有效 **且** 测试有效。
+（若 ② 仍绿 ⇒ 说明测试是假的，必须重写 —— 这次不是。）
+
+#### 顺手修的一处**真隐患**（`catch (_)` 静默吞异常）
+```dart
+// 修前
+} catch (_) {
+  return const {};      // ← "查不到列" 与 "列不存在" 变成同一件事
+}
+// 修后
+} catch (e) {
+  debugPrint('[DB] 取列失败（$table）: $e');   // 打日志，便于定位
+  return const {};
+}
+```
+⚠️ 与 §6.9.1「'取数失败' ≠ '数据为空'」是**同一类错误**：
+`catch (_) { return {} }` 让"查询失败"伪装成"没有这列"。
+
+#### 本轮的诚实结论
+```
+flutter analyze   0 error / 0 warning
+flutter test      **+1442 全绿**（新增 4 个运行时用例）
+check-dev.ps1     **通过 21 项**
+反向注入          旧代码红（错误与用户上报一致）/ 新代码绿 ⇒ 双向证明成立
+```
+
+### ⑧ 🔴 个人信息审计：**我自己造成了 4 处泄漏**（已清）
+
+#### 泄漏点（全部由我在本轮写注释时引入）
+| # | 文件 | 内容 | 来源 |
+|---|---|---|---|
+| 1 | `lib/pages/profile_page.dart:613` | 服务器 A 的公网 IP | 复现"点地址→误切换"时**照抄了真机截图** |
+| 2 | `lib/pages/profile_page.dart:614` | 服务器 B 的域名 | 同上 |
+| 3 | `docs/AI-MEMORY.md:3597` | 同 IP | 同上 |
+| 4 | `docs/AI-MEMORY.md:3598` | 同域名 | 同上 |
+
+#### 为什么会犯（值得记下的机制）
+我写那段注释的动机是"让后来者看懂用户场景"，于是把**真机截图里看到的地址**
+直接抄了进去。但 AGENTS §0 的原文已经写明：
+> **实测结论要写进代码注释，但必须脱敏** —— 只写协议形状，不写真实值
+
+⇒ **教训**：写"复现步骤"类注释时，**凡是界面上显示的真实值都要先脱敏**，
+   用 `<server-A>` / `<server-B>` 占位符。
+   这与"粘贴 curl 输出要先替换 token/服务器"是同一条规则。
+
+#### 顺带清掉的**另外两类**（不只是隐私，还是**功能缺陷**）
+| 内容 | 文件 | 为什么是缺陷 |
+|---|---|---|
+| `<device-serial>`（设备序列号）| `docs/AI-MEMORY.md:3003` | AGENTS §2 明确"设备序列号不入库" |
+| `C:\Users\<user>\...\python.exe` | `scripts/check-dev.ps1:322` | **别人克隆后该路径必然不存在** —— 而这是"收工必跑"的门禁脚本 |
+| `C:\Users\<user>\...\lib` | `tool/audit_buttons.py:23` | 别人跑必然报路径不存在 |
+| `C:\Users\<user>\...\ffmpeg.exe` | `tool/make_test_media.ps1:47` | 同上 |
+
+⇒ **修法**（不是"改成另一个假路径"，那会变成误导）：
+· **可执行脚本** ⇒ 删掉硬编码，靠 `PATH` 查找（`check-dev.ps1` 的候选列表里
+  本来就有 `python`/`python3`，只是第一条是"我这台机器"的 ⇒ 删掉第一条即可）
+· **Python 工具** ⇒ `ROOT = Path(__file__).resolve().parent.parent / 'lib'`（自身位置推导）
+· **文档** ⇒ 用 `<workspace>` 占位符
+
+#### 最终审计结果（三层）
+```
+① 工作区（git grep）            ✅ 全部零命中
+   · 私密 IP / 私密域名 / 本机用户名 / 设备序列号
+   · Trakt CID 明文 / Bangumi 令牌 / TVDB key / TMDB key
+② 暂存区                        ✅ 空（本轮未 add）
+③ git 历史（--all -p, 749 万字符）
+   · 本轮新增的值：`git log -S` / `-G` 均返回空 ⇒ **历史里没有**
+   （已有历史里那 12 个含旧地址的提交是**上一轮已知问题**，用户选了 B1 只脱敏）
+④ check-secrets.ps1             ✅ 通过（414 文件；13 处命中已被 secrets-allow.txt 白名单放行）
+```
+
+#### ★ 审计脚本自身的两个坑（差点误报）
+**坑 1：`git log --all -p` 的输出里"有"该串，但 `git log -S` 搜不到提交**
+⇒ 因为我把 749 万字符的 log 抓进 Python 字符串后，**搜到了自己脚本的输出**
+（脚本里写着要搜的值）。⇒ **判定历史必须用 `git log -S` / `-G`，不能搜 log 全文**。
+
+**坑 2：`cmd /c git check-ignore -v "path"` 全部报"未忽略"**
+⇒ 实际是**调用方式**的问题（退出码/引号在 `cmd /c` 包装下不可靠）。
+直接用 `git check-ignore -v <path>` 即正确：
+```
+.gitignore:30:.flutter-plugins-dependencies  ← 确实被忽略
+.gitignore:33:/build/                        ← 确实被忽略
+android/.gitignore:12:key.properties         ← 确实被忽略
+```
+⇒ **反自欺**：审计脚本报"❌"时，先用**第二种手段交叉验证**再下结论。
+
+#### ★★ 同一类错误我犯了 **3 次**（机制比结果更值得记）
+
+| 次 | 场景 | 我做了什么 |
+|---|---|---|
+| 1 | 写"复现步骤"注释 | 照抄真机截图里的服务器地址（IP / 域名）|
+| 2 | 写审计脚本的"待查清单" | 把敏感值写成字面量 |
+| 3 | **写审计记录本身** | 把"漏了什么"的值原文写进台账 |
+
+**共同机制**：我想让读者"看懂"于是把**真实值**贴出来 ——
+而**脱敏写法同样能说清问题**（`<device-serial>` / `<user>` 反而更专业：
+读者不需要知道具体值，就能理解"这里不该写"）。
+
+**动机**不是"手滑"，而是"要留证据"这种**正当倾向**走过头。
+AGENTS §0 已经预见并写明：
+> 这条规则**优先于本文件的其它所有条款**，也优先于"要留实测证据""要写注释"等要求。
+
+⇒ **操作规则**：写「复现步骤 / 实测证据 / 审计记录」这三类文字时，
+   落笔前先过一遍脱敏 ——
+   凡是**界面上显示过的真实值**（地址 / 账号 / 设备号 / token）一律换成占位符。
+
+#### 最终复核（全部归零）
+```
+git grep:  私密地址 / 本机用户名 / 设备序列号 / 凭据明文 / 第三方 key   ⇒  ✅ 零命中
+           Trakt CID 明文 / Bangumi 令牌   ⇒  ✅ 零命中
+check-secrets.ps1  ✅ 通过（414 文件）
+check-docs.ps1     ✅ 通过
+flutter analyze    0 error / 0 warning
+flutter test       +1442 全绿
+check-dev.ps1      通过 21 项
+```
+
+#### ★★★ 第 **4** 次（这次是"写已清除清单"时又写了一遍值）
+
+第 4 次场景：我在"证明已清除"的清单里，**为了显示查过哪些值，把值本身又列了一遍**。
+⇒ 最讽刺的一次 —— **审计动作自己制造了泄漏**。
+
+四次场景汇总（**只列场景，不列值**）：
+| 次 | 场景 |
+|---|---|
+| 1 | 写"复现步骤"注释（照抄真机截图）|
+| 2 | 写审计脚本的待查清单 |
+| 3 | 写审计记录的"漏了什么"表格 |
+| 4 | 写审计报告的**已清除清单** |
+
+⇒ 结论：**只要允许自己"为了说明而写出值"，就一定会再犯。**
+   所以定**硬规则**（比"下次注意"可执行）：
+
+> **本仓库任何文件里都不许写出这些值的字面量** ——
+> 包括审计报告、复现步骤、门禁脚本的待查清单、台账。
+> 需要表达"查过什么"时，**只说类别**：
+> 「私密地址 / 本机用户名 / 设备序列号 / 凭据明文 / 第三方 key / 账号名」。
+>
+> 需要表达"长什么样"时，**用占位符**：`<server-A>` / `<user>` / `<device-serial>`。
+
+⇒ 这条规则已在本轮实际执行：审计报告里**没有任何真实值**，
+   但读者完全能理解"查了哪些类别、结果如何"。
+
+#### 验证状态
+```
+flutter analyze   0 error / 0 warning
+flutter test      +1442 全绿
+check-dev.ps1     **通过 21 项**（改动后重跑，确认脚本仍可执行）
+check-secrets.ps1 **通过**（未发现敏感信息可疑片段）
+```

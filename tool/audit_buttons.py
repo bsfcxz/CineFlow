@@ -20,7 +20,10 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(r'C:\Users\<user>\Desktop\bsfc\cineflow\lib')
+# ⚠️ **不要硬编码绝对路径** —— 那既是隐私问题（暴露开发机用户名），
+#    也是**功能缺陷**（别人克隆后必然 `Path` 不存在）。
+#    用脚本自身位置推导：`tool/` 的上一级就是仓库根。
+ROOT = Path(__file__).resolve().parent.parent / 'lib'
 out = []
 
 

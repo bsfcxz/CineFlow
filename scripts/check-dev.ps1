@@ -318,8 +318,11 @@ if ($noBomTxt.Count -eq 0) {
 #    整个工作流从来没跑起来过，而肉眼完全看不出问题（第 61 行少 2 格缩进）。
 #    这类错误必须靠解析器抓，不能靠看。
 $py = $null
+    # ⚠️ **不要硬编码某个人的 Python 绝对路径**：
+    #    · 隐私：会暴露开发机用户名
+    #    · **功能**：别人克隆后那条必然 `Test-Path` 失败
+    #    ⇒ 只靠 PATH 里的 `python` / `python3`（都已实现降级）
 foreach ($cand in @(
-        'C:\Users\<user>\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe',
         'python', 'python3')) {
     if ($cand -eq 'python' -or $cand -eq 'python3' -or (Test-Path $cand)) {
         try { & $cand -c 'import yaml' 2>$null; if ($LASTEXITCODE -eq 0) { $py = $cand; break } } catch {}
