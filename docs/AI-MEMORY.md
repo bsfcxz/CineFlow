@@ -26,16 +26,15 @@
 
 | 项 | 值 |
 |---|---|
-| 当前版本 | **0.3.0**（build **2**；`VERSION` = pubspec = `lib/core/version.dart`） |
-| 当前阶段 | 阶段三收尾（播放内核迁移已完成） + **阶段四 UI 打磨（第 8 轮做了主题与排版体系）** |
-| 最近一次实测 | `flutter analyze` **0 issue** · `flutter test` **286 例全绿** · `go test` **143 例** · `check-dev.ps1` **18 项全过** |
-| **发布候选** | ✅ `build/app/outputs/flutter-apk/app-arm64-v8a-release.apk` **37.97 MB**（versionCode 2002 / mpv 内核 / 已真机验证）<br>SHA256 `72dbced4b28b569c007dbdb173ee54d56716ba496bacd70602ccc22e31b7199c`<br>**混淆符号表在 `build/symbols/`——必须与 APK 成对保留，勿删** |
-| 工作区状态 | ⚠️ **有大量未提交改动**（见 §4），尚未 commit |
-| 仓库体积 | **0.10 GB**（构建垃圾已清） |
+| 当前版本 | **0.3.3**（build 2002；`VERSION` = pubspec = `lib/core/version.dart`） |
+| 当前阶段 | 阶段三收尾 + 阶段四 UI 打磨 + **新增：Trakt 接入 / 背景底色 / 历史脱敏** |
+| 最近一次实测 | `flutter analyze` **0 error / 0 warning** · `flutter test` **+1442 全绿** · `go test` **143 例** · `check-dev` **通过 21 项** · `check-secrets` 通过 |
+| **发布日期** | 最新 tag **v0.3.3**（**历史已重写** ⇒ tag 指向新 SHA） |
+| 工作区状态 | ✅ **干净**（本轮 6 个提交已 push 到 `origin/master`） |
+| 仓库体积 | 见 §4（构建产物已清） |
 | 真机 | Xiaomi M2012K11AC / Android 13 / arm64（`flutter devices` 自查 id） |
-| 最该知道的坑 | **改完 UI 后装包前必须 `flutter build apk`**——`integration_test` **与 `patrol_test`** 都会污染 APK 入口（见 §6.1） |
-| **发版状态** | ⛔ **未发布**。已备好产物与 changelog，**等用户审批**（见 [AI-DISTRIBUTION.md](AI-DISTRIBUTION.md) §3） |
-
+| 最该知道的坑 | **改完 UI 后装包前必须 `flutter build apk`** —— `integration_test` 与 `patrol_test` 都会污染 APK 入口（见 §6） |
+| **发版状态** | ⛔ **未发布新版本**；v0.3.3 已在远端（tag 已脱敏）。发版须用户当轮审批（见 [AI-DISTRIBUTION.md](AI-DISTRIBUTION.md) §3） |
 ---
 
 ## 1. 项目是什么
@@ -3344,7 +3343,9 @@ RenderFlex overflowed: 0 次 ✅
 <Emby-A>  →  <Emby-A>   （3 处）
 <Emby-B>  →  <Emby-B>   （3 处）
 ```
-本次已脱敏。**历史提交里仍有**（未改历史，避免 force-push）。
+本次已脱敏。~~**历史提交里仍有**（未改历史，避免 force-push）。~~
+⚠️ **上面这句已过时** —— 2026-10-14 下半场已**重写 git 历史**彻底清除
+（详见本文档末尾「git 历史重写」小节）。当前 master 与全部 tag 均不含这些值。
 扫描确认 **TMDB key / TVDB key / Trakt Client ID / Emby 密码均未入库** ✅
 
 ### 本轮踩到的 3 个**自伤**（都靠验证手段挡住）
@@ -3757,7 +3758,8 @@ check-dev.ps1     **通过 21 项**
 ② 暂存区                        ✅ 空（本轮未 add）
 ③ git 历史（--all -p, 749 万字符）
    · 本轮新增的值：`git log -S` / `-G` 均返回空 ⇒ **历史里没有**
-   （已有历史里那 12 个含旧地址的提交是**上一轮已知问题**，用户选了 B1 只脱敏）
+   （⏳ **已过时**：上一轮对历史里的旧地址选了"只脱敏不重写"（B1）；
+     2026-10-14 下半场用户改选 **B（重写历史）**，已完成 —— 见文末小节）
 ④ check-secrets.ps1             ✅ 通过（414 文件；13 处命中已被 secrets-allow.txt 白名单放行）
 ```
 
@@ -3840,3 +3842,98 @@ flutter test      +1442 全绿
 check-dev.ps1     **通过 21 项**（改动后重跑，确认脚本仍可执行）
 check-secrets.ps1 **通过**（未发现敏感信息可疑片段）
 ```
+
+---
+
+## 🔐 git 历史重写（2026-10-14 下半场，用户选 **B**）
+
+### 为什么做
+上一轮发现历史里含敏感值后，用户当时选了 **B1（只脱敏当前代码，不重写历史）**。
+本轮用户**改选 B（重写历史）** ⇒ 把历史里的值也替换掉。
+
+### 要清的 **4 类**（**只写类别，不写值** —— 见下方"纪律"）
+| 类别 | 替换为 |
+|---|---|
+| 本机用户名 | `<user>` |
+| 设备序列号 | `<device>` |
+| 私密 IP | `<server-A>` |
+| 私密域名 | `<server-B>` |
+
+### 工具与步骤
+```bash
+# ① 完整备份（含全部 ref）
+git bundle create <备份>/cineflow-ALL-refs-<时间戳>.bundle --all
+git for-each-ref --format="%(refname) %(objectname)" > refs-before-<时间戳>.txt
+
+# ② 清掉 filter-repo 的"续跑保护"标记（否则它会交互询问并 EOF 失败）
+rm -rf .git/filter-repo/
+
+# ③ 重写（规则文件放**仓库外**，用完删）
+git filter-repo --force --replace-text <规则文件> --refs master v0.2.0 v0.3.0 v0.3.1 v0.3.2 v0.3.3
+
+# ④ 强推
+git push origin master --force
+git push origin refs/tags/<每个 tag> --force
+```
+
+### ★★ 关键字：**必须两轮，因为 `--refs master` 不重写 tag**
+第一轮我只写了 `--refs master` ⇒ `master` 干净了，但**5 个 tag 仍指向旧提交**
+（含全部 4 类值）⇒ 若推送 tag 则**脱敏等于没做**。
+⇒ 第二轮显式列出 `--refs master v0.2.0 … v0.3.3` 才彻底。
+
+### ★★★ 验证手段：**逐提交配对验证**（这是最关键的判据）
+```python
+# 对 commit-map 里的每一对 (old, new)：
+#   取 git diff --unified=0 old new 的 `-` 行与 `+` 行
+#   判据：对 `-` 行做替换后，应**逐字等于** `+` 行
+```
+⇒ 结果：**104 个提交的差异恰好等于替换结果，0 个非替换差异** ⇒ 证明无副作用。
+
+⚠️ **我第一版验证脚本写错了逻辑**（只看"该行含不含占位符"），
+   于是把 `-` 行（删除的旧内容，本来就含原值）全判成"可疑"，
+   得出 **113/119 全部可疑** 的假结论。
+   ⇒ **必须配对检查**，不能只看单侧。
+
+⚠️ **另一条教训**：只对比"新旧 master 的**最终树**"是**不够的** ——
+   我提交前已手工脱敏，所以最终树两边都为 0 差异，
+   这会**掩盖"中间历史被过度替换"**。⇒ 必须**逐提交**对比。
+
+### 严格验证的 5 层（全过）
+| # | 层 | 结果 |
+|---|---|---|
+| 1 | 逐提交配对（104 对）| ✅ 0 个非替换差异 |
+| 2 | 备份分支 / backup/old-master 未被改动 | ✅ 原样（**只重写 master + tag**）|
+| 3 | 代码验证 | ✅ analyze 0/0 · test **+1442 全绿** · check-dev 21 项 · check-secrets · check-docs |
+| 4 | 远端 10 个 ref | ✅ 全部干净 |
+| 5 | 旧 tag 提交是否仍可访问 | ✅ HTTP 422（不可访问）|
+
+### ⚠️ 唯一残留：**GitHub 侧孤儿对象**
+```
+旧 master 提交 → GitHub API 仍返回 HTTP 200（可访问）
+  含：本机用户名 / 设备序列号
+但它已是**孤儿对象**：不在任何本地/远端 ref 上，也不是任何分支的祖先
+⇒ git 层面完全不可达；GitHub 服务端有保留期，客户端清不掉
+```
+**处置选项**：
+1. **等** GitHub 自动 gc（几周到几个月）—— 风险低（需精确知道旧 SHA 才能访问）
+2. **联系 GitHub Support** 请求清理孤儿对象（可立即）
+3. 删库重建（最彻底，但 5 个 Release 下载链接全失效）
+
+⚠️ **重要盲区**：`check-secrets.ps1` 这类门禁**查不到孤儿对象**
+（它们只扫当前文件/当前 ref）⇒ 别以为"门禁通过 = 历史干净"。
+
+### 备份位置（可完整回滚）
+```
+C:\Users\<user>\Desktop\cineflow-history-backup\
+  cineflow-ALL-refs-<时间戳>.bundle   （含全部 ref，可 git clone 回来）
+  refs-before-<时间戳>.txt            （重写前所有 ref 的 SHA）
+```
+⚠️ 该目录在**仓库外**（正确 —— 它含重写前的值，不能入库）。
+
+### ★★ 纪律（我这次又差点犯错）
+**本仓库任何文件里都不许写出那 4 类值的字面量** —— 包括：
+审计报告 / 复现步骤 / 门禁脚本的待查清单 / 台账 / 备份说明。
+需要表达"查过什么"时**只说类别**；需要表达"长什么样"时**只用占位符**。
+
+> 这条纪律是 4 次同类错误的产物（见本文档 ⑧ 小节）：
+> 第 4 次最讽刺 —— 我在"证明已清除"的清单里**又把值列了一遍**。
