@@ -3,6 +3,7 @@ package com.cineflow.app
 import com.cineflow.app.player.Media3Channel
 import com.cineflow.app.player.PlayerChannel
 import com.cineflow.app.player.SessionChannel
+import com.cineflow.app.system.SigningChannel
 import com.cineflow.app.system.SystemChannel
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -32,6 +33,16 @@ class MainActivity : FlutterActivity() {
         // 单位统一为 0-100（原生 API 各不同：亮度 0.0-1.0、
         // 音量是整数档位、唤醒锁无值），换算全在 SystemChannel 内完成。
         SystemChannel(this).register(flutterEngine)
+
+        // ★ 签名指纹通道（Trakt Client ID 的签名绑定混淆要用它）
+        //
+        // ## 它做什么
+        // 返回**本 APK 签名证书**的 SHA-256 ⇒ Dart 侧用它派生密钥，
+        // 解密内置的 Trakt Client ID。
+        //
+        // ## ⚠️ 这不是加密，是混淆（详见 SigningChannel 的注释）
+        // 换签名重打包解不出来；但反编译能拿到指纹 ⇒ 挡不住逆向。
+        SigningChannel(this).register(flutterEngine)
 
         // 媒体会话（K3 / CF-P3-KERNEL-004）：通知栏 + 蓝牙耳机键 + 后台 + 音频焦点。
         //

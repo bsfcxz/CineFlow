@@ -64,6 +64,7 @@ dependencies:
   sqlite3_flutter_libs: ^0.5.0
   crypto: ^3.0.7
   file_picker: ^13.1.0
+  webview_flutter: ^4.14.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

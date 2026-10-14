@@ -261,6 +261,56 @@ class SessionStore {
     }
   }
 
+  // ---- Trakt（★ 凭据：只进 secure_storage，仓库里不放任何值）----
+  //
+  // ## 为什么三样分开存
+  // · `client_id`  —— 用户自己申请的应用标识（公开但仍是凭据）
+  // · `access_token` / `refresh_token` —— **登录态等价物**
+  // ⇒ 三者都不得入库（§红线）；与 `loadTmdbKey` 同一策略。
+  //
+  // ## 为什么不用一个 JSON 存
+  // 分开存便于**单独失效**：token 过期时只清 token、保留 client_id
+  // （用户不用重新填 Client ID）。
+  static const _traktClientIdKey = 'cf_trakt_client_id';
+  static const _traktAccessKey = 'cf_trakt_access_token';
+  static const _traktRefreshKey = 'cf_trakt_refresh_token';
+
+  Future<String?> loadTraktClientId() async {
+    final v = await _storage.read(key: _traktClientIdKey);
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  Future<void> saveTraktClientId(String id) async {
+    final v = id.trim();
+    if (v.isEmpty) {
+      await _storage.delete(key: _traktClientIdKey);
+    } else {
+      await _storage.write(key: _traktClientIdKey, value: v);
+    }
+  }
+
+  Future<String?> loadTraktAccessToken() async {
+    final v = await _storage.read(key: _traktAccessKey);
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  /// 保存登录结果（`refresh` 为 null 时**保留原值** —— 刷新流程可能不给新 refresh）。
+  Future<void> saveTraktTokens({
+    required String access,
+    String? refresh,
+  }) async {
+    await _storage.write(key: _traktAccessKey, value: access.trim());
+    if (refresh != null && refresh.trim().isNotEmpty) {
+      await _storage.write(key: _traktRefreshKey, value: refresh.trim());
+    }
+  }
+
+  /// **退出登录**：清 token，**保留 client_id**（用户不必重填）。
+  Future<void> clearTraktTokens() async {
+    await _storage.delete(key: _traktAccessKey);
+    await _storage.delete(key: _traktRefreshKey);
+  }
+
   // ---- 弹幕配置 ----
   //
   // ⚠️ 存这里而不是普通 SharedPreferences：配置里含 **AppSecret**
