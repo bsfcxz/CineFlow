@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/providers.dart';
 
+import '../widgets/cf_background.dart';
 import '../core/theme.dart';
 import '../keys.dart';
 import 'home_page.dart';
@@ -137,7 +138,11 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     final wc = CfBreakpoints.of(MediaQuery.sizeOf(context).width);
     final useRail = CfLayout.useSideRail(wc);
 
-    return Scaffold(
+    return CfBackground(
+      child: Scaffold(
+      // ⚠️ 必须透明 —— 否则 Scaffold 的不透明底色会盖住
+      //    `CfBackground` ⇒ 用户看到"设置了背景没效果"。
+      backgroundColor: Colors.transparent,
       body: useRail
           ? Row(children: [
               _SideRail(index: _index, onTap: _switchTab),
@@ -148,6 +153,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           : IndexedStack(index: _index, children: _pages),
       bottomNavigationBar:
           useRail ? null : _TabBar(index: _index, onTap: _switchTab),
+      ),
     );
   }
 }

@@ -50,6 +50,47 @@ class _FakeStore implements SessionStore {
   Future<String?> loadTmdbKey() async => null;
   @override
   Future<void> saveTmdbKey(String key) async {}
+
+  // ---- Trakt（★ 新增的公开方法必须同步 fake，否则编译不过）----
+  // 内存实现（与上面其它方法同风格）：不碰 Keystore ⇒ 测试快且稳定。
+  String? _traktClientId;
+  String? _traktAccess;
+  String? _traktRefresh;
+
+  /// 供测试断言用（真实实现不需要暴露 —— 这里是为了让 fake 的
+  /// `refresh` 字段**真的被读到**，否则 analyze 报 unused_field，
+  /// 而删掉它又会让 fake 与真实行为不一致）。
+  String? get traktRefreshForTest => _traktRefresh;
+
+  @override
+  Future<String?> loadTraktClientId() async => _traktClientId;
+
+  @override
+  Future<void> saveTraktClientId(String id) async {
+    final v = id.trim();
+    _traktClientId = v.isEmpty ? null : v;
+  }
+
+  @override
+  Future<String?> loadTraktAccessToken() async => _traktAccess;
+
+  @override
+  Future<void> saveTraktTokens({
+    required String access,
+    String? refresh,
+  }) async {
+    _traktAccess = access.trim();
+    if (refresh != null && refresh.trim().isNotEmpty) {
+      _traktRefresh = refresh.trim();
+    }
+  }
+
+  @override
+  Future<void> clearTraktTokens() async {
+    _traktAccess = null;
+    _traktRefresh = null;
+  }
+
 }
 
 void main() {

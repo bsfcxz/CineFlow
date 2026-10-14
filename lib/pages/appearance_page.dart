@@ -29,6 +29,146 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
     });
   }
 
+  // ══════════════════════════════════════════════════════════
+  //  背景底色（用户 2026-10-14 最终定稿：六档 + 自定义）
+  // ══════════════════════════════════════════════════════════
+
+  /// 透明度**草稿**（拖动时只改它，松手才落盘）。
+  ///
+  /// ## 为什么要草稿（本仓库踩过的坑）
+  /// `onChanged` 每帧触发。若直接写 `secure_storage`，
+  /// 拖一次滑块会写**几十次**（Keystore 加解密很慢）⇒ 界面卡。
+  int? _bgOpacityDraft;
+
+  /// 应用背景底色（改静态色 → 触发重建 → 持久化）。
+  ///
+  /// ## `persist: false`
+  /// 拖动滑块时传 false（只预览），松手时传 true 落盘。
+  Future<void> _applyBg(CfBgKind kind,
+      {int? opacity, Color? custom, bool persist = true}) async {
+    final op = opacity ?? _bgOpacityDraft ?? Cf.bgOpacity;
+    if (custom != null) Cf.customBgColor = custom;
+    Cf.applyBackground(kind, opacity: op);
+    ref.read(bgStyleProvider.notifier).set(kind);
+    if (!persist) return;
+    final store = ref.read(sessionStoreProvider);
+    await store.setPref('bg_kind', kind.name);
+    await store.setPref('bg_opacity', '$op');
+    if (custom != null) {
+      // 存 32 位 ARGB 的十六进制（不含 `#`）
+      await store.setPref('bg_custom',
+          custom.toARGB32().toRadixString(16).padLeft(8, '0'));
+    }
+  }
+
+  /// **自定义调色板**（用户选色用）。
+  ///
+  /// ## 为什么给"预设色"而不是自由取色器
+  /// · 自由取色器（HSV 环）实现成本高、小屏难操作
+  /// · 预设色能保证**对比度可读**（我按 WCAG 挑过）
+  /// ⇒ 给 12 个覆盖"深/中/浅 + 常见色调"的预设，够日常用。
+  static const _kCustomSwatches = <(String, Color)>[
+    ('石墨', Color(0xFF1A1A22)),
+    ('墨蓝', Color(0xFF0E1626)),
+    ('深棕', Color(0xFF221A16)),
+    ('松绿', Color(0xFF0F1F1A)),
+    ('暗紫', Color(0xFF1B1225)),
+    ('酒红', Color(0xFF221218)),
+    ('中灰', Color(0xFF3A3F47)),
+    ('雾蓝', Color(0xFF2A3A4A)),
+    ('暖沙', Color(0xFF3D3529)),
+    ('米白', Color(0xFFF2EFE9)),
+    ('雪白', Color(0xFFFFFFFF)),
+    ('淡蓝', Color(0xFFE8EEF5)),
+  ];
+
+  Widget _bgChip(CfBgKind k) {
+    final on = Cf.bgKind == k;
+    // ⚠️ 必须用 InkWell（守卫测试要求设置项有按压反馈）
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () async {
+              if (k.usesOpacity && _bgOpacityDraft == null) {
+                _bgOpacityDraft = Cf.bgOpacity;
+              }
+              await _applyBg(k,
+                  opacity: k.usesOpacity ? _bgOpacityDraft : null);
+              if (mounted) setState(() {});
+            },
+            child: Ink(
+              height: 52,
+              decoration: BoxDecoration(
+                color: on ? Cf.accent.withValues(alpha: 0.18) : Cf.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: on ? Cf.accent : Cf.border, width: on ? 1.5 : 1),
+              ),
+              child: Center(
+                child: Text(k.label,
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: on ? Cf.accent : Cf.text2,
+                        fontWeight:
+                            on ? FontWeight.w700 : FontWeight.w400)),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _bgPreviewSwatch(String name, Color c) {
+    final on = Cf.customBgColor.toARGB32() == c.toARGB32() &&
+        Cf.bgKind == CfBgKind.custom;
+    // ⚠️ **必须用 InkWell**（不能用裸 GestureDetector）——
+    //    我在色板上用 GestureDetector，**被守卫测试当场抓红**：
+    //    `settings_pages_test.dart` U8「外观设置：没有裸 GestureDetector」。
+    //    ⚠️ 该测试的判据是"外观页不许出现裸 GestureDetector"（**不看用途**）
+    //    ⇒ 别写"色板不是设置项所以可以"这种辩解（我试过，无效）。
+    //    InkWell 本来也更合适 —— 自带涟漪反馈。
+    return Padding(
+      padding: const EdgeInsets.only(right: 8, bottom: 8),
+      child: Material(
+        color: c,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () async {
+            await _applyBg(CfBgKind.custom, custom: c);
+            if (mounted) setState(() {});
+          },
+          child: Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                  color: on ? Cf.accent : Cf.border, width: on ? 2 : 1),
+            ),
+            child: on
+                ? Icon(Icons.check_rounded,
+                    size: 20,
+                    // 勾号颜色按背景亮度选（亮底深勾 / 暗底白勾）
+                    color: (0.299 * c.r * 255 +
+                                0.587 * c.g * 255 +
+                                0.114 * c.b * 255) >
+                            140
+                        ? Colors.black87
+                        : Colors.white)
+                : null,
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _apply(int index) async {
     setState(() => _selected = index);
     Cf.applyTheme(index);
@@ -50,6 +190,77 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
           SizedBox(height: 16),
 
           // —— 主题色 ——
+          // ══════ ★ 背景底色（用户 2026-10-14）══════
+          const SizedBox(height: 20),
+          Text('背景底色',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 4),
+          Text('深色 / 黑色 / 透明 / 半透明 / 浅白 / 白色 · 自定义',
+              style: TextStyle(fontSize: 11, color: Cf.text3)),
+          const SizedBox(height: 12),
+          Row(children: [
+            _bgChip(CfBgKind.dark),
+            _bgChip(CfBgKind.black),
+            _bgChip(CfBgKind.clear),
+          ]),
+          const SizedBox(height: 8),
+          Row(children: [
+            _bgChip(CfBgKind.translucent),
+            _bgChip(CfBgKind.dimWhite),
+            _bgChip(CfBgKind.solidWhite),
+          ]),
+          const SizedBox(height: 8),
+          Row(children: [
+            _bgChip(CfBgKind.custom),
+            const Spacer(flex: 2),
+          ]),
+          // 透明度滑块：**只在透明/半透明时显示**
+          //
+          // ## 为什么其它档不显示
+          // 滑块对它们**无效** ⇒ 一直显示会让用户"拖了没变化"以为坏了。
+          if (Cf.bgKind.usesOpacity) ...[
+            const SizedBox(height: 12),
+            Row(children: [
+              Text('透明度',
+                  style: TextStyle(fontSize: 12, color: Cf.text2)),
+              const Spacer(),
+              Text('${_bgOpacityDraft ?? Cf.bgOpacity}',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: Cf.accent,
+                      fontWeight: FontWeight.w700)),
+            ]),
+            Slider(
+              value: (_bgOpacityDraft ?? Cf.bgOpacity).toDouble().clamp(0, 100),
+              min: 0,
+              max: 100,
+              divisions: 20,
+              label: '${_bgOpacityDraft ?? Cf.bgOpacity}',
+              onChanged: (v) {
+                setState(() => _bgOpacityDraft = v.round());
+                Cf.applyBackground(Cf.bgKind, opacity: v.round());
+              },
+              onChangeEnd: (v) async {
+                await _applyBg(Cf.bgKind, opacity: v.round());
+              },
+            ),
+          ],
+          // 自定义调色板：**只在"自定义"档时显示**
+          if (Cf.bgKind == CfBgKind.custom) ...[
+            const SizedBox(height: 12),
+            Text('选择背景色',
+                style: TextStyle(fontSize: 12, color: Cf.text2)),
+            const SizedBox(height: 8),
+            Wrap(
+              children: [
+                for (final (name, c) in _kCustomSwatches)
+                  _bgPreviewSwatch(name, c),
+              ],
+            ),
+            Text('提示：选亮色会自动切换为深色文字（保证可读）',
+                style: TextStyle(fontSize: 10, color: Cf.text3)),
+          ],
+          const SizedBox(height: 20),
           Container(
             padding: EdgeInsets.all(14),
             decoration: BoxDecoration(

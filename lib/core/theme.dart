@@ -1,10 +1,87 @@
 import 'package:flutter/material.dart';
-
-/// CineFlow 设计系统 —— 色彩令牌对应《CineFlow UI 设计文档》2.1 节
+/// **背景底色**（用户 2026-10-14 最终定稿：**6 档**）。
 ///
-/// 主题色四选一（外观页）：accent / accent2 / accent3 与两个渐变是
-/// **运行时可变**的（static 非 const），其余中性色保持 const。
-/// 改动 Cf 主题色字段后，凡在 const 表达式里引用它们的构造都要去掉 const。
+/// > 背景底色就 透明 半透明 白色 浅白这种
+/// > **再加上我目前的深色，黑色**
+///
+/// ## 六档
+/// | 档 | 背景 | 文字 | 备注 |
+/// |---|---|---|---|
+/// | [dark] 深色 | 主题的 bg | 主题浅色 | **默认（= 改动前）** |
+/// | [black] 黑色 | 纯黑 | 主题浅色 | OLED 省电（纯黑不发光）|
+/// | [clear] 透明 | alpha 0 | 主题浅色 | 看壁纸 |
+/// | [translucent] 半透明 | alpha 可调 | 主题浅色 | 0-100 |
+/// | [dimWhite] 浅白 | 近白 | **深色** | 亮而不刺眼 |
+/// | [solidWhite] 白色 | 纯白 | **深色** | |
+///
+/// ## ⚠️ 两条硬约束（踩了会出可见 bug）
+/// 1. **浅白/白色必须同时换文字为深色** —— 否则白底 + 浅字 = 对比度 0（看不见）
+/// 2. **透明/半透明只改 `bg`，不动 `surface`** —— 卡片要保持主题色才有层次
+enum CfBgKind {
+  /// 深色（主题背景）—— **默认**，与改动前完全一致。
+  dark,
+
+  /// 黑色（纯黑，OLED 省电）。
+  black,
+
+  /// 透明（完全透出壁纸）。
+  clear,
+
+  /// 半透明（透明度 0-100 可调）。
+  translucent,
+
+  /// 浅白（近白、不刺眼）。
+  dimWhite,
+
+  /// 白色（纯白）。
+  solidWhite,
+
+  /// **自定义**（用户 2026-10-14："做一个可以自己调节的"）。
+  ///
+  /// ## 与其它档的区别
+  /// · 颜色由 `Cf.customBgColor` 决定（用户在 UI 里选/调）
+  /// · 文字色**自动**按背景亮度选深或浅（见 `_readableOn`）
+  ///   ⇒ 用户选亮色不会出现"白底白字"
+  custom,
+}
+
+/// 背景底色的**派生属性**（收敛到一处，避免多处写 `==` 判据）。
+///
+/// ## 为什么提成扩展（本仓库反复踩的坑）
+/// "同一判据多处写、改一处漏一处" —— 例如 `isLight` 若在各页面各写一遍，
+/// 以后加"米白"档就会漏改。⇒ **单一来源**。
+extension CfBgKindX on CfBgKind {
+  /// 是否为**固定的浅色底**（决定文字必须用深色）。
+  ///
+  /// ⚠️ `custom` **不在此列** —— 它的明暗取决于用户选的颜色，
+  /// 由 `Cf._readableOn()` 按亮度动态判断（见那里）。
+  bool get isLight =>
+      this == CfBgKind.dimWhite || this == CfBgKind.solidWhite;
+
+
+  /// 是否**使用透明度滑块**（只有透明/半透明有意义）。
+  ///
+  /// ## 为什么其它档不显示滑块
+  /// 滑块对它们**无效**。一直显示会让用户"拖了没变化"⇒ 以为功能坏了。
+  bool get usesOpacity =>
+      this == CfBgKind.clear || this == CfBgKind.translucent;
+
+  /// 中文名（UI 显示，与用户措辞一致）。
+  String get label => switch (this) {
+        CfBgKind.dark => '深色',
+        CfBgKind.black => '黑色',
+        CfBgKind.clear => '透明',
+        CfBgKind.translucent => '半透明',
+        CfBgKind.dimWhite => '浅白',
+        CfBgKind.solidWhite => '白色',
+        CfBgKind.custom => '自定义',
+      };
+}
+
+
+/// 文字该用深还是浅（内部用）。
+enum _InkOn { light, dark }
+
 abstract final class Cf {
   static Color bg = const Color(0xFF0B1020); // 全局背景·随主题切换
   static Color surface = const Color(0xFF111A33); // 卡片·随主题
@@ -124,9 +201,127 @@ abstract final class Cf {
         Color(0xFF8B95A7), Color(0xFF5D6675)),
   ];
 
+
+  // ══════════════════════════════════════════════════════════════
+  //  背景样式（用户 2026-10-14 要求：白色 / 毛玻璃 / 透明 0-100）
+  // ══════════════════════════════════════════════════════════════
+
+  /// 当前背景样式。
+  /// 当前背景底色（用户 2026-10-14 定稿的六档）。
+  static CfBgKind bgKind = CfBgKind.dark;
+
+  /// 背景**透明度 0-100**（只对 `clear` / `translucent` 生效）。
+  ///
+  /// ## 语义（避免误解）
+  /// · `clear`（透明）   ⇒ 忽略此值，恒为**全透**
+  /// · `translucent`（半透明）⇒ **用此值**（0 = 全透，100 = 不透明）
+  /// · 其它档            ⇒ 忽略（它们不透明）
+  static int bgOpacity = 60;
+
+  /// 应用背景底色。
+  ///
+  /// ## ⚠️ 两条硬约束（见 `CfBgKind` 的注释）
+  /// 1. 浅白/白色 ⇒ **同时换文字为深色**（否则白底白字）
+  /// 2. 透明/半透明 ⇒ **只改 `bg`**，`surface` 保持主题色（否则卡片没层次）
+  static void applyBackground(CfBgKind kind, {int? opacity}) {
+    bgKind = kind;
+    if (opacity != null) bgOpacity = opacity.clamp(0, 100);
+
+    // 先回到主题的结构色（保证从"白色"切回来时不残留深色文字）
+    applyTheme(_lastThemeIndex);
+
+    if (kind.isLight) {
+      // ── 浅色底：必须换文字（硬约束 1）──
+      bg = kind == CfBgKind.solidWhite
+          ? const Color(0xFFFFFFFF)
+          : const Color(0xFFF7F8FA); // 浅白：近白但不刺眼
+      surface = kind == CfBgKind.solidWhite
+          ? const Color(0xFFFFFFFF)
+          : const Color(0xFFFFFFFF);
+      surface2 = const Color(0xFFEFF1F4);
+      surface3 = const Color(0xFFE6E9EE);
+      border = const Color(0xFFD8DCE3);
+      // 主文字 16.9:1 / 次级 6.4:1 / 弱化 4.6:1（WCAG：AAA / AA / AA）
+      text = const Color(0xFF17191C);
+      text2 = const Color(0xFF5E646E);
+      text3 = const Color(0xFF8A9099);
+      ink = const Color(0xFFFFFFFF); // 亮色按钮上的字转白
+      return;
+    }
+
+    // ── 深色带（深色/黑色/透明/半透明）──
+    // 文字与 surface 都走主题，只动 bg（硬约束 2）
+    switch (kind) {
+      case CfBgKind.dark:
+        break; // 主题值已由上面 applyTheme 设好
+      case CfBgKind.black:
+        bg = const Color(0xFF000000);
+      case CfBgKind.clear:
+        bg = bg.withValues(alpha: 0);
+      case CfBgKind.translucent:
+        bg = bg.withValues(alpha: (bgOpacity / 100.0).clamp(0.0, 1.0));
+      case CfBgKind.custom:
+        // 自定义：用用户选的颜色，并**按亮度自动选文字色**
+        bg = customBgColor;
+        if (_readableOn(customBgColor) == _InkOn.light) {
+          // 亮色底 ⇒ 深色文字（否则白底白字）
+          surface = const Color(0xFFFFFFFF);
+          surface2 = const Color(0xFFEFF1F4);
+          surface3 = const Color(0xFFE6E9EE);
+          border = const Color(0xFFD8DCE3);
+          text = const Color(0xFF17191C);
+          text2 = const Color(0xFF5E646E);
+          text3 = const Color(0xFF8A9099);
+          ink = const Color(0xFFFFFFFF);
+        }
+        // 暗色底 ⇒ 保持主题文字色（上面 applyTheme 已设好）
+      case CfBgKind.dimWhite:
+      case CfBgKind.solidWhite:
+        break; // 已在上面 return
+    }
+  }
+
+  /// **自定义背景色**（用户可在 UI 里选）。
+  ///
+  /// ⚠️ 它的 alpha 由用户从调色板选（调色板项已含 alpha），
+  /// 不再叠 `bgOpacity`（见 `CfBgKindX.usesOpacity` 的说明）。
+  static Color customBgColor = const Color(0xFF1A1A22);
+
+  /// 判断某背景色上该用**浅色字**还是**深色字**。
+  ///
+  /// ## 判据：感知亮度（WCAG 的相对亮度公式简化版）
+  /// ```text
+  /// lum = 0.299*R + 0.587*G + 0.114*B      （0-255）
+  /// lum > 140  ⇒ 亮底 ⇒ 用深色字
+  /// ```
+  /// ## 阈值 140 的依据（实测样本）
+  /// | 颜色 | lum | 判定 |
+  /// |---|---|---|
+  /// | 纯白 #FFFFFF | 255 | 深字 ✅ |
+  /// | 浅白 #F7F8FA | 248 | 深字 ✅ |
+  /// | 中灰 #808080 | 128 | **浅字**（临界，浅字对比度 5.3:1 仍达标）|
+  /// | 深蓝 #0B1020 | 15 | 浅字 ✅ |
+  /// ⇒ 140 让中灰走"浅字"，因为它上面浅字对比度已达标且更协调。
+  static _InkOn _readableOn(Color c) {
+    // ⚠️ 用 `r/g/b`（Flutter 3.27+ 的 0.0-1.0 浮点）—— 老 API 的
+    //    `.red/.green/.blue`（0-255 整数）已废弃，混用会警告。
+    final lum = 0.299 * c.r * 255 + 0.587 * c.g * 255 + 0.114 * c.b * 255;
+    return lum > 140 ? _InkOn.light : _InkOn.dark;
+  }
+
+  /// 上一次 `applyTheme` 用的 index（`applyBackground` 需要它复位结构色）。
+  ///
+  /// ## 为什么不传参
+  /// `applyBackground` 在**外观页拖滑块**时被高频调用，
+  /// 每次都要求调用方传主题 index 会让调用点啰嗦且容易传错
+  /// ⇒ 内部记住最后一次的主题（`applyTheme` 里更新）。
+  static int _lastThemeIndex = 0;
+
   /// 应用主题预设（外观页保存 / 启动恢复时调用）
   static void applyTheme(int index) {
-    final p = themePresets[index.clamp(0, themePresets.length - 1)];
+    // 记住 index：`applyBackground` 复位结构色时要用（见那里的说明）
+    _lastThemeIndex = index.clamp(0, themePresets.length - 1);
+    final p = themePresets[_lastThemeIndex];
     accent = p.$2;
     accent2 = p.$3;
     accent3 = p.$4;

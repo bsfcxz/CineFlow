@@ -23,6 +23,34 @@ Future<void> main() async {
     Cf.applyTheme(themeIdx);
   } catch (_) {}
 
+  // ★ 恢复**背景底色**（用户 2026-10-14：六档 + 自定义）
+  //
+  // ## 为什么必须在这里恢复
+  // `Cf.bgKind` / `Cf.bgOpacity` 是**静态字段** ⇒ 首帧渲染前就得设好，
+  // 否则会"先闪一下深色、再跳到浅白"（观感差）。
+  // 与上面 `theme_index` 同一时机、同一理由。
+  //
+  // ## 容错
+  // 存的是 `CfBgKind.name` ⇒ `firstWhere` 找不到回退 `dark`
+  // （**不抛异常** —— 旧版本没有这个 pref）。
+  try {
+    final bgName = await SessionStore().getPref('bg_kind') ?? '';
+    final bgOp =
+        int.tryParse(await SessionStore().getPref('bg_opacity') ?? '') ?? 60;
+    final customHex = await SessionStore().getPref('bg_custom') ?? '';
+    if (customHex.isNotEmpty) {
+      final v = int.tryParse(customHex, radix: 16);
+      if (v != null) Cf.customBgColor = Color(v);
+    }
+    if (bgName.isNotEmpty) {
+      final kind = CfBgKind.values.firstWhere(
+        (e) => e.name == bgName,
+        orElse: () => CfBgKind.dark,
+      );
+      Cf.applyBackground(kind, opacity: bgOp);
+    }
+  } catch (_) {}
+
   // Go 核心逻辑层：尝试加载，失败不阻塞启动。
   // 当前业务逻辑仍在 Dart（ADR 0002 的纯 Dart 路径），Go 层是新引入的
   // 核心逻辑承载点（ADR 0004），处于"已打通、逐步迁移"阶段——
