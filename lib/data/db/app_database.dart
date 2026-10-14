@@ -300,13 +300,26 @@ class AppDatabase extends _$AppDatabase {
             //    Dart 泛型**不变** ⇒ 类型不匹配（编译错，实测）。
             //    SQLite 的 `ADD COLUMN ... DEFAULT 0` 是标准语法，直接发即可。
             //    （`0` 是常量默认值 —— SQLite 限制默认值必须是常量，正好满足。）
-            await customStatement(
-              'ALTER TABLE calendar_subscriptions '
-              'ADD COLUMN synced_to_server INTEGER NOT NULL DEFAULT 0',
-            );
+            // ⚠️ 同样要幂等：手写 SQL 也可能撞上"列已存在"
+            //    （与上面 status 同一类风险）
+            final have = await _columnNames('calendar_subscriptions');
+            if (!have.contains('synced_to_server')) {
+              await customStatement(
+                'ALTER TABLE calendar_subscriptions '
+                'ADD COLUMN synced_to_server INTEGER NOT NULL DEFAULT 0',
+              );
+            } else {
+              debugPrint('[DB] 迁移跳过（列已存在）: '
+                  'calendar_subscriptions.synced_to_server');
+            }
           }
           if (from < 3) {
-            await m.addColumn(calendarSubscriptions, calendarSubscriptions.status);
+            // ⚠️ **必须走幂等版** —— 直接 `m.addColumn` 会在
+            //    "库里已有该列但 user_version 落后"时**重复加列 ⇒ 崩溃**
+            //    （用户上报的 `duplicate column name: status`）。
+            //    详见 `_addColumnIfMissing` 的注释。
+            await _addColumnIfMissing(
+                m, calendarSubscriptions, calendarSubscriptions.status);
           }
           // ⚠️ 上面这条**不够**（真实事故）：`onUpgrade` 只在 from != to 时调用。
           //    若库的版本号已是 3 但列没建出来（开发期踩过），
@@ -450,16 +463,87 @@ class AppDatabase extends _$AppDatabase {
   /// ## 为什么用 PRAGMA 而不是版本号
   /// 版本号是"我以为的状态"，`PRAGMA table_info` 是"**实际**的状态"。
   /// 两者不一致时（开发期踩过），只有后者能救。
+
+  // ══════════════════════════════════════════════════════════════
+  //  迁移辅助（**幂等**）
+  // ══════════════════════════════════════════════════════════════
+
+  /// 取某表已有的列名集合（表不存在时返回空集）。
+  Future<Set<String>> _columnNames(String table) async {
+    try {
+      final rows =
+          await customSelect('PRAGMA table_info($table)').get();
+      return {for (final r in rows) r.read<String>('name')};
+    } catch (e) {
+      // ⚠️ 这里**不能静默吞**（本仓库踩过：`catch (_)` 让"查不到列"与
+      //    "列不存在"变成同一件事 ⇒ 误判 ⇒ 重复加列 ⇒ 启动崩溃）。
+      //    打日志便于定位；返回空集只作为最后兜底。
+      debugPrint('[DB] 取列失败（$table）: $e');
+      return const {};
+    }
+  }
+
+  /// **加列（幂等）** —— 列已存在则跳过。
+  ///
+  /// ## ★ 为什么必须用它，不能直接 `m.addColumn`
+  /// 真实崩溃（用户上报）：
+  /// ```
+  /// SqliteException(1): duplicate column name: status
+  /// Causing statement: ALTER TABLE "calendar_subscriptions"
+  ///                    ADD COLUMN "status" TEXT NOT NULL DEFAULT ''
+  /// ```
+  /// ### 根因（查 drift 源码确认）
+  /// · `drift` 的 `Migrator.addColumn`（`migration.dart:473`）**直接 ALTER**，
+  ///   **没有任何"列已存在"检查**
+  /// · 而 `onUpgrade` 的 `from < 3` 这类条件**假设 `user_version` 一定准确**
+  /// ⇒ 只要库的 `user_version` **落后于实际结构**（开发期反复改 schema、
+  ///   从备份恢复、跨设备同步文件…），就会重复加列 ⇒ **启动即崩**。
+  ///
+  /// ### 为什么"先查再加"是**唯一稳妥**的做法
+  /// 迁移的正确依据是**实际结构**，不是版本号 ——
+  /// 版本号只是个**优化提示**（决定要不要进迁移流程），
+  /// 不能用来判断"这一列到底有没有"。
+  /// ⇒ 与本仓库 `_healSchema` 的既有思路一致（`beforeOpen` 里实查 `PRAGMA`）。
+  Future<void> _addColumnIfMissing(
+    Migrator m,
+    TableInfo table,
+    GeneratedColumn column,
+  ) async {
+    final have = await _columnNames(table.actualTableName);
+    if (have.contains(column.name)) {
+      debugPrint('[DB] 迁移跳过（列已存在）: '
+          '${table.actualTableName}.${column.name}');
+      return;
+    }
+    await m.addColumn(table, column);
+  }
+
   Future<void> _healSchema() async {
     /// 代码期望的列（表名 → 列名集合）。
     /// ⚠️ 新增列时**两边都要加**：`Table` 定义 + 这里。
-    const expected = <String, List<String>>{
+    // ⚠️ 每条是 `(列名, SQL 类型)` 而不是纯列名 ——
+    //    因为**列类型不一样**：`synced_to_server` 是 INTEGER（bool），
+    //    其余是 TEXT。原来统一按 `TEXT NOT NULL DEFAULT ''` 补，
+    //    会把这一列补成 TEXT（SQLite 类型宽松、不报错，但语义错：
+    //    drift 读它时按 bool 解析，`''` 与 `'0'` 的行为不一致）。
+    const expected = <String, List<(String, String)>>{
       'calendar_subscriptions': [
-        'source', 'source_id', 'media_type', 'title', 'title_cn',
-        'poster_url', 'platform', 'category', 'last_air_date',
-        'subscribed_at',
+        ('source', 'TEXT NOT NULL DEFAULT \'\''),
+        ('source_id', 'TEXT NOT NULL DEFAULT \'\''),
+        ('media_type', 'TEXT NOT NULL DEFAULT \'tv\''),
+        ('title', 'TEXT NOT NULL DEFAULT \'\''),
+        ('title_cn', 'TEXT NOT NULL DEFAULT \'\''),
+        ('poster_url', 'TEXT NOT NULL DEFAULT \'\''),
+        ('platform', 'TEXT NOT NULL DEFAULT \'\''),
+        ('category', 'TEXT NOT NULL DEFAULT \'series\''),
+        ('last_air_date', 'TEXT NOT NULL DEFAULT \'\''),
+        ('subscribed_at', 'INTEGER NOT NULL DEFAULT 0'),
         // v3 新增（事故就是它）
-        'status',
+        ('status', 'TEXT NOT NULL DEFAULT \'\''),
+        // v5 新增 —— ⚠️ **原来漏了这列**：
+        // 自愈表是"代码期望的列"的**唯一清单**，漏列 ⇒ 那列永远不会被自愈补上。
+        // ⚠️ 它是 INTEGER（drift 的 BoolColumn），**不是** TEXT
+        ('synced_to_server', 'INTEGER NOT NULL DEFAULT 0'),
       ],
     };
 
@@ -468,12 +552,12 @@ class AppDatabase extends _$AppDatabase {
         final rows = await customSelect('PRAGMA table_info(${e.key})').get();
         if (rows.isEmpty) continue; // 表还不存在（新装库由 createAll 建）
         final have = {for (final r in rows) r.read<String>('name')};
-        for (final col in e.value) {
+        for (final (col, colType) in e.value) {
           if (have.contains(col)) continue;
-          // 缺列 ⇒ 补。全部按 TEXT + 默认空串（与本项目既有列风格一致）
+          // 缺列 ⇒ 按**该列自己的类型**补（见上面 expected 的说明）
           await customStatement(
-              "ALTER TABLE ${e.key} ADD COLUMN $col TEXT NOT NULL DEFAULT ''");
-          debugPrint('[DB] 自愈：${e.key}.$col 已补列');
+              'ALTER TABLE ${e.key} ADD COLUMN $col $colType');
+          debugPrint('[DB] 自愈：${e.key}.$col 已补列（$colType）');
         }
       } catch (err) {
         // 自愈失败**不能让 App 起不来** —— 记录后继续
