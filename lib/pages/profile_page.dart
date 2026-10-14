@@ -2,6 +2,7 @@
 library;
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -9,6 +10,7 @@ import '../core/theme.dart';
 import '../core/version.dart';
 import '../danmaku/danmaku_settings_page.dart';
 import 'about_page.dart';
+import 'trakt_settings_page.dart';
 import 'appearance_page.dart';
 import 'playback_settings_page.dart';
 import 'kernel_settings_page.dart';
@@ -220,6 +222,23 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                   context,
                   MaterialPageRoute(
                       builder: (_) => const DanmakuSettingsPage()),
+                ),
+              ),
+              // ★ Trakt（用户 2026-10-14 要求：与观看记录/收藏同步）
+              //
+              // ## 为什么放「弹幕设置」之后、「外观」之前
+              // 这三项都是"连接外部服务"类（弹幕源 / Trakt），
+              // 排在一起更符合心智；`外观` 属客户端偏好，放后面。
+              _SettingItem(
+                icon: Icons.sync_alt_rounded,
+                // Trakt 官方品牌紫
+                color: const Color(0xFF9F42C6),
+                title: 'Trakt',
+                sub: '连接账户 · 同步观看记录和收藏',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const TraktSettingsPage()),
                 ),
               ),
               _SettingItem(
@@ -480,12 +499,70 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
         break;
       }
     }
+
+    // ══════════════════════════════════════════════════════════
+    // ★★ **登录态校验**（用户上报："测延迟成功后切换账户访问不到数据"）
+    // ══════════════════════════════════════════════════════════
+    //
+    // ## 为什么需要（"假成功"的根源）
+    // 上面打的 `/System/Info/Public` 是 Emby 的**免鉴权公开接口** ——
+    // **token 早已失效也返回 200**。
+    // ⇒ 用户看到"延迟 42ms"，以为"这台是好的" ⇒ 切过去 ⇒
+    //    数据接口 401 ⇒ 页面空白 ⇒ "访问不到数据"。
+    //
+    // ## ⚠️ 用什么端点做校验（**踩过坑，别改**）
+    // 守卫测试 `profile_entries_test.dart:75` 记录了真机实测：
+    // ```
+    //   /System/Info/Public → ✅ 200（s1: 536ms / s2: 53ms）
+    //   /Users/Me           → ❌ **500**  ← 不能用它
+    // ```
+    // ⇒ 校验用 **`/Users/{id}/Views`** —— 它正是**首页在用的端点**，
+    //   所以"它 401"就必然等价于"首页打不开"，判据最贴合用户体感。
+    //   （我第一版用了 `/Users/Me`，被该守卫测试当场抓红。）
+    //
+    // ## 取不到 userId 时**跳过**校验
+    // 不能因为"拿不到 id"就误报"登录失效" —— 宁可只说"服务器可达"。
+    bool? authOk; // null = 未校验（拿不到 userId）
+    if (times.isNotEmpty && session.user.id.isNotEmpty) {
+      try {
+        final r = await dio.get<String>(
+            '$base/Users/${session.user.id}/Views',
+            options: Options(
+              responseType: ResponseType.plain,
+              headers: {
+                // `accessToken` 是**非空** String（写 `!= null` 会 warning）
+                'X-Emby-Token': session.accessToken,
+                'X-Emby-Authorization': 'MediaBrowser Client="CineFlow", '
+                    'Device="Android", '
+                    'DeviceId="${session.deviceId}", '
+                    'Version="1.0.0", '
+                    'Token="${session.accessToken}"',
+              },
+            ));
+        if (r.statusCode == 401 || r.statusCode == 403) {
+          authOk = false;
+          debugPrint('[Latency] 服务器连通但登录态失效 '
+              '(HTTP ${r.statusCode}) —— 需要重新登录');
+        } else if (r.statusCode == 200) {
+          authOk = true;
+        }
+        // 其它状态码（如 404 服务器版本差异）⇒ 不改结论（宁可不报）
+      } catch (e) {
+        // 校验请求本身失败 ⇒ 不改连通性结论，仅记录
+        debugPrint('[Latency] 登录态校验异常（不改连通性结论）: $e');
+      }
+    }
+
     if (!mounted) return;
     setState(() {
       _testing = false;
       if (times.isEmpty) {
         // 失败也要显示 —— "服务器不可达"同样是用户需要的信息
         _latencyError = err?.contains('timeout') ?? false ? '超时' : '不可达';
+      } else if (authOk == false) {
+        // ★ 服务器活着但**登录态失效** —— 这是最容易被误判为"可用"的情况
+        _latencyMs = null;
+        _latencyError = '登录已失效，请重新登录';
       } else {
         _latencyMs = times.reduce((a, b) => a < b ? a : b);
       }
@@ -523,80 +600,113 @@ class _ProfilePageState extends ConsumerState<ProfilePage> {
                   final isCur = cur != null &&
                       SessionStore.accountKey(cur) ==
                           SessionStore.accountKey(a);
-                  return InkWell(
-                    // ★ 整行可点（不只是圆点）——
-                    //   圆点只有 13px，就算扩到 48dp，用户也习惯点"那一行"。
-                    //   `InkWell` 自带水波纹 ⇒ 有按压反馈。
-                    onTap: () async {
-                      if (isCur) {
-                        // 已选中的那台点了要有反馈 —— 静默无反应会让用户
-                        // 以为"又点不动"（这正是本次报障的观感）。
-                        ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
-                          const SnackBar(
-                              content: Text('已是当前服务器'),
-                              duration: Duration(seconds: 1)),
-                        );
-                        return;
-                      }
-                      try {
-                        await ref.read(sessionProvider.notifier).switchTo(a);
-                        if (ctx.mounted) {
-                          ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
-                            SnackBar(
-                                content: Text('已切换到 ${a.user.name}'),
-                                duration: const Duration(seconds: 1)),
-                          );
-                        }
-                      } catch (e) {
-                        if (ctx.mounted) {
-                          ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
-                            SnackBar(content: Text('切换失败：$e')),
-                          );
-                        }
-                      }
-                    },
-                    borderRadius: BorderRadius.circular(Cf.radiusSm),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 4, vertical: 6),
-                      child: Row(children: [
-                        // 命中区 ≥48dp：视觉仍是 13px 图标，
-                        // 用 `CfTapTarget` 扩命中区（AGENTS §6.4.1）。
-                        //  ⚠️ 不用裸 `GestureDetector` —— 本仓库审计过
-                        //     5 处裸手势最小仅 16×16（既点不中又无反馈）。
-                        // size 36 + 上下 padding 6×2 = **48dp** 行高
-                        //（AGENTS §6.4.1：可点区域 ≥48dp；视觉圆点仍 13px）
-                        CfTapTarget(
-                          size: 36,
-                          semanticLabel: isCur
-                              ? '${a.user.name}，当前服务器'
-                              : '切换到 ${a.user.name}',
-                          onTap: null, // 交给外层 InkWell，避免双重触发
-                          child: Icon(
-                            isCur
-                                ? Icons.check_circle_rounded
-                                : Icons.circle_outlined,
-                            size: 13,
-                            color: isCur ? Cf.accent : Cf.text3,
+                  // ══════════════════════════════════════════════════
+                  // ★★★ 手势冲突修复（用户上报："测延迟成功后切换账户
+                  //     却访问不到数据"）
+                  // ══════════════════════════════════════════════════
+                  //
+                  // ## 原来错在哪（真机复现）
+                  // 原来这一行是 **整行 `InkWell` = 切换账号**，
+                  // 而里面的地址 chip 又是 **可点 = 测延迟** ⇒ 两个
+                  // 可点区**嵌套**且语义不同。真机实测：
+                  // ```
+                  //   点 <server-A> 那行的**地址**（本意测延迟）
+                  //   ⇒ 账号被切到 <server-B>（头部 11-128 → 2777）
+                  // ```
+                  // ⇒ 用户想测延迟，手指稍偏就**切了账号** ⇒
+                  //    切到一台他没打算用的台 ⇒ "访问不到数据"。
+                  //
+                  // ## 修法
+                  // · 整行**不可点**（去掉外层 InkWell）
+                  // · 切换改成**显式按钮**（文字"切换" + ≥48dp 命中区）
+                  // ⇒ 意图明确，两个动作不再抢同一个手势。
+                  //
+                  // ⚠️ 不要退回"整行可点" —— 那会让这个 bug 复现。
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 4, vertical: 6),
+                    child: Row(children: [
+                      // 命中区 ≥48dp：视觉仍是 13px 图标，用 `CfTapTarget`
+                      // 扩命中区（AGENTS §6.4.1）。
+                      //  ⚠️ 不用裸 `GestureDetector` —— 本仓库审计过
+                      //     5 处裸手势最小仅 16×16（既点不中又无反馈）。
+                      CfTapTarget(
+                        size: 36,
+                        semanticLabel: isCur
+                            ? '${a.user.name}，当前服务器'
+                            : '${a.user.name}',
+                        onTap: null,
+                        child: Icon(
+                          isCur
+                              ? Icons.check_circle_rounded
+                              : Icons.circle_outlined,
+                          size: 13,
+                          color: isCur ? Cf.accent : Cf.text3,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '${a.user.name} · '
+                          '${Uri.tryParse(a.serverUrl)?.host ?? a.serverUrl}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: isCur ? Cf.text : Cf.text2),
+                        ),
+                      ),
+                      // ★ 显式「切换」按钮（唯一能切换账号的入口）
+                      if (isCur)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 9),
+                          child: Text('当前',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: Cf.accent,
+                                  fontWeight: FontWeight.w700)),
+                        )
+                      else
+                        // ≥48dp 命中区：文字 11px + 上下 padding 9×2 ≈ 48
+                        Material(
+                          color: Colors.transparent,
+                          borderRadius: BorderRadius.circular(Cf.radiusSm),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(Cf.radiusSm),
+                            onTap: () async {
+                              try {
+                                await ref
+                                    .read(sessionProvider.notifier)
+                                    .switchTo(a);
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.maybeOf(ctx)
+                                      ?.showSnackBar(SnackBar(
+                                    content:
+                                        Text('已切换到 ${a.user.name}'),
+                                    duration: const Duration(seconds: 1),
+                                  ));
+                                }
+                              } catch (e) {
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.maybeOf(ctx)
+                                      ?.showSnackBar(SnackBar(
+                                          content: Text('切换失败：$e')));
+                                }
+                              }
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 9),
+                              child: Text('切换',
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: Cf.text2,
+                                      fontWeight: FontWeight.w600)),
+                            ),
                           ),
                         ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            '${a.user.name} · '
-                            '${Uri.tryParse(a.serverUrl)?.host ?? a.serverUrl}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                                fontSize: 11,
-                                color: isCur ? Cf.text : Cf.text2),
-                          ),
-                        ),
-                        if (!isCur)
-                          Icon(Icons.chevron_right_rounded,
-                              size: 15, color: Cf.text3),
-                      ]),
-                    ),
+                    ]),
                   );
                 }),
             ],

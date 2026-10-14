@@ -5,6 +5,8 @@ library;
 // ⚠️ 不加这个 import 会报 "The operator '&' isn't defined"。
 import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../core/theme.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 // `statusCnOf` —— 状态规范化（Emby 的 `Continuing` → 「连载中」）。
@@ -103,7 +105,16 @@ class SessionNotifier extends AsyncNotifier<MediaSession?> {
   Future<void> switchTo(MediaSession s) async {
     final store = ref.read(sessionStoreProvider);
     await store.saveSession(s);
+    // ⚠️ 三处失效**都要**（用户上报："切换账户却访问不到数据"）：
+    //  · `embyApiProvider`      = 当前会话的 API 实例（首页/详情/播放用）
+    //  · `accountsProvider`     = 账号列表（聚合搜索用；它 watch 了
+    //                             `sessionProvider.future`，但显式失效更稳，
+    //                             免得依赖"恰好会重算"这种巧合）
+    //  · `accountApisProvider`  = 每账号一套 API（依赖 accountsProvider）
+    // 漏掉后两者 ⇒ 切换后搜索仍打旧服务器（或结果为空）。
     ref.invalidate(embyApiProvider);
+    ref.invalidate(accountsProvider);
+    ref.invalidate(accountApisProvider);
     state = AsyncData(s);
   }
 
@@ -117,7 +128,10 @@ class SessionNotifier extends AsyncNotifier<MediaSession?> {
     if (cur != null) {
       debugPrint('[Session] 已退出当前会话（账号保留在列表，可再切回）');
     }
+    // 与 switchTo 同理：退出也要让聚合列表跟着变（否则搜索还打已退出的台）
     ref.invalidate(embyApiProvider);
+    ref.invalidate(accountsProvider);
+    ref.invalidate(accountApisProvider);
     state = const AsyncData(null);
   }
 
@@ -197,6 +211,26 @@ class ThemeIndexNotifier extends Notifier<int> {
 final themeIndexProvider =
     NotifierProvider<ThemeIndexNotifier, int>(ThemeIndexNotifier.new);
 
+/// **背景样式**状态（用户 2026-10-14 要求：白色 / 毛玻璃 / 透明 0-100）。
+///
+/// ## 为什么与 `themeIndexProvider` 分开
+/// 两者**正交**：用户可以"粉色主题 + 毛玻璃背景"。
+/// 合成一个状态会让"只想换背景"的人**连带换掉强调色**（不是他要的）。
+///
+/// ## 为什么用 Notifier 而不是直接改 `Cf.bgStyle`
+/// `Cf.bgStyle` 是**静态可变字段**（与 `Cf.bg` 同款），改了它
+/// **不会触发重建** ⇒ 界面不刷新。`Notifier` 的作用是让根 widget
+/// 监听它并重建（`main.dart` 已用 `themeIndexProvider` 做同样的事）。
+class BgStyleNotifier extends Notifier<CfBgKind> {
+  @override
+  CfBgKind build() => CfBgKind.dark;
+
+  void set(CfBgKind v) => state = v;
+}
+
+final bgStyleProvider =
+    NotifierProvider<BgStyleNotifier, CfBgKind>(BgStyleNotifier.new);
+
 /// 首页顶栏齿轮 → 切到「我的」Tab
 class HomeTabNotifier extends Notifier<int> {
   @override
@@ -207,7 +241,26 @@ class HomeTabNotifier extends Notifier<int> {
 final homeTabProvider =
     NotifierProvider<HomeTabNotifier, int>(HomeTabNotifier.new);
 
-/// 当前可用的 MediaProvider（未登录为 null）
+/// 当前可用的 MediaProvider（未登录为 null）。
+///
+/// ## ⚠️ 关于 `.value` 的**更正**（我一度判断错）
+/// 我曾以为"`.value` 在 `AsyncLoading` 期间是 null ⇒ 假未登录"，
+/// 并为此加了"最后一次会话"兜底。**那个判断是错的** ——
+/// riverpod 2.6.1 源码（`common.dart:205-217`）写着：
+/// ```
+/// /// It will return the previous value during loading/error state.
+/// /// If there is no previous value, reading [value] during loading
+/// /// state will return null.
+/// T? get value;
+/// ```
+/// ⇒ `.value` **在 loading 期间返回上一次的值**，不会假 null。
+/// 只有"**从未有过值**"时才 null —— 那种情况确实就是未登录。
+/// ⇒ 兜底代码已删除（它基于错误前提，且会**掩盖真问题**）。
+///
+/// ## 那"切换账户后访问不到数据"的真因是什么
+/// 见 `profile_page._testLatency` 与 `EmbyProvider` 的 401 处理：
+/// 测延迟打的是**免鉴权**的 `/System/Info/Public` ⇒ token 失效也"成功"
+/// ⇒ 用户切过去才 401。**与本 provider 无关。**
 final embyApiProvider = Provider<MediaProvider?>((ref) {
   final s = ref.watch(sessionProvider).value;
   return s == null ? null : EmbyProvider(s);
