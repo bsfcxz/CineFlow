@@ -822,14 +822,51 @@ class TraktEpisodeResolver {
   /// ## 为什么是 push 而不是 pull
   /// 让"谁有数据"主动推给"谁需要数据"，而不是让播放路径去拉网络
   /// ⇒ 起播不受影响。这是本类的**唯一**依赖注入点。
-  static void seedReverseMap(Map<String, String> tmdbToSeriesId) {
+  ///
+  /// ## 🔴 2026-10-15 修了一个**方向反转两次**的真 bug
+  /// 参数语义是 **`seriesId → tmdbId`**（与 `_reverseCache` 同一个方向），
+  /// 而**旧实现又反转了一次** ⇒ 转两次 = 回到 `tmdbId → seriesId`
+  /// ⇒ `tmdbIdForSeries(seriesId)` **永远查不到**。
+  ///
+  /// 真机证据（用户报障："光阴之外 / 仙逆未同步"）：
+  /// ```
+  /// 19:42:22  [Trakt] 反向映射已预热: 5713 条（seriesId → tmdb）  ← 数量对
+  /// 19:45:18  [TraktTrack] 反向映射未预热 ⇒ 本次跳过              ← 其实"查不到"
+  /// ```
+  /// ⚠️ 数量是**对的**（5713），所以日志看起来完全正常 ⇒
+  ///    只靠"条数"判断预热成功**永远发现不了这个 bug**。
+  ///
+  /// ## 契约（**调用方必须遵守**）
+  /// | 参数 | 方向 |
+  /// |---|---|
+  /// | `seedReverseMap(v)` | `v[seriesId] = tmdbId` |
+  /// | `_reverseCache` | 同上（不再反转）|
+  /// | `tmdbIdForSeries(seriesId)` | 返回 `tmdbId` |
+  ///
+  /// ⚠️ **旧实现的锅**：参数名叫 `tmdbToSeriesId`（暗示 tmdb→series），
+  ///    而调用方 `providers.dart` 传的却是 `rev`（已是 series→tmdb）
+  ///    ⇒ 名字与实际相反，两边各自反转 ⇒ 抵消。
+  ///    ⇒ 现在**参数名改成 `seriesToTmdb`**，名实一致，杜绝再犯。
+  static void seedReverseMap(Map<String, String> seriesToTmdb) {
     final out = <String, String>{};
-    for (final e in tmdbToSeriesId.entries) {
-      if (e.key.isNotEmpty && e.value.isNotEmpty) out[e.value] = e.key;
+    for (final e in seriesToTmdb.entries) {
+      // ⚠️ **不再反转** —— 直接收下（见上面的契约表）
+      if (e.key.isNotEmpty && e.value.isNotEmpty) out[e.key] = e.value;
     }
     _reverseCache = out;
-    debugPrint('[Trakt] 反向映射已预热: ${out.length} 条（seriesId → tmdb）');
+    // ⚠️ 自检样本的**截断要防越界**（测试用 1 字符 key 暴露过
+    //    `RangeError: Invalid value: Not in inclusive range 0..1: 2`）
+    // ⇒ 用 `clamp` 而不是硬编码 `substring(0, 2)`。
+    final sample = out.isEmpty
+        ? ''
+        : '，样本 ${_head(out.keys.first, 8)}… → ${_head(out.values.first, 12)}';
+    debugPrint('[Trakt] 反向映射已预热: ${out.length} 条（seriesId → tmdb）'
+        // ★ 附一条**可自检**的样本：光看条数发现不了"方向反了"
+        '$sample');
   }
+
+  /// 安全截断（`s` 短于 `n` 时原样返回，**不越界**）。
+  static String _head(String s, int n) => s.length <= n ? s : s.substring(0, n);
 
   /// 查 `seriesId` 对应的 tmdb id。**只读缓存，不发网络请求**。
   ///
