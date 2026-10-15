@@ -44,21 +44,36 @@ MediaTraits traitsFromLaunch(PlaybackLaunch launch) {
 
   /// ★★ 是否有 **PGS 图形字幕**（真机报障："字幕还是没有显示出在画面中"）。
   ///
-  /// ## 为什么这个字段决定内核选择
-  /// 两个内核对 PGS 的能力**不同**（都已核实）：
+  /// ## 两个内核对 PGS 的能力（2026-10-15 **已更新**）
   /// | 内核 | PGS 支持 | 证据 |
   /// |---|---|---|
-  /// | **Media3** | ✅ 有 | `media3-extractor-1.4.1.aar` 里确有<br>`androidx.media3.extractor.text.pgs.PgsParser` |
-  /// | **mpv（自持 .so）** | ❌ 缺 | 真机：`Could not find subtitle decoder for format 'hdmv_pgs_subtitle'`；<br>且符号表里**没有** `ff_pgssub_decoder` |
+  /// | **Media3** | ✅ 有 | `media3-extractor-1.4.1.aar` 里确有 `PgsParser` |
+  /// | **mpv（自持 .so）** | ✅ **有**（本轮已修）| 符号级实测 `ff_pgssub_decoder` **1** |
   ///
-  /// ## 修法（不是"改 UI"，是**把这类片源路由给能显示的内核**）
-  /// 原规则 R4 把"有外挂字幕"判给 mpv —— 但**内嵌 PGS** 走的是
-  /// 规则 R5 默认（也是 mpv）⇒ PGS 片源**一律落到缺解码器的 mpv 上**
-  /// ⇒ "别的播放器能显示、我们显示不出来"。
-  /// ⇒ 新增规则：**有 PGS 字幕 ⇒ 优先 Media3**。
+  /// ⚠️ **本条曾经是 `❌ 缺`** —— 那时 `.so` 是 `default` 白名单变体
+  /// （150 个解码器，无 pgssub），真机报
+  /// `Could not find subtitle decoder for format 'hdmv_pgs_subtitle'`。
   ///
-  /// ⚠️ 若将来换掉 `libmpv.so`（补上 pgssub），这条规则应删除或放宽
-  ///   （见 `tool/check_mpv_decoders.py` 的自检输出）。
+  /// **2026-10-15 换成 `full` 变体**（`media-kit/libmpv-android-video-build`
+  /// v1.1.11 `full-arm64-v8a.jar`）：
+  /// ```
+  /// 旧 default：150 个解码器  ff_pgssub_decoder ❌ 0（含 truehd/mlp/mov_text 也缺）
+  /// 新 full   ：513 个解码器  ff_pgssub_decoder ✅ 1
+  /// tool/check_mpv_decoders.py → 18/18 通过
+  /// ```
+  ///
+  /// ## 连带改动（**必须一起看**）
+  /// `kernel_auto_select.dart` 里原有一条**最高优先级**规则
+  /// "有 PGS ⇒ 强制走 Media3"，**依据就是"mpv 缺这个解码器"**。
+  /// 该前提已不成立 ⇒ **规则已删除**（它自己的注释就写明了删除条件）。
+  ///
+  /// ⚠️ 否则后果是：PGS 片源被强制降级到 Media3
+  /// ⇒ 丢掉 mpv 的 HDR 色调映射 + 4 项独有能力（滤镜/延迟/运行中切硬解）。
+  ///
+  /// ## 字段为什么**保留**（不删）
+  /// 它是"**mpv 是否有 PGS 能力**"这个前提的**数据载体**：
+  /// 若将来 `.so` 又被换回裁剪版（`check_mpv_decoders.py` 会报红），
+  /// 应把这**按原样恢复** ⇒ 前提信息还在，不必重做数据管道。
   var hasPgsSubtitle = false;
 
   /// 视频动态范围（SDR / HDR10 / DOVI…）。

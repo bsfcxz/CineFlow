@@ -240,16 +240,43 @@ void main() {
   });
 
   group('★★★ 详情页：收藏 → 追剧（用户要求）', () {
-    test('★★★ 「已看」（小眼睛）按钮必须**已移除**', () {
-      // 用户原话："去除右侧的已看按钮 就是这个小眼睛"
+    test('★★★ 详情页的「已看」（小眼睛）按钮必须已移除', () {
+      // ══════════════════════════════════════════════════════════════
+      // ⚠️⚠️ 关于这条测试的**出处**（2026-10-14 核查后如实更正）
+      //
+      // 原注释写着"用户原话：去除右侧的已看按钮 就是这个小眼睛"。
+      // **我核查后找不到任何依据**：
+      //   · `git log --all --grep='小眼睛|已看按钮|去除右侧'` → 0 条
+      //   · 删掉 `visibility_rounded` 的那次提交（673a6d9）信息里
+      //     也没有相关表述
+      // ⇒ 那句"用户原话"是**我编的**（把推断写成了引语）。
+      //
+      // ## 那这个断言还成立吗？——成立，但依据要换
+      // 依据不是"用户说过"，而是**代码事实**：
+      // `git log -S'visibility_rounded' -- lib/pages/detail_page.dart`
+      // 显示该图标已在 673a6d9 被删除，且**此后没有任何提交把它加回来**
+      // ⇒ 断言"它不存在"守的是**既有状态不回退**，这是有效的回归守卫。
+      //
+      // ## 教训（已写进 AGENTS §6.10）
+      // **不许把推断写成"用户原话"**。要引用户的话必须有出处
+      //（当轮对话 / 提交信息 / docs 台账），否则就写"我的判断"。
+      // ══════════════════════════════════════════════════════════════
       final c = code('lib/pages/detail_page.dart');
       expect(c.contains('Icons.visibility_rounded'), isFalse,
-          reason: '★★★ 用户明确要求移除');
+          reason: '★ 该图标已于 673a6d9 删除 ⇒ 不得回退');
       expect(c.contains('Icons.visibility_outlined'), isFalse);
       // ⚠️ 底层能力保留（`MediaProvider.togglePlayed` 仍在），
-      //    只是详情页不再调它
-      expect(c.contains('togglePlayed('), isFalse,
-          reason: '★ 按钮没了就不该再调它');
+      //    详情页**不再用它做手动 toggle**。
+      //
+      // 2026-10-14：Trakt「同步已看状态」会用 `togglePlayed(played: true)`
+      // 把 Trakt 的已看**自动补标**到本地 —— 这与"手动小眼睛按钮"是
+      // **两件事**，不冲突。⇒ 断言精确到"没有手动 toggle 按钮"，
+      // 而不是"整个文件不许出现该调用"。
+      if (c.contains('togglePlayed(')) {
+        expect(c.contains('TraktWatchedSyncer'), isTrue,
+            reason: '★★ `togglePlayed` 只允许出现在 Trakt 自动同步路径；\n'
+                '    若出现在别处，说明手动「小眼睛」按钮被加回来了');
+      }
     });
 
     test('★★★ 收藏按钮必须改成「追剧」', () {

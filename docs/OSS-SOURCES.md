@@ -41,6 +41,10 @@
 | S5 115 | [power721/115driver](https://github.com/power721/115driver) | 1 | 2026-09-13 | 同上游 | **是 `SheltonZhu/115driver` 的 fork（`fork:true`）**，非独立实现 | ❌ 不作独立证据源 | 已核实 |
 | S5 115 | [lvzhenbo/115-plus-desktop](https://github.com/lvzhenbo/115-plus-desktop) | — | — | **MIT** | ★ 基于 **115 官方开放平台**的完整第三方客户端（Rust/Tauri）——许可安全且路线与本项目一致，**替代 GPL-3.0 的 boxplayer 作为首选参考** | ✅ 可提取协议事实 | 已核实 |
 | S5 115 | [gaozhangmin/boxplayer](https://github.com/gaozhangmin/boxplayer) | 6976 | 2026-09-29 | **GPL-3.0**（README 徽章标 MIT 是**错的**，其徽章 URL 指向 `gaozhangmin/aliyunpan`） | 115 开放平台调用范例（设备码+PKCE、`video/play`、UA 绑定注册表） | ⚠ **强 copyleft：绝不可抄代码**（会传染本项目为 GPL）；**仅提取协议事实** | 已核实（2026-10-05 核实真实 LICENSE） |
+| **S6 TMDB** | [jellyfin/jellyfin](https://github.com/jellyfin/jellyfin) | 58103 | 2026-10-14 | **GPL-2.0** | `MediaBrowser.Providers/Plugins/Tmdb/TmdbClientManager.cs`：**12 个缓存键全部带 `language`** → 印证"缓存键必须覆盖全部影响结果的输入"；`ThumbnailSizes`（Primary w500 / Backdrop w780）；`CacheDurationInHours=1` + 缓存按记录数限容；`ThrowApiExceptions=false` | ❌ **仅借鉴设计**，禁止合并源码 | 已核实（2026-10-15，含代码级提取）|
+| **S6 TMDB** | [sct/overseerr](https://github.com/sct/overseerr) | 4970 | 2026-02-15 | **MIT** | `server/routes/discover.ts` + `constants/discover.ts`：discover 的**入口枚举化**（`DiscoverSliderType`，genre 是一等公民）、`sortBy` 作为**可配置参数**透传、`region` 三级回退、**`language` 与 `originalLanguage` 严格区分**；`server/api/themoviedb/index.ts` 的 **`SortOptions` 全集**（16 个合法值）| ✅ **许可安全**（MIT）；仍以"借鉴设计"为主，本项目用 Dart 重写 | 已核实（2026-10-15，含代码级提取）|
+| **S6 TMDB** | [Fallenbagel/jellyseerr](https://github.com/Fallenbagel/jellyseerr) | 12907 | 2026-10-15 | MIT | Overseerr 的活跃分支（discover 体系同源，更新更勤） | ✅ 许可安全 | 已核实（2026-10-15）|
+| **S6 TMDB** | [Radarr/Radarr](https://github.com/Radarr/Radarr) | 14575 | 2026-10-15 | **GPL-3.0** | 元数据管理标杆（37 个 TMDB 文件），但场景是**下载器**（与浏览/播放不同）| ❌ 仅借鉴思路 | 已核实（2026-10-15）|
 
 ## 已作废（核实失败，禁止再引用）
 
@@ -55,6 +59,29 @@
 | 仓库 | 实测结果 | 处置 |
 |---|---|---|
 | [chicring/Themby-Release](https://github.com/chicring/Themby-Release) | 61★，最近提交 **2024-08-20**（停更超 2 年），许可 **NOASSERTION**（无明确许可） | 本仓库 `ACKNOWLEDGEMENTS.md` 与 `docs/DEVELOPMENT.md` 借鉴了它的**控制层布局与进度上报协议**（属"借鉴想法与协议理解"范畴，未合并任何源码）。按本文件许可规矩，**不得复制其任何代码**；若将来要抄，必须先联系作者确认。停更较久，引用前重新核实 |
+
+## ⛔ pub.dev 包评估：**明确不引**（2026-10-15 实测）
+
+> 触发：有人建议"Pub 上有 `tmdb_api`、`tmdb_flutter` 等现成包，
+> 可直接在 Flutter 中完成元数据查询，无需自己封装 HTTP 请求"。
+> **结论：不引**。数据来自 pub.dev 官方 API（非网页），可复现：
+> ```bash
+> curl -s https://pub.dev/api/packages/tmdb_api/score      # → license:gpl-3.0
+> curl -s https://pub.dev/api/packages/tmdb_flutter/score  # → license:mit
+> ```
+
+| 包 | 许可 | 版本数 | 30 天下载 | 赞 | 判定 |
+|---|---|---:|---:|---:|---|
+| `tmdb_api` | 🔴 **GPL-3.0** | 26 | 1421 | 61 | **禁用** —— 会传染本项目为 GPL（本文件开头即禁止合并 GPL/AGPL）|
+| `tmdb_flutter` | MIT | **1** | **16** | **1** | 不可用 —— 只发过 1 个版本、30 天 16 次下载 ≈ 仅作者自用 |
+| `tmdb_dart` | MIT | 16 | 26 | 13 | 不可用 —— 停更 4 年（2022-01）|
+| `tmdb` | — | — | — | — | 已死（`0.0.2-alpha`，2015 年）|
+
+**补充论据（为什么"换包"本身就是错方向）**：
+本轮 `分类浏览` 的四个真 bug **无一在 HTTP 封装层** ——
+① 排序维度全同 ② 电影无 genre 不自知 ③ 客户端重排覆盖服务端排序
+④ **缓存键漏 `sort_by`** ⇒ 换任何 HTTP 封装包**一个都修不好**。
+详见 [`docs/lessons/tmdb-integration-research.md`](lessons/tmdb-integration-research.md)。
 
 > 教训：搜索引擎摘要里的仓库名（尤其镜像站 ghub.com / github.de 的条目）会失真，一定 API 核实。
 > 教训二：**`--verify` 要连许可一起看**——`plezy`（3595★，很活跃）实为 **GPL-3.0**，

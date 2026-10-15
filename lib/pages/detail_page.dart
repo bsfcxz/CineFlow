@@ -2,6 +2,9 @@
 /// 剧集模式（季选择器 + 分集列表）/ 电影模式（媒体流信息 + 多版本切换）
 library;
 
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +13,8 @@ import 'package:go_router/go_router.dart';
 import '../core/router.dart';
 import '../core/theme.dart';
 import '../widgets/media_tags.dart';
+import '../data/trakt_client.dart';
+import '../data/trakt_watched.dart';
 import '../data/emby_provider.dart';
 import '../data/media_provider.dart';
 // ⚠️ `show` 选择器会**屏蔽其它名字** —— 漏写就报 "Undefined class"。
@@ -254,6 +259,30 @@ class _DetailPageState extends ConsumerState<DetailPage> {
   /// 用户在 Emby 里收藏过的剧必须也显示"已追"，否则会以为数据丢了。
   bool _following = false;
   bool _toggling = false;
+
+  /// 是否显示「同步 Trakt」按钮（开关 + 已登录）。
+  bool _showTraktSync = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Trakt「同步已看」开关 ⇒ 决定详情页是否显示同步按钮
+    unawaited(_loadTraktSyncFlag());
+  }
+
+  /// 同步进行中（防重复点击 + 显示 spinner）。
+  bool _syncing = false;
+
+  // ---- 「同步已看」的**诊断计数**（只在失败日志里用）----
+  //
+  // ## 为什么需要（2026-10-15 用户报障）
+  // 原来失败只有一句 `同步已看失败: 服务器错误 (404)`，
+  // **不知道是哪一步**：季节列表？某季的集？还是 markPlayed？
+  // ⇒ 三个计数器记录"走到哪一步才爆"，下次复现能一眼定位。
+  //（通用教训：错误处理不能只报"失败了"，要报"**在哪**失败"。）
+  int _syncDbgSeasons = 0;
+  int _syncDbgEpisodes = 0;
+  int _syncDbgMarked = 0;
 
   /// 分集区的定位锚点：剧集的「选集播放」按钮靠它滚过去。
   final _seriesKey = GlobalKey();
@@ -931,6 +960,39 @@ class _DetailPageState extends ConsumerState<DetailPage> {
     }
   }
 
+  /// 读「同步已看状态」开关 + 登录态 ⇒ 决定是否显示同步按钮。
+  ///
+  /// ## 为什么要在 initState 读（而不是 build 里）
+  /// 它们是 **pref + secure_storage**（Keystore 解密）⇒ 放到 build 会让
+  /// 每帧都可能触发异步读（本仓库踩过同类性能问题）。
+  Future<void> _loadTraktSyncFlag() async {
+    try {
+      final store = ref.read(sessionStoreProvider);
+      final flags = await store.traktFlags();
+      if (!flags.sync) return;      // 开关关 ⇒ 不显示
+      final tok = await store.loadTraktAccessToken();
+      final on = tok != null && tok.isNotEmpty;
+      if (mounted && on != _showTraktSync) {
+        setState(() => _showTraktSync = on);
+      }
+    } catch (e) {
+      debugPrint('[Detail] 读 Trakt 同步开关失败: ');
+    }
+  }
+
+  /// 轻提示（与详情页既有的 SnackBar 风格一致）。
+  ///
+  /// ## 为什么不用 _toast
+  /// 我第一版写了 _toast，但详情页**没有**这个方法
+  ///（它一直用 ScaffoldMessenger.of(context).showSnackBar）
+  /// ⇒ 复用既有风格，不新造第二套提示方式。
+  void _snack(String msg, {int seconds = 2}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: Duration(seconds: seconds)),
+    );
+  }
+
   /// 剧集起播失败时的退路：滚到分集区 + 轻提示（不静默）。
   void _fallbackToEpisodes(String msg) {
     if (mounted) {
@@ -1094,6 +1156,53 @@ class _DetailPageState extends ConsumerState<DetailPage> {
           ),
         ),
       ),
+      // ── Trakt 同步（「同步已看状态」开关，2026-10-14）──
+      //
+      // ## 用户报告的问题
+      // > 没有给我的 trakt 同步观看记录
+      // **根因**：我上一轮只实现了 API 与开关，**没写调用方**
+      //（`addEpisodesToHistory` 的调用点 = 0）。
+      //
+      // ## 为什么放在详情页（而不是播放器）
+      // 这是**剧级**操作（一次同步整部剧的已看）。
+      // 播放器是**集级**（实时追踪）。两者语义不同。
+      //
+      // ## 为什么用图标按钮（不占满宽）
+      // 主/次按钮已是 `flex:1` 各占一半；再加一个等宽按钮会让
+      // "立即播放" 变窄（用户最常用的按钮不该被挤）。
+      // 图标按钮 46×46 足够（≥48dp 命中区由背景 padding 补足）。
+      if (_showTraktSync)
+        Padding(
+          padding: const EdgeInsets.only(left: 10),
+          child: SizedBox(
+            width: 46,
+            height: 46,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                // 改成**先选方向**（用户 2026-10-15 截图规格：
+                // 「服务器到Trakt」/「Trakt到服务器」两个单选项 + 同步/取消）
+                onTap: _syncing ? null : () => _showTraktSyncSheet(item),
+                borderRadius: BorderRadius.circular(Cf.radiusMd),
+                child: Ink(
+                  decoration: BoxDecoration(
+                    color: const Color(0x0FFFFFFF),
+                    border: Border.all(color: const Color(0x1FFFFFFF)),
+                    borderRadius: BorderRadius.circular(Cf.radiusMd),
+                  ),
+                  child: Center(
+                    child: _syncing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : Icon(Icons.sync_rounded, size: 18, color: Cf.text2),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
     ]);
   }
 
@@ -1139,6 +1248,551 @@ class _DetailPageState extends ConsumerState<DetailPage> {
   /// ② **Emby 收藏**（同步）—— 失败只提示，**不回滚本地**
   ///
   /// ⚠️ 顺序不能反：若先写服务端，服务器不可达时用户连本地都订不上。
+  /// 把**本剧在 Emby 里已看的集**同步到 Trakt（`POST /sync/history`）。
+  ///
+  /// ## 契约依据
+  /// ```ts
+  /// POST /sync/history
+  /// body: { episodes: [{ ids: { trakt } | { tvdb } }] }
+  /// resp: { added: { movies, episodes }, updated, not_found }
+  /// ```
+  /// ⚠️ **集级只认 trakt/tvdb**（`episodeIdsRequestSchema` 无 tmdb）
+  /// ⇒ 每一集都要先解析出 trakt id。
+  ///
+  /// ## 为什么每集都可能一次网络请求
+  /// `resolveEpisode` 先查 `tmdb → trakt show`（有缓存），
+  /// 再查 `某季的集列表`（**季级缓存**）⇒ 同季的后续集**命中缓存**。
+  ///
+  /// ## 失败处理
+  /// · 单集解析失败 ⇒ **跳过它**（不中断整批 —— 新集可能 Trakt 还没收录）
+  /// · 全部失败 ⇒ 明确提示，不假装成功
+  /// **「Trakt 已看状态同步」对话框**（用户 2026-10-15 截图规格）。
+  ///
+  /// ## 截图规格（逐条对齐）
+  /// ```
+  /// 标题: Trakt 已看状态同步
+  /// 两个可选卡片（单选）:
+  ///   ① 服务器到Trakt  —— 将服务器上的已看状态同步到Trakt   ← 默认选中
+  ///   ② Trakt到服务器  —— 将Trakt上的已看状态同步到服务器
+  /// 底部: [同步] [取消]
+  /// ```
+  ///
+  /// ## 为什么默认选「服务器到Trakt」
+  /// · 本地 Emby 状态是用户**正在用**的那份（他刚在这个 App 里看的）
+  /// · 而"从 Trakt 拉"会**写本地数据**（`togglePlayed`）
+  /// ⇒ 默认选**风险小**的方向（推不改本地）。
+  ///
+  /// ## 为什么用 `showDialog` 而不是 BottomSheet
+  /// 截图是**居中对话框**（两侧有边距、有标题栏），不是底部抽屉。
+  Future<void> _showTraktSyncSheet(MediaItem item) async {
+    var serverToTrakt = true;   // 默认方向
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          backgroundColor: Cf.surface,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(Cf.radiusMd)),
+          title: const Text('Trakt 已看状态同步'),
+          contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _dirCard(
+                icon: Icons.cloud_upload_outlined,
+                title: '服务器到Trakt',
+                sub: '将服务器上的已看状态同步到Trakt',
+                selected: serverToTrakt,
+                onTap: () => setDlg(() => serverToTrakt = true),
+              ),
+              const SizedBox(height: 10),
+              _dirCard(
+                icon: Icons.cloud_download_outlined,
+                title: 'Trakt到服务器',
+                sub: '将Trakt上的已看状态同步到服务器',
+                selected: !serverToTrakt,
+                onTap: () => setDlg(() => serverToTrakt = false),
+              ),
+            ],
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('同步'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await _syncToTrakt(item, serverToTrakt: serverToTrakt);
+  }
+
+  /// 方向选择卡片（选中 = 品牌色填充；未选 = 描边）。
+  Widget _dirCard({
+    required IconData icon,
+    required String title,
+    required String sub,
+    required bool selected,
+    required VoidCallback onTap,
+  }) =>
+      InkWell(
+        borderRadius: BorderRadius.circular(Cf.radiusSm),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: selected ? Cf.accent : Colors.transparent,
+            borderRadius: BorderRadius.circular(Cf.radiusSm),
+            border: Border.all(
+                color: selected ? Cf.accent : Cf.border, width: 1.2),
+          ),
+          child: Row(children: [
+            Icon(icon, size: 22, color: selected ? Cf.ink : Cf.text2),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: selected ? Cf.ink : Cf.text)),
+                  const SizedBox(height: 2),
+                  Text(sub,
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: selected
+                              ? Cf.ink.withValues(alpha: 0.85)
+                              : Cf.text3)),
+                ],
+              ),
+            ),
+          ]),
+        ),
+      );
+
+  /// 同步已看状态。
+  ///
+  /// [serverToTrakt] 决定方向（用户在对话框里选）：
+  /// · `true`  = **服务器 → Trakt**（推；`POST /sync/history`）
+  /// · `false` = **Trakt → 服务器**（拉；`GET /sync/watched/shows`
+  ///   + 逐集 `togglePlayed` —— **只加不减**，见 `TraktWatchedSyncer`）
+  Future<void> _syncToTrakt(MediaItem item,
+      {bool serverToTrakt = true}) async {
+    if (_syncing) return;
+    setState(() => _syncing = true);
+    _syncDbgSeasons = 0;
+    _syncDbgEpisodes = 0;
+    _syncDbgMarked = 0;
+    var skipCount = 0;
+    // ★ 当前**步骤名**（诊断用）。
+    //
+    // ## 为什么用它而不是计数器
+    // 计数器只能**事后推断**"走到哪一步"（我上一轮就因误插而误判）。
+    // `step` 是**当场记录**：异常时直接打印"爆在哪一步"，无需推断。
+    var step = '开始';
+    try {
+      final store = ref.read(sessionStoreProvider);
+      // ★ `resolveTraktClientId()` 含内置凭据兜底 ——
+      //   `loadTraktClientId()` 只读用户自填的（用内置时恒为空
+      //   ⇒ 会误判"未登录"，见本方法开头）。
+      step = '取 Client ID';
+      final cid = await store.resolveTraktClientId();
+      final tok = await store.loadTraktAccessToken();
+      if (cid == null || cid.isEmpty || tok == null || tok.isEmpty) {
+        _snack('未登录 Trakt');
+        return;
+      }
+
+      // ① item 的 tmdb id
+      //
+      // ## ⚠️ 2026-10-15 修的一个真 bug（用户报障 404 的根因）
+      // 原代码**无条件**走剧集路径 ⇒ 对**电影**调 `getSeasons(电影id)`
+      // ⇒ `/Shows/{movieId}/Seasons` ⇒ **404**。
+      // 用户证据："**生化危机爆发夜**，我刚点了同步没。还是显示404"
+      //（《生化危机爆发夜》是**电影**）
+      //
+      // ## 电影与剧集的端点**完全不同**（契约 `contracts/sync/index.ts`）
+      // | 类型 | 推 | 拉 |
+      // |---|---|---|
+      // | 剧集 | `POST /sync/history {episodes:[{ids}]}` | `GET /sync/watched/shows` |
+      // | **电影** | `POST /sync/history {movies:[{ids}]}` | `GET /sync/watched/movies` |
+      // ⇒ 电影**没有季/集** ⇒ 不能碰 `getSeasons`/`getEpisodes`/`TraktEpisodeResolver`。
+      final tmdb = item.providerIds['Tmdb'] ?? item.providerIds['tmdb'] ?? '';
+      if (tmdb.isEmpty) {
+        _snack('这个条目没有 TMDB id，无法同步到 Trakt');
+        return;
+      }
+
+      // ══════════════════════════════════════════════════════════
+      // ★ 按类型分流（电影 vs 剧集）
+      // ══════════════════════════════════════════════════════════
+      final isMovie = item.type == 'Movie';
+      if (isMovie) {
+        step = '电影同步（tmdb=$tmdb）';
+        final syncM = await TraktSync.fromStore(
+          clientId: cid,
+          readAccess: store.loadTraktAccessToken,
+          readRefresh: store.loadTraktRefreshToken,
+          writeTokens: (a, r) =>
+              store.saveTraktTokens(access: a, refresh: r),
+          writeExpiresAt: store.saveTraktExpiresAt,
+          expiresInMs: store.traktExpiresInMs,
+        );
+        if (syncM == null) {
+          _snack('Trakt 登录状态已失效，请重新连接');
+          return;
+        }
+        final tmdbInt = int.tryParse(tmdb);
+        if (serverToTrakt) {
+          // ── 电影：服务器 → Trakt（推）──
+          // ⚠️ 契约 `movieIdsRequestSchema` **支持 tmdb**
+          //   （与 episode 不同 —— 那个只认 trakt/tvdb）
+          if (tmdbInt == null) {
+            _snack('TMDB id 格式异常，无法同步');
+            return;
+          }
+          // ══════════════════════════════════════════════════════════
+          // ★ 电影也要**分流**（2026-10-15 用户报障："好像还是没有同步
+          //   到继续观看中"）
+          // ══════════════════════════════════════════════════════════
+          //
+          // ## 我原来的错
+          // 电影分支**只调了** `addMoviesToHistory`（写"已看"）⇒
+          // 用户看到中途的电影被标成"已看"，而 Trakt「继续观看」**永远是空的**。
+          // 日志实证：`/sync/history(movies) HTTP 201 added=1`
+          //          （推的是 history，不是 scrobble）
+          //
+          // ## 契约依据（与剧集**同一套**规则）
+          // `scrobble/index.ts:50-55`：
+          // ```
+          // progress > 80%  ⇒ 标为 watched
+          // 1% ≤ p ≤ 79%    ⇒ 视为 pause ⇒ **继续观看**
+          // progress < 1%   ⇒ 返回 422（不要发）
+          // ```
+          // ⚠️ 电影的 `progress` 来自 **`item.progress`**（0–1 ⇒ ×100）
+          //    —— 这正是我刚修好的 `Fields=UserData` 那条链！
+          final pPct = item.progress * 100;
+          if (item.played || pPct > 80) {
+            // 已看完（或进度 > 80% 会被服务端当已看）⇒ 写 history
+            final r = await syncM
+                .addMoviesToHistory([TraktIds(tmdb: tmdbInt)]);
+            _snack(r.ok
+                ? '已把这部电影标记为已看（Trakt）'
+                : '同步失败（HTTP ${r.statusCode}）');
+          } else if (pPct >= 1) {
+            // **看了一部分** ⇒ scrobble/pause ⇒ Trakt 出现「继续观看」
+            //
+            // ⚠️ 电影用 `movieIds`（**支持 tmdb**，与 episode 不同）
+            final sr = await syncM.scrobble(
+              action: TraktScrobbleAction.pause,
+              progress: pPct,
+              movieIds: TraktIds(tmdb: tmdbInt),
+              movieTitle: item.name,
+              movieYear: item.productionYear,
+            );
+            _snack(sr.ok
+                ? '已推「继续观看」：${pPct.round()}%'
+                : (sr.tooShort
+                    ? '进度不足 1%，Trakt 会忽略'
+                    : '同步失败（HTTP ${sr.statusCode}）'));
+          } else {
+            // 进度 0（没看过）⇒ 什么都不做
+            //（发了会 422；且没有"继续观看"可推）
+            _snack('这部电影还没有播放进度，无需同步');
+          }
+        } else {
+          // ── 电影：Trakt → 服务器（拉）──
+          // ## ⚠️ 安全约束（§6.9.1）
+          // `null` = **取数失败**（网络/401）⇒ **一个写操作都不做**；
+          // 空集合 = **确实没看过** ⇒ 也不动本地（只加不减）
+          final watched = await syncM.getWatchedMovies();
+          if (watched == null) {
+            _snack('读取 Trakt 失败，未改动本地数据');
+            return;
+          }
+          if (tmdbInt == null) {
+            _snack('TMDB id 格式异常，无法比对');
+            return;
+          }
+          if (!watched.contains(tmdbInt)) {
+            _snack('Trakt 上没有这部电影的「已看」记录'
+                '（共读到 ${watched.length} 部已看）');
+            return;
+          }
+          if (item.played) {
+            _snack('本地已经标为已看，无需改动');
+            return;
+          }
+          final apiM = ref.read(embyApiProvider);
+          if (apiM == null) {
+            _snack('未登录服务器');
+            return;
+          }
+          final ok = await apiM.togglePlayed(item.id, played: true);
+          _snack(ok ? '已按 Trakt 标记为已看' : '本地标记失败（服务端拒绝）');
+        }
+        return;
+      }
+
+      // ② 列出所有季 + 每一集（**一次遍历同时拿到两个方向要用的数据**）
+      //
+      // ## 为什么要拿"全部集"而不只是"已看的集"
+      // 双向同步需要：
+      // · 推（本地→Trakt）：**已看**的集
+      // · 拉（Trakt→本地）：**未看**的集（Trakt 看过而本地没有的）
+      // ⇒ 只取已看的话，拉方向无从判断"哪些该补标"。
+      final api = ref.read(embyApiProvider);
+      if (api == null) {
+        _snack('未登录服务器');
+        return;
+      }
+      step = '取季列表 getSeasons(${item.id})';
+      final seasons = await api.getSeasons(item.id);
+      _syncDbgSeasons = seasons.length;
+      debugPrint('[Trakt] 同步：拿到 ${seasons.length} 个季');
+      final watched = <(int, int)>[];          // 已看（推方向用）
+      final allEps = <TraktEpisodeRef>[];      // 全部（拉方向用）
+      for (final sn in seasons) {
+        final snNum = sn.indexNumber;
+        if (snNum == null) continue;
+        step = '取分集 getEpisodes(seasonId=${sn.id})';
+        final eps = await api.getEpisodes(item.id, sn.id);
+        _syncDbgEpisodes += eps.length;
+        for (final e in eps) {
+          final n = e.indexNumber;
+          if (n == null) continue;
+          // ★ 带上**进度**：推方向要据此区分「已看」与「看了一半」
+          //   （契约：1–79% ⇒ scrobble/pause ⇒ Trakt 显示「继续观看」）
+          allEps.add(TraktEpisodeRef(
+            itemId: e.id,
+            season: snNum,
+            number: n,
+            played: e.played,
+            // Emby 的 playedPercentage 是 0–100（可空 ⇒ 用 positionTicks 兜底）
+            progress: e.playedPercentage ??
+                (e.positionTicks != null && e.positionTicks! > 0
+                    ? -1.0   // 有位置但无百分比 ⇒ 交给上层用 positionTicks 估
+                    : 0.0),
+          ));
+          if (e.played) watched.add((snNum, n));
+        }
+      }
+
+      // ══════════════════════════════════════════════════════════
+      // ③ **按用户在对话框里选的方向执行**（2026-10-15）
+      // ══════════════════════════════════════════════════════════
+      //
+      // ## 为什么改成"按方向"（原来是"先拉后推"两个都做）
+      // 用户 2026-10-15 截图规格：对话框里有**两个单选项**
+      //（「服务器到Trakt」/「Trakt到服务器」）+「同步」按钮
+      // ⇒ 用户**明确选了一个方向**，我们就**只做那一个**
+      //（做两个违背用户意图，且"拉"会写本地数据）。
+      //
+      // ## ⚠️ 两个方向的安全约束（不同！）
+      // · **推**（serverToTrakt）：只**读**本地已看 → 写 Trakt。
+      //   不改本地 ⇒ 风险低。
+      // · **拉**（!serverToTrakt）：会**写本地已看**（`togglePlayed`）。
+      //   ⇒ 必须遵守 §6.9.1：**只加不减** + 取数失败时**一个写都不做**
+      //   （由 `TraktWatchedSyncer` 内部保证）。
+      //
+      // ⚠️ 用 `fromStore` 而不是裸构造器 —— 否则**不带 refreshToken**
+      //    ⇒ 401 自动刷新是死的（access token 7 天后失效，功能静默停摆）。
+      final sync = await TraktSync.fromStore(
+        clientId: cid,
+        readAccess: store.loadTraktAccessToken,
+        readRefresh: store.loadTraktRefreshToken,
+        writeTokens: (a, r) => store.saveTraktTokens(access: a, refresh: r),
+        // ★ 存到期时刻（不存的话"提前刷新"永远不触发）
+        writeExpiresAt: store.saveTraktExpiresAt,
+        // 到期剩余时间（用于**提前刷新**，见 fromStore 的注释）
+        expiresInMs: store.traktExpiresInMs,
+      );
+      if (sync == null) {
+        _snack('Trakt 登录状态已失效，请重新连接');
+        return;
+      }
+
+      // ── 方向 A：Trakt → 服务器（拉）─────────────────────────
+      if (!serverToTrakt) {
+        debugPrint('[Trakt] 方向：Trakt → 服务器（拉）'
+            '（本地 ${allEps.length} 集，已看 ${watched.length} 集）');
+        final pull = await TraktWatchedSyncer(
+          client: TraktClient(clientId: cid),
+          sync: sync,
+        ).pull(
+          tmdbShowId: tmdb,
+          episodes: allEps,
+          expectCnTitle: item.name,
+          expectYear: item.productionYear,
+          markPlayed: (embyId) async {
+            final ok2 = await api.togglePlayed(embyId, played: true);
+            if (ok2) _syncDbgMarked++;
+            return ok2;
+          },
+        );
+        // 如实报三种结果（**不粉饰**）
+        if (pull.failed) {
+          _snack('读取 Trakt 失败，未改动本地数据');
+        } else if (pull.markedNew > 0) {
+          _snack('已从 Trakt 补标 ${pull.markedNew} 集为已看'
+              '（本地本已有 ${pull.alreadyWatched} 集）');
+        } else {
+          _snack(pull.note ?? 'Trakt 上没有可补标的集'
+              '（本地已有 ${pull.alreadyWatched} 集是已看）');
+        }
+        return;
+      }
+
+      // ── 方向 B：服务器 → Trakt（推）─────────────────────────
+      //
+      // ══════════════════════════════════════════════════════════════
+      // ★ 逐集**分流**（2026-10-15 用户要求）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // 用户原话：
+      // > 对于我**已经观看了一部分**的应该同步为 trakt 的**继续观看**
+      //
+      // ## 契约依据（`scrobble/index.ts:50-55` 原文）
+      // > If the progress is **above 80%**, the video will be marked as
+      // >   **watched**.
+      // > If the progress is **between 1% and 79%**, it will be treated as a
+      // >   **pause** and the `action` will be set to **pause**.
+      // > If the progress is **less than 1%**, you'll get a **422**.
+      //
+      // ⇒ 三个区间对应三种动作（**不能混**）：
+      // | Emby 状态 | 动作 | Trakt 结果 |
+      // |---|---|---|
+      // | `played == true` | `POST /sync/history`（批量）| 已看 |
+      // | 1–79% | **`POST /scrobble/pause`**（逐集）| **继续观看** |
+      // | <1% | 跳过 | （发了会 422）|
+      debugPrint('[Trakt] 方向：服务器 → Trakt（推）'
+          '（共 ${allEps.length} 集，已看 ${watched.length} 集）');
+
+      if (allEps.isEmpty) {
+        _snack('本剧在服务器上没有分集数据');
+        return;
+      }
+
+      // ① 已看完的集 ⇒ 批量写 history（契约支持数组，一次请求）
+      var pushedWatched = 0;
+      if (watched.isNotEmpty) {
+        final resolver = TraktEpisodeResolver(
+            client: TraktClient(clientId: cid));
+        final ids = <TraktIds>[];
+        for (final (sn, n) in watched) {
+          final id = await resolver.resolveEpisode(
+            tmdbShowId: tmdb,
+            season: sn,
+            number: n,
+            expectCnTitle: item.name,
+            // ⚠️ **必须传年份**（2026-10-15 修）
+            // 缺它时 `plausiblyMatches` 的第一道判据（年份比对）进不去
+            // ⇒ 「仙逆」→ "Renegade Immortal" 这类**中英文名差异**
+            //   会被误判成错配 ⇒ 用户看到"3 集未收录"
+            //（日志实证：`错配未采信：tmdb=223911 → "Renegade Immortal"
+            //  （期望「仙逆」/null）` —— `/null` 就是这里没传）
+            expectYear: item.productionYear);
+          if (id != null && id.usableForEpisode) {
+            ids.add(id);
+          } else {
+            skipCount++;
+          }
+        }
+        if (ids.isNotEmpty) {
+          final r = await sync.addEpisodesToHistory(ids);
+          if (r.ok) {
+            pushedWatched = r.added > 0 ? r.added : ids.length;
+          }
+        }
+      }
+
+      // ② **看了一部分的集 ⇒ scrobble/pause**（让 Trakt 出现「继续观看」）
+      //
+      // ## 为什么逐集发（不批量）
+      // 契约里 scrobble **没有批量**（body 是单个 movie/episode 对象）
+      // ⇒ 只能逐集。⚠️ 但**限流**：Trakt 有 rate limit
+      //    ⇒ 只推**最后一集**（用户最近看的那个才是"继续观看"的目标）。
+      //
+      // ## ★ 为什么只推最后一集（重要设计决策）
+      // · Trakt 的「继续观看」每个剧**只保留一个位置**
+      // · 推 10 集"看了一半"毫无意义（后面那集会覆盖前面）
+      // · 且逐集 scrobble 会**打限流**（用户有 162 集！）
+      // ⇒ 只推**进度最靠后且未看完**的那一集。
+      var pushedProgress = 0;
+      final partial = allEps
+          .where((e) => !e.played && e.progress > 1 && e.progress < 80)
+          .toList()
+        ..sort((a, b) => b.season != a.season
+            ? b.season.compareTo(a.season)
+            : b.number.compareTo(a.number));
+      if (partial.isNotEmpty) {
+        final target = partial.first;
+        step = '推续播进度 scrobble/pause(S${target.season}E${target.number})';
+        final resolver2 = TraktEpisodeResolver(
+            client: TraktClient(clientId: cid));
+        final id2 = await resolver2.resolveEpisode(
+          tmdbShowId: tmdb,
+          season: target.season,
+          number: target.number,
+          expectCnTitle: item.name,
+        );
+        if (id2 != null && id2.usableForEpisode) {
+          final sr = await sync.scrobble(
+            action: TraktScrobbleAction.pause,
+            progress: target.progress,
+            episodeIds: id2,
+          );
+          if (sr.ok) pushedProgress = 1;
+        } else {
+          skipCount++;
+        }
+      }
+
+      // ③ 如实汇报（三种结果分开说，不合并成"已同步"）
+      final parts = <String>[
+        if (pushedWatched > 0) '已推 $pushedWatched 集为「已看」',
+        if (pushedProgress > 0)
+          '已推 1 集为「继续观看」'
+              '（${partial.first.season > 0 ? "S${partial.first.season}" : ""}'
+              'E${partial.first.number} ${partial.first.progress.round()}%）',
+        if (partial.isEmpty && pushedWatched == 0) '没有可推的记录',
+        if (skipCount > 0) '$skipCount 集未收录（跳过）',
+      ];
+      _snack(parts.join(' · '));
+    } catch (e) {
+      // 同步失败**不影响页面**（它是附加功能）
+      //
+      // ★ 打印**步骤名**（`step` 是当场记录的，不靠计数推断）
+      //   2026-10-15：这条日志让"电影走了剧集路径 ⇒ 404"当场暴露。
+      debugPrint('[Trakt] 同步已看失败【$step】: $e'
+          '（进度：季=${_syncDbgSeasons} '
+          '集=${_syncDbgEpisodes} '
+          '已标=${_syncDbgMarked}）');
+      _snack('同步失败：$e');
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
+
+  /// 追剧（Emby 服务端收藏 **∪** 本地订阅）。
+  ///
+  /// ## 语义（三处一致，用户明确）
+  /// · 追剧 = **Emby 服务端收藏**（`FavoriteItems`）**∪** 本地订阅表
+  /// · 点击写**两边**：本地订阅 + Emby 收藏 ⇒ 跨设备同步
+  /// · 服务端写失败**不回滚本地**（否则服务器不可达就完全不能用）
+  ///
+  /// ## ⚠️ 2026-10-15：本方法的**前 16 行曾被我的脚本误删**
+  /// 起因：我用 `s.find('\n      } catch (e) {')` 找 `_syncToTrakt` 的结束，
+  /// 但它匹配到了**本方法内层**的 catch ⇒ 切掉了本方法的头与主体前半。
+  /// 教训（已进 §6.10 规则⑤）：**大文件替换必须用行号或真正的边界**，
+  /// 不能用"看起来唯一"的短文本当结束标记。
   Future<void> _toggleFollow(MediaItem item) async {
     setState(() => _toggling = true);
     try {

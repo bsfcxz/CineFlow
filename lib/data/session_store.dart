@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../core/uuid.dart';
 import '../danmaku/danmaku_config.dart';
+import 'builtin_secret.dart';
 import 'models.dart';
 
 class SavedServer {
@@ -275,6 +276,65 @@ class SessionStore {
   static const _traktAccessKey = 'cf_trakt_access_token';
   static const _traktRefreshKey = 'cf_trakt_refresh_token';
 
+  /// **access token 的到期时刻**（epoch 毫秒）。
+  ///
+  /// ## 为什么要单独存（借鉴小幻影视的 `set_TraktExpiresTimestamp`）
+  /// Trakt 的 token 响应给 `created_at`（epoch 秒）+ `expires_in`（秒）
+  /// ⇒ 能**本地算出**到期时刻 ⇒ **不必等 401 才发现过期**。
+  /// 好处：可以"提前刷新"，少一次必然失败的请求 + 少一条误导性的错误日志。
+  ///
+  /// ⚠️ 它不是凭据（只是个时间戳）⇒ 存这里是为了**集中**，
+  ///    不是因为需要 Keystore 保护。
+  static const _traktExpiresKey = 'cf_trakt_expires_at';
+
+  // ---- Trakt 的 3 个功能开关（「实时追踪」/「同步已看」/「续播检查」）----
+  //
+  // ## 为什么用 pref 而不是内存变量
+  // 它们是**用户偏好**：① 重启后必须仍生效 ② 别的页面（播放器、详情页）
+  // 要能读 ⇒ 与 `theme_index` / `bg_kind` 同一模式。
+  //
+  // ## 为什么默认全关（`false`）
+  // 这三个功能会**写数据到用户 Trakt 账号**（scrobble / history）。
+  // 未经用户明确开启就写别人的账号是不对的 ⇒ 默认关闭，让用户主动开。
+  static const kTraktTrackKey = 'trakt_track';   // 实时追踪
+  static const kTraktSyncKey = 'trakt_sync';     // 同步已看状态
+  static const kTraktResumeKey = 'trakt_resume'; // 续播检查
+
+  /// **深色模式**开关（用户 2026-10-14："关闭始终用深色模式主题"）。
+  ///
+  /// ## 为什么与 `bg_kind` 分开存（会有状态打架吗？）
+  /// · `bg_kind` = **用户选的具体底色**（深色/黑色/透明/浅白/白色/自定义）
+  /// · `dark_mode` = **亮/暗总开关**
+  /// ⇒ 两者**不是同一维度**：关闭深色模式时把 `bg_kind` 切到浅白，
+  ///   但**记住**用户原来选的深色档 ⇒ 重新打开时能切回去。
+  ///   这就是为什么要单独存一个键（否则"关掉再打开"回不到原来那档）。
+  static const kDarkModeKey = 'app_dark_mode';
+
+  /// 关闭深色模式前用的底色（用于"重新打开"时恢复）。
+  static const kDarkModePrevBgKey = 'app_dark_mode_prev_bg';
+
+  /// 读一个开关（未设置 ⇒ `false`）。
+  Future<bool> traktFlag(String key) async =>
+      (await getPref(key)) == 'true';
+
+  /// 写一个开关。
+  Future<void> setTraktFlag(String key, bool on) =>
+      setPref(key, on ? 'true' : 'false');
+
+  /// 三个开关一次性读出（播放器/详情页要同时判断）。
+  ///
+  /// ## 为什么一次读（而不是三次 await）
+  /// 播放器在**起播路径**上调用它 —— 顺序 await 会累积延迟
+  /// （底层是 Keystore 加解密，每次几毫秒到几十毫秒）。
+  Future<({bool track, bool sync, bool resume})> traktFlags() async {
+    final r = await Future.wait([
+      traktFlag(kTraktTrackKey),
+      traktFlag(kTraktSyncKey),
+      traktFlag(kTraktResumeKey),
+    ]);
+    return (track: r[0], sync: r[1], resume: r[2]);
+  }
+
   Future<String?> loadTraktClientId() async {
     final v = await _storage.read(key: _traktClientIdKey);
     return (v == null || v.isEmpty) ? null : v;
@@ -289,12 +349,80 @@ class SessionStore {
     }
   }
 
+  /// 读 **refresh token**（一次性；刷新后必须替换）。
+  ///
+  /// ## 为什么必须能读出来（用户 2026-10-14 规格第 4 步）
+  /// 不做自动刷新的话，access token **7 天后**（官方文档）失效
+  /// ⇒ 用户所有 Trakt 功能**静默失效**（表现为"同步不动了"，很难查）。
+  ///
+  /// ⚠️ 它等价于登录态（能换出新 token）⇒ 只进 secure_storage，**不打日志**。
+  /// **取"有效"的 Trakt Client ID**（用户自填优先，否则解封内置的）。
+  ///
+  /// ## ★ 为什么必须有这个方法（2026-10-14 用户报障的根因）
+  /// 三处调用点原先各自写：
+  /// ```dart
+  /// final cid = await store.loadTraktClientId();   // ❌ 只读用户自填的
+  /// if (cid == null || cid.isEmpty) { /* 判"未登录" */ }
+  /// ```
+  /// 而**内置 Client ID**（"Client ID 以后内置在我的应用中"）**不在存储里** ——
+  /// 它在 `builtin_secret.dart` 里按需解封。
+  /// ⇒ `loadTraktClientId()` 恒为空 ⇒ **授权成功也被判"未登录"**
+  ///   ⇒ 实时追踪 / 同步已看 / 续播检查**全部静默跳过**。
+  ///   用户现象："显示我没登录、同步不了相关数据"。
+  ///
+  /// ## 为什么要收口到一处
+  /// 三处重复逻辑必然漏改（本仓库既有教训：我本轮就因三处各自读 token
+  /// 而差点让刷新成死代码）⇒ 与 `TraktSync.fromStore` 同一思路。
+  ///
+  /// ## 返回
+  /// `null` = 两种来源都没有 ⇒ 调用方应判"未配置 Client ID"。
+  Future<String?> resolveTraktClientId() async {
+    // ① 用户自填优先（尊重用户特意填的 —— 他可能想用自己的 Trakt 应用）
+    final mine = await loadTraktClientId();
+    if (mine != null && mine.isNotEmpty) return mine;
+    // ② 回退到内置（签名绑定解封；换签名重打包时会失败 ⇒ 返回 null）
+    final builtin = await unsealBuiltinTraktClientId();
+    return (builtin == null || builtin.isEmpty) ? null : builtin;
+  }
+
+  Future<String?> loadTraktRefreshToken() async =>
+      (await _storage.read(key: _traktRefreshKey));
+
+  /// 存 access token 的**到期时刻**（epoch 毫秒）。
+  Future<void> saveTraktExpiresAt(int epochMs) => _storage.write(
+      key: _traktExpiresKey, value: epochMs.toString());
+
+  /// 读到期的**剩余毫秒**（null = 没记录 ⇒ 调用方应保守处理）。
+  Future<int?> traktExpiresInMs() async {
+    final v = await _storage.read(key: _traktExpiresKey);
+    final at = int.tryParse(v ?? '');
+    if (at == null) return null;
+    return at - DateTime.now().millisecondsSinceEpoch;
+  }
+
   Future<String?> loadTraktAccessToken() async {
     final v = await _storage.read(key: _traktAccessKey);
     return (v == null || v.isEmpty) ? null : v;
   }
 
-  /// 保存登录结果（`refresh` 为 null 时**保留原值** —— 刷新流程可能不给新 refresh）。
+  /// 保存登录结果（`refresh` 为 null 时**保留原值**）。
+///
+/// ## ⚠️ 与官方文档对齐（我原来的假设是**错的**）
+/// 我原来写"刷新流程**可能不给**新 refresh" —— 官方文档说的是**相反**：
+/// > Refresh tokens are **single-use**. Every successful refresh returns a
+/// > new `access_token` **and `refresh_token`**. The refresh token used in
+/// > the request is **immediately invalidated**, so always replace your
+/// > stored tokens with the values from the response.
+///
+/// ⇒ 所以：
+/// · 刷新成功时**必须**传入响应里的新 `refresh`（否则旧的那个已失效 ⇒ 下次刷新必失败）
+/// · 本方法的 `refresh == null ⇒ 保留原值` 只适用于**非刷新路径**
+///   （如重复保存同一份授权结果），**不能**用在刷新流程里。
+/// · ✅ **自动续期已实现**（2026-10-15 更正本条 —— 原文写"待实现"，已过时）：
+///   `TraktSync.refresh()` → `POST /oauth/token`；
+///   触发点见 `TraktSync.fromStore`（提前刷新）与构造器的 401 拦截器。
+///   ⚠️ 刷新**成功后**必须调本方法传入新 `refresh` ——
+///   否则存的是**已作废**的旧值（官方："immediately invalidated"）。
   Future<void> saveTraktTokens({
     required String access,
     String? refresh,

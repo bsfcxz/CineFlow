@@ -16,6 +16,7 @@ import '../pages/tracking_page.dart' show statusCnOf;
 // `danmakuClientProvider` —— 复用用户已配好的弹幕源
 // （弹弹play 兼容 API 已统一 20+ 平台，见 platform_episodes.dart）
 import '../danmaku/danmaku_providers.dart';
+import '../data/trakt_client.dart';
 import '../data/platform_episodes.dart';
 import '../data/aggregated_search.dart';
 import '../data/calendar_client.dart';
@@ -261,6 +262,46 @@ final homeTabProvider =
 /// 见 `profile_page._testLatency` 与 `EmbyProvider` 的 401 处理：
 /// 测延迟打的是**免鉴权**的 `/System/Info/Public` ⇒ token 失效也"成功"
 /// ⇒ 用户切过去才 401。**与本 provider 无关。**
+/// **库内 `seriesId → tmdbId` 反向表**（供 Trakt 实时追踪用）。
+///
+/// ## ★ 为什么要单独一个 provider（而不是在播放器里现查）
+/// `mapSeriesTmdbToId()` 是**翻页拉全库**（实测 5713 条 Series，数秒）。
+/// 若在**起播路径**上调用 ⇒ 用户每次冷启动第一次播放都要多等几秒。
+///
+/// ⇒ 拆成两步：
+/// · **本 provider**（由追剧页/首页 watch）：慢，但**不在关键路径**上
+/// · **播放器**：只读 `TraktEpisodeResolver.tmdbIdForSeries()` 的进程内缓存，
+///   拿不到就**静默放弃上报**（宁可这集不记，也不让用户等）
+///
+/// ## 为什么不 autoDispose
+/// 结果要**留在内存**给播放器用 ⇒ 不能被回收。
+/// 库内容变化靠用户重启或重新进追剧页刷新（映射关系本身很稳定）。
+final seriesTmdbReverseProvider =
+    FutureProvider<Map<String, String>>((ref) async {
+  final api = ref.watch(embyApiProvider);
+  if (api == null) {
+    debugPrint('[Trakt] 未登录 ⇒ 反向映射为空');
+    return const {};
+  }
+  try {
+    final m = await api.mapSeriesTmdbToId();
+    // 反转成 seriesId → tmdbId（`TraktEpisodeResolver` 要的方向）
+    final rev = <String, String>{};
+    for (final e in m.entries) {
+      if (e.key.isNotEmpty && e.value.seriesId.isNotEmpty) {
+        rev[e.value.seriesId] = e.key;
+      }
+    }
+    // ★ 副作用：填进解析器的进程内缓存（播放器只读它）
+    TraktEpisodeResolver.seedReverseMap(rev);
+    return rev;
+  } catch (e) {
+    // 失败不阻塞页面（追剧页有它自己的降级）
+    debugPrint('[Trakt] 反向映射拉取失败: $e');
+    return const {};
+  }
+});
+
 final embyApiProvider = Provider<MediaProvider?>((ref) {
   final s = ref.watch(sessionProvider).value;
   return s == null ? null : EmbyProvider(s);

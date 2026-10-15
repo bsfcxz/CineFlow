@@ -372,23 +372,50 @@ void main() {
       }
     });
 
-    test('★★ 脚本必须能检出我们**当前**的缺失（不是空壳）', () {
-      // 真机/静态取证：我们的 libmpv.so 确实缺这 4 个。
-      // 若脚本查不出来，说明它没真的读 .so。
+    test('★★ 脚本必须能检出缺失（用**注入**验证，不依赖"当前恰好缺"）', () {
+      // ══════════════════════════════════════════════════════════════
+      // ⚠️ 这条测试原先是**断言"我们的 .so 缺解码器"** —— 那是把 bug
+      //    状态写进了测试。2026-10-14 换成 full 变体后它必然失败，
+      //    而"失败"在这里**不是回归**，是**修好了**。
+      //
+      // ⇒ 正确做法（§8.4 第 2 类"验证手段本身要有效"）：
+      //    不依赖"当前恰好缺什么"，而是**构造一个必然可判定的场景**：
+      //    · 真脚本对真 .so 必须报"全齐"（回归线）
+      //    · 换一个**不存在**的符号名去查，必须报"缺"（证明它真在读 .so）
+      // ══════════════════════════════════════════════════════════════
       final so = File('android/app/src/main/jniLibs/arm64-v8a/libmpv.so');
       expect(so.existsSync(), isTrue);
       final data = so.readAsBytesSync();
-      // ① 确认确实缺（这是"用户的 bug"）
-      expect(_has(data, 'ff_truehd_decoder'), isFalse,
-          reason: '★ 我们的 .so 缺 truehd 解码器（真机 `Failed to initialize '
-              'a decoder for codec \'truehd\'`）');
-      expect(_has(data, 'ff_pgssub_decoder'), isFalse,
-          reason: '★ 我们的 .so 缺 PGS 字幕解码器（真机 `Could not find '
-              'subtitle decoder for format \'hdmv_pgs_subtitle\'`）');
-      // ② 确认有的（对照组，证明"读 .so"这件事本身是有效的）
-      expect(_has(data, 'ff_dca_decoder'), isTrue,
-          reason: '★ DTS 的解码器叫 dca —— 必须能读到（否则是扫描方法错了）');
-      expect(_has(data, 'ff_hevc_decoder'), isTrue);
+
+      // ① 回归线：**修复后**这些必须都在（PGS 是用户报障的那条）
+      for (final k in [
+        'ff_pgssub_decoder',   // PGS 图形字幕（蓝光 100%）
+        'ff_truehd_decoder',   // TRUEHD 无损音轨
+        'ff_mlp_decoder',      // MLP（TRUEHD 的内核）
+        'ff_dca_decoder',      // DTS（对照：本来就有）
+        'ff_hevc_decoder',     // H.265
+      ]) {
+        expect(_has(data, k), isTrue,
+            reason: '★★ 缺 $k 会让对应格式**静默播不出来**'
+                '（用户只感到"没声音/没字幕"，无任何提示）。\n'
+                '    修法见 tool/check_mpv_decoders.py 的输出。');
+      }
+
+      // ② 证明"扫描 .so 这件事本身有效" —— 查一个**必然不存在**的名字
+      expect(_has(data, 'ff_this_decoder_does_not_exist'), isFalse,
+          reason: '★ 若这条为 true，说明扫描方法坏了（永远报"有"）');
+
+      // ③ 必须是"接近全量"的构建，不是白名单裁剪版
+      //    实测基线：default 变体 = 150 个解码器符号；full 变体 = 513
+      final total = RegExp(r'ff_[a-z0-9_]+_decoder')
+          .allMatches(String.fromCharCodes(
+              data.where((b) => b < 128).toList()))
+          .map((m) => m.group(0))
+          .toSet()
+          .length;
+      expect(total, greaterThan(200),
+          reason: '★★ 白名单裁剪版（实测 150 个）会缺蓝光常见格式。\n'
+              '    当前 $total 个 ⇒ 应使用 full 变体（实测 513 个）。');
     });
 
     test('★★ mpv 日志不能全部丢弃（解码失败只能从日志看到）', () {

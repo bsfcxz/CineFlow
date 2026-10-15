@@ -152,6 +152,19 @@ class _CineFlowAppState extends ConsumerState<CineFlowApp> {
       });
     }
 
+    // 状态栏图标跟随背景明暗（亮底必须用深色图标，否则看不见）。
+    // ⚠️ 只在**首次 build** 做一次 —— 之后由外观页的开关负责
+    //    （避免每次重建都调 MethodChannel）。
+    if (!_statusBarSynced) {
+      _statusBarSynced = true;
+      SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
+        statusBarIconBrightness:
+            Cf.bgKind.isLightNow ? Brightness.dark : Brightness.light,
+        statusBarBrightness:
+            Cf.bgKind.isLightNow ? Brightness.light : Brightness.dark,
+      ));
+    }
+
     return MaterialApp.router(
       key: ValueKey('theme-$themeIdx'),
       title: 'CineFlow',
@@ -162,4 +175,7 @@ class _CineFlowAppState extends ConsumerState<CineFlowApp> {
   }
 
   bool _dbChecked = false;
+
+  /// 状态栏图标只同步一次（避免每次重建都调通道）。
+  bool _statusBarSynced = false;
 }

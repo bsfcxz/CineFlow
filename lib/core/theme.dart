@@ -66,6 +66,18 @@ extension CfBgKindX on CfBgKind {
   bool get usesOpacity =>
       this == CfBgKind.clear || this == CfBgKind.translucent;
 
+  /// **当前底色是不是亮的**（含 `custom` 按亮度实算）。
+  ///
+  /// ## 用途：状态栏图标颜色
+  /// 亮底要用**深色图标**（否则白底白图标看不见）。
+  /// ⚠️ `custom` 不能只看枚举（它取决于用户选的颜色）⇒ 实算亮度，
+  ///    与 `Cf._readableOn()` 同一判据（**不重复写第二套**）。
+  bool get isLightNow => switch (this) {
+        CfBgKind.dimWhite || CfBgKind.solidWhite => true,
+        CfBgKind.custom => Cf._readableOn(Cf.customBgColor) == _InkOn.light,
+        _ => false,
+      };
+
   /// 中文名（UI 显示，与用户措辞一致）。
   String get label => switch (this) {
         CfBgKind.dark => '深色',

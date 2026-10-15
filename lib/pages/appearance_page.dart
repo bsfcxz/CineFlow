@@ -2,10 +2,15 @@
 /// 配色基准保持深蓝夜色背景，仅切换强调色系（对齐原型 theme-dots）。
 library;
 
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/theme.dart';
+import '../data/session_store.dart';
 import '../state/providers.dart';
 
 class AppearancePage extends ConsumerStatefulWidget {
@@ -21,6 +26,8 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
   @override
   void initState() {
     super.initState();
+    // 深色模式开关状态（默认 true —— 与改动前"始终深色"一致）
+    unawaited(_loadDarkMode());
     Future(() async {
       final store = ref.read(sessionStoreProvider);
       final idx =
@@ -40,10 +47,85 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
   /// 拖一次滑块会写**几十次**（Keystore 加解密很慢）⇒ 界面卡。
   int? _bgOpacityDraft;
 
+  /// **深色模式**开关（默认开 —— 与改动前行为一致）。
+  ///
+  /// ## 为什么默认 true
+  /// 改动前 App 就是始终深色 ⇒ 默认值必须与之一致，
+  /// 否则老用户升级后界面会**无故变亮**。
+  bool _darkMode = true;
+
   /// 应用背景底色（改静态色 → 触发重建 → 持久化）。
   ///
   /// ## `persist: false`
   /// 拖动滑块时传 false（只预览），松手时传 true 落盘。
+  /// 切换深色模式。
+  ///
+  /// ## 为什么要记住"关闭前的那一档"
+  /// 关闭时把底色切成 `solidWhite`；若不留原值，
+  /// 用户再打开就只能回到 `solidWhite`（**切不回他原来选的深色档**）。
+  /// ⇒ 用 `kDarkModePrevBgKey` 存一下。
+  ///
+  /// ## 为什么同时改状态栏图标
+  /// 亮底 + 白图标 = 看不见（实测过同类问题）。
+  /// `SystemChrome` 的 `statusBarIconBrightness` 决定图标深浅。
+  /// 读「深色模式」开关的**上次状态**（只影响开关显示）。
+  ///
+  /// ## ⚠️ 为什么不在这里改 `bg_kind`
+  /// 视觉的唯一来源是 `bg_kind`（`main.dart` 已按它恢复背景）。
+  /// 若这里再按 `kDarkModeKey` 去改一次，就会**覆盖用户在
+  /// 「背景底色」区的手动选择**（两个入口打架，本仓库踩过同类问题）。
+  /// ⇒ 本方法只读开关状态，让它与界面**显示一致**。
+  Future<void> _loadDarkMode() async {
+    try {
+      final store = ref.read(sessionStoreProvider);
+      final v = await store.traktFlag(SessionStore.kDarkModeKey);
+      // `getPref` 无记录时返回 null ⇒ `traktFlag` 会回 false，
+      // 但**默认应为 true**（与改动前一致）⇒ 显式判 null
+      final raw = await store.getPref(SessionStore.kDarkModeKey);
+      final on = raw == null ? true : v;
+      if (!mounted) return;
+      setState(() => _darkMode = on);
+      _syncStatusBarIcons();
+    } catch (e) {
+      debugPrint('[外观] 读深色模式失败（按默认开）: $e');
+    }
+  }
+
+  Future<void> _toggleDarkMode(bool v) async {
+    final store = ref.read(sessionStoreProvider);
+    setState(() => _darkMode = v);
+    if (v) {
+      // 开：恢复关闭前那档（没有记录 ⇒ 回默认深色）
+      final prev = await store.getPref(SessionStore.kDarkModePrevBgKey) ?? '';
+      final kind = CfBgKind.values.firstWhere(
+        (e) => e.name == prev,
+        orElse: () => CfBgKind.dark,
+      );
+      await _applyBg(kind);
+    } else {
+      // 关：记住当前档，再切白色
+      await store.setPref(
+          SessionStore.kDarkModePrevBgKey, Cf.bgKind.name);
+      await _applyBg(CfBgKind.solidWhite);
+    }
+    await store.setTraktFlag(SessionStore.kDarkModeKey, v);
+    _syncStatusBarIcons();
+    if (mounted) setState(() {});
+  }
+
+  /// 状态栏图标颜色跟随底色明暗（亮底用深色图标）。
+  ///
+  /// ⚠️ 与 `main.dart` 里既有的 `SystemChrome` 调用**不冲突**：
+  ///    那边只设 `systemNavigationBarColor`，这里只管**图标亮度**。
+  void _syncStatusBarIcons() {
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
+      statusBarIconBrightness:
+          Cf.bgKind.isLightNow ? Brightness.dark : Brightness.light,
+      statusBarBrightness:
+          Cf.bgKind.isLightNow ? Brightness.light : Brightness.dark,
+    ));
+  }
+
   Future<void> _applyBg(CfBgKind kind,
       {int? opacity, Color? custom, bool persist = true}) async {
     final op = opacity ?? _bgOpacityDraft ?? Cf.bgOpacity;
@@ -343,7 +425,18 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
           ),
           const SizedBox(height: 14),
 
-          // —— 深色模式 ——
+          // —— 深色模式（用户 2026-10-14："关闭始终用深色模式主题"）——
+          //
+          // ## 之前的形态
+          // 一行**不可点的纯文字**：`Text('始终开启')` —— 用户没法关。
+          //
+          // ## 现在的语义（与「背景底色」区的关系）
+          // · **开**（默认）：用用户选的那档底色（`bg_kind` 原值）
+          // · **关**：切到「白色」底（`CfBgKind.solidWhite`），
+          //          并**记住**原来那档 ⇒ 再打开能切回去
+          // ⇒ 与「背景底色」区**同一维度**（都是底色），
+          //   区别是本开关是"一键切亮/暗"的**快捷方式**，
+          //   那个区是"精细选档"。用一个 `prev` 键保证可逆。
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -351,21 +444,30 @@ class _AppearancePageState extends ConsumerState<AppearancePage> {
               color: Cf.surface,
               border: Border.all(color: Cf.border),
             ),
-            child: Row(children: [
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  Text('深色模式',
-                      style: TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w800)),
-                  SizedBox(height: 3),
-                  Text('CineFlow 为沉浸观影而生，始终使用深色主题',
-                      style: TextStyle(fontSize: 11, color: Cf.text3)),
-                ]),
-              ),
-              Text('始终开启',
-                  style: TextStyle(fontSize: 11, color: Cf.accent)),
-            ]),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _toggleDarkMode(!_darkMode),
+              child: Row(children: [
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text('深色模式',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w800)),
+                    SizedBox(height: 3),
+                    Text(
+                        _darkMode
+                            ? '关闭后切换为亮色（浅白底 · 深色文字）'
+                            : '已关闭 —— 当前是亮色界面',
+                        style: TextStyle(fontSize: 11, color: Cf.text3)),
+                  ]),
+                ),
+                Switch(
+                  value: _darkMode,
+                  onChanged: (v) => _toggleDarkMode(v),
+                ),
+              ]),
+            ),
           ),
           const SizedBox(height: 24),
         ]),

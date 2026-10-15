@@ -91,35 +91,79 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
     // ★ ② 领请求号：只有最新那次的结果才被采纳
     final myReq = ++_reqId;
 
-    final tmdbKey = await ref.read(sessionStoreProvider).loadTmdbKey();
-    if (!mounted || myReq != _reqId) return;
-    if (tmdbKey == null || tmdbKey.isEmpty) {
+    // ══════════════════════════════════════════════════════════════
+    // ★★ ③ try/catch/finally（2026-10-15 修的真 bug）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // ## 用户报障
+    // > "首页中 6 个类别中点开其实**就在一块**。没有细分类别"
+    //
+    // 真机实测（截图 + logcat）：
+    // ```
+    // [分类浏览页] 类别 chips ✓ / 地区 chips ✓ / 网格区 **无限转圈**
+    // 13:45:29  [Calendar] 分类浏览异常: 超时     ← 12 秒后
+    // ```
+    // ## 根因（本方法原来 try=0 / catch=0）
+    // `fetchBrowse` 抛异常（TMDB 超时）⇒ **异常冒泡出去**
+    // ⇒ 末尾那句 `setState(() { _loading = false; })` **永不执行**
+    // ⇒ `_loading` 永远是 `true`
+    // ⇒ `_body` 卡在 `if (items == null) return CircularProgressIndicator();`
+    // ⇒ **无限转圈，且错误分支与重试按钮永远摸不到**。
+    //
+    // ⚠️ 那个"错误态 + 重试"（`_body` 的 `_error` 分支）**写得没问题**，
+    //    但**没有任何代码路径能给它赋值**（除"未填 Key"一种）
+    //    ⇒ 典型的"写了错误处理，但异常根本走不到那里"。
+    //
+    // ## 修法
+    // 包 try/catch/finally ⇒ 无论成功/失败/超时，**一定**复位 `_loading`
+    // 并把原因写进 `_error`（AGENTS §7.8：不许把失败伪装成空）。
+    try {
+      final tmdbKey = await ref.read(sessionStoreProvider).loadTmdbKey();
+      if (!mounted || myReq != _reqId) return;
+      if (tmdbKey == null || tmdbKey.isEmpty) {
+        setState(() {
+          _loading = false;
+          _error = '未填 TMDB API Key（在「追剧日历」右上角填写）';
+        });
+        return;
+      }
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+
+      final list = await ref.read(calendarClientProvider).fetchBrowse(
+            apiKey: tmdbKey,
+            category: cat,
+            region: region,
+          );
+
+      // ★ ④ 过期响应直接丢弃（不写缓存、不动 _loading）——
+      //    否则会把旧类别的数据写进新类别的键
+      if (!mounted || myReq != _reqId) return;
+      setState(() {
+        _cache[tag] = list; // 用发起时固定的 tag，不是 `_key`
+        _loading = false;
+        // 空结果 + 网络没报错 ⇒ 可能是"真没有"也可能是"请求失败被吞"
+        // ⇒ 不写 _error（下面空态会给出可行动提示）
+      });
+    } catch (e) {
+      // ⚠️ 这里**必须**复位 `_loading` —— 否则就是用户看到的"无限转圈"
+      if (!mounted || myReq != _reqId) return;
       setState(() {
         _loading = false;
-        _error = '未填 TMDB API Key（在「追剧日历」右上角填写）';
+        // 把底层原因带上（`_friendly` 已把超时/断网转成中文）
+        _error = '加载失败：$e\n'
+            '（分类浏览用的是 TMDB 接口；若网络访问不了 TMDB，'
+            '可在「追剧日历」里换用其它数据源，或稍后重试）';
       });
-      return;
+      debugPrint('[Browse] 加载失败（已复位 loading）: $e');
+    } finally {
+      // 双保险：万一上面某条路径漏了复位（例如未来改代码时新加 return）
+      if (mounted && myReq == _reqId && _loading) {
+        setState(() => _loading = false);
+      }
     }
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-
-    final list = await ref.read(calendarClientProvider).fetchBrowse(
-          apiKey: tmdbKey,
-          category: cat,
-          region: region,
-        );
-
-    // ★ ③ 过期响应直接丢弃（不写缓存、不动 _loading）——
-    //    否则会把旧类别的数据写进新类别的键
-    if (!mounted || myReq != _reqId) return;
-    setState(() {
-      _cache[tag] = list; // 用发起时固定的 tag，不是 `_key`
-      _loading = false;
-      // 空结果 + 网络没报错 ⇒ 可能是"真没有"也可能是"请求失败被吞"
-      // ⇒ 不写 _error（下面空态会给出可行动提示）
-    });
   }
 
   void _pick(BrowseCategory c) {
@@ -195,13 +239,24 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
   }
 
   Widget _body(List<CalendarEntry>? items) {
-    if (_loading && (items == null || items.isEmpty)) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (items == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    // ★ 错误态（不是空态）—— AGENTS §7.8：不许把失败伪装成空
+    // ══════════════════════════════════════════════════════════════
+    // ★★ 判定顺序**必须**是：错误 → 加载中 → 空 → 网格
+    // ══════════════════════════════════════════════════════════════
+    //
+    // ## 原来的顺序错在哪（2026-10-15 修）
+    // ```dart
+    // if (_loading && ...) return spinner;      // ①
+    // if (items == null) return spinner;        // ② ★ 挡住了一切
+    // if (_error case final msg?) { ...错误+重试... }   // ③ **永远摸不到**
+    // ```
+    // `items` 只在**成功**时才写进 `_cache` ⇒ 失败时它恒为 `null`
+    // ⇒ ② 把 ③ 完全挡住 ⇒ **错误提示与重试按钮形同虚设**。
+    // 这正是用户看到的："点开就是一片空白（转圈），没有任何说明"。
+    //
+    // ## 正确顺序的理由
+    // · 错误是**确定状态**（有原因可展示）⇒ 优先级最高
+    // · 加载中次之（此时还没有结论）
+    // · 最后才是"内容为空"
     if (_error case final msg?) {
       return Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -215,11 +270,23 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
           ),
           const SizedBox(height: Cf.gap3),
           TextButton(
-            onPressed: _load,
+            // ⚠️ 重试前必须**清掉 `_error`**，否则 `_body` 会一直停在错误态
+            //    （`_load` 里只在"参数就绪后"才清它 —— 若失败发生在更早
+            //      的步骤，重试会立刻又被同一条件挡住）
+            onPressed: () {
+              setState(() => _error = null);
+              _load();
+            },
             child: const Text('重试'),
           ),
         ]),
       );
+    }
+    if (_loading && (items == null || items.isEmpty)) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (items == null) {
+      return const Center(child: CircularProgressIndicator());
     }
     if (items.isEmpty) {
       return Center(
@@ -231,7 +298,10 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
           // ⚠️ 空有两种原因：TMDB 没有这个组合、或请求失败被吞。
           //    给用户一个**可行动**的出口（重试），而不是干看着。
           TextButton(
-            onPressed: _load,
+            onPressed: () {
+              setState(() => _error = null);
+              _load();
+            },
             child: const Text('重新加载'),
           ),
         ]),

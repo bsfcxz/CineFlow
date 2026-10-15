@@ -24,6 +24,20 @@
 
 ⇒ 本脚本把"播一次才知道"变成"跑一次就知道"。
 
+## ⚠️ 改本文件的符号表之前必读（2026-10-14 我在这里犯过错）
+
+**符号名必须查 ffmpeg 源码的 `FFCodec` 声明，不能按编码名拼**：
+```
+ffmpeg 里： const FFCodec ff_movtext_decoder = { ... }   ← 符号名
+                        ↑ 无下划线
+编码名（服务端给的）： mov_text / tx3g / tmcd
+```
+我按直觉写成 `ff_mov_text_decoder` ⇒ 脚本**恒报"缺 mov_text"**，
+而两个变体其实都有它 —— 典型的"验证手段本身错了"（§8.4 第二类假象）。
+
+⇒ 新增条目前，先去 <https://github.com/FFmpeg/FFmpeg> 对应
+   `libavcodec/*dec.c` 里搜 `FFCodec ff_` 确认。
+
 ## 用法
     python tool/check_mpv_decoders.py            # 检查全部 ABI
     python tool/check_mpv_decoders.py --abi arm64-v8a
@@ -32,6 +46,7 @@
 import argparse
 import io
 import os
+import re
 import sys
 
 # 必需（缺了会直接导致用户可见故障）
@@ -49,7 +64,12 @@ REQUIRED = {
     'ff_subrip_decoder': 'SRT（最常见的外挂字幕）',
     'ff_ass_decoder': 'ASS/SSA（特效字幕）',
     'ff_webvtt_decoder': 'WebVTT',
-    'ff_mov_text_decoder': 'MP4 内嵌字幕（mov_text）',
+    # ⚠️ 符号名**没有下划线**（ffmpeg 源码 `libavcodec/movtextdec.c`：
+    #    `const FFCodec ff_movtext_decoder = {`）。
+    #    2026-10-14 我写成 `ff_mov_text_decoder` ⇒ **恒报缺失的假警报**
+    #    （default 与 full 两个变体其实都有它）。
+    #    ⇒ 改这张表前**先查 ffmpeg 源码里的 FFCodec 名**，别按直觉拼。
+    'ff_movtext_decoder': 'MP4 内嵌字幕（mov_text）',
     'ff_h264_decoder': 'H.264 视频',
     'ff_hevc_decoder': 'H.265/HEVC 视频',
     'ff_vp9_decoder': 'VP9 视频',
@@ -80,12 +100,16 @@ def check(abi, root):
     missing = [k for k in REQUIRED if k.encode() not in data]
     missing_opt = [k for k in NICE_TO_HAVE if k.encode() not in data]
     found = [k for k in REQUIRED if k.encode() in data]
+    # 该 .so **总共**含多少个解码器符号（用于判断"白名单版"还是"全量版"）
+    # 实测基线：default 变体 = 150；full 变体 = 513（2026-10-14）
+    total = len(set(re.findall(rb'ff_[a-z0-9_]+_decoder', data)))
     return {
         'path': p,
         'size': len(data),
         'missing': missing,
         'missing_opt': missing_opt,
         'found': found,
+        'total': total,
     }, None
 
 
@@ -119,12 +143,23 @@ def main():
             continue
         print('[%s] %s（%.1f MB）'
               % (abi, r['path'].replace(root + os.sep, ''), r['size'] / 1048576))
-        print('  必需解码器: %d/%d 齐备' % (len(r['found']), len(REQUIRED)))
+        print('  必需解码器: %d/%d 齐备（该 .so 共含 %d 个解码器符号）'
+              % (len(r['found']), len(REQUIRED), r['total']))
+        # 判断是哪种构建（便于辨认"换没换成 full"）
+        if r['total'] < 200:
+            print('  · 这是**白名单裁剪版**（实测 default 变体 = 150 个）'
+                  ' ⇒ 蓝光常见格式会缺')
+        else:
+            print('  · 这是**接近全量**的构建（实测 full 变体 = 513 个）')
         if r['missing']:
             bad += 1
             print('  ✗ **缺少 %d 个必需解码器**：' % len(r['missing']))
             for k in r['missing']:
                 print('      · %-22s → %s' % (k, REQUIRED[k]))
+            print('    ⚠️ 先排除"符号名写错"：本文件曾把 ff_movtext_decoder'
+                  ' 写成 ff_mov_text_decoder ⇒ 恒报缺失。')
+            print('       确认方式：去 FFmpeg 源码 libavcodec/*dec.c 搜 '
+                  '`FFCodec ff_`。')
             print('    修法（三选一）：')
             print('      ① 重新编译 libmpv.so，**去掉 --disable-decoders 白名单**'
                   '（mpv-android 官方做法）')

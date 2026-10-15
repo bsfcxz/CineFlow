@@ -56,7 +56,34 @@ class EmbyProvider implements MediaProvider {
   static const _detailFields =
       'MediaSources,People,Studios,Genres,Overview,Taglines,'
       'ProductionYear,OfficialRating,CommunityRating,Collections,'
-      'ProviderIds,Status';
+      'ProviderIds,Status,'
+      // ══════════════════════════════════════════════════════════════
+      // ★★ `UserData` **必须带**（2026-10-15 用户报障的根因）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 漏了它的后果（用户原话）
+      // > "在 cineflow 中电影我看了 1 分钟，但是显示的是**立即播放**"
+      //
+      // ## 因果链（读代码逐环可查）
+      // ```
+      // ① 请求不带 Fields=UserData ⇒ 响应里没有 `UserData` 对象
+      // ② models.dart:234    final ud = j['UserData'] as Map?;  ⇒ null
+      // ③ models.dart:260-261 playedPercentage / positionTicks ⇒ 全为 null
+      // ④ models.dart:394    progress getter ⇒ 两个来源都空 ⇒ return 0
+      // ⑤ detail_page.dart:1027
+      //      final resume = item.progress > 0 && !item.played; ⇒ 恒 false
+      // ⑥ 按钮文案 ⇒ 永远「▶ 立即播放」（从不显示「继续播放 x%」）
+      // ```
+      //
+      // ## 为什么**只在电影**上暴露
+      // · 电影没有分集 ⇒ 进度**只能**来自自身 `UserData`
+      // · 剧集的续播文案走 `_playSeries` 拉分集，而 `getEpisodes` 的
+      //   Fields **本来就带 `UserData`** ⇒ 剧集不受影响
+      // ⇒ 这是"两条数据路径只有一条漏了字段"的典型缺陷。
+      //
+      // ⚠️ 注意 `RunTimeTicks`（models.dart:257 从**顶层**取）不受影响 ——
+      //    它不在 UserData 里；`progress` 的兜底分支依赖它。
+      'UserData';
 
 
   EmbyProvider._(this.session, this._dio);
@@ -170,6 +197,7 @@ class EmbyProvider implements MediaProvider {
           .whereType<Map<String, dynamic>>()
           .toList();
 
+  @override
   @override
   Future<List<MediaView>> getViews() async {
     final d = _ok(await _dio.get('/Users/${session.user.id}/Views'));
@@ -433,18 +461,29 @@ class EmbyProvider implements MediaProvider {
   Future<List<MediaItem>> getSeasons(String seriesId) async {
     final d = _ok(await _dio.get('/Shows/$seriesId/Seasons',
         queryParameters: {
-          'userId': session.user.id,
+          'UserId': session.user.id,
           'Fields': 'BasicSyncInfo,PrimaryImageAspectRatio',
         }));
     return [for (final j in _itemsList(d)) MediaItem.fromJson(j)];
   }
 
+  /// 某剧某季的分集。
+  ///
+  /// ## ⚠️ 2026-10-15：参数大小写统一为 Emby 官方风格（`UserId`/`SeasonId`）
+  /// 本站点实测过的坑（`docs/AI-MEMORY.md:2150`）：
+  /// > `/Items/Resume?userId=` ❌ **404**（**缺 `/Users/{uid}/` 前缀**）
+  /// 那条记录说的是**路径前缀**，**不是**参数大小写 ——
+  /// 所以本次改动**不是**"已确认的 404 修复"，而是：
+  /// · 本文件**15 处**用 `UserId`、原先只有 **3 处**用小写
+  ///   ⇒ 统一成多数派（Emby 官方 swagger 也是 PascalCase）
+  /// · 用户报障 `同步已看失败: 服务器错误 (404)` 的**根因尚未定位**
+  ///   ⇒ 已加分步日志（见 `detail_page._syncToTrakt`），等真机复现确认
   @override
   Future<List<MediaItem>> getEpisodes(String seriesId, String seasonId) async {
     final d = _ok(await _dio.get('/Shows/$seriesId/Episodes',
         queryParameters: {
-          'userId': session.user.id,
-          'seasonId': seasonId,
+          'UserId': session.user.id,
+          'SeasonId': seasonId,
           // UserData 必须带：分集列表要显示"已看/看到多少"
           'Fields': 'PrimaryImageAspectRatio,Overview,UserData',
         }));
@@ -1210,7 +1249,7 @@ class EmbyProvider implements MediaProvider {
       {String? mediaSourceId}) async {
     final d = _ok(await _dio.get('/Items/$itemId/PlaybackInfo',
         queryParameters: {
-          'userId': session.user.id,
+          'UserId': session.user.id,
           // 指定版本时顺带带上 mediaSourceId，让服务端直接返回该路媒体源
           'mediaSourceId': ?mediaSourceId,
         })) as Map<String, dynamic>;

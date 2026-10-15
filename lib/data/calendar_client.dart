@@ -95,15 +95,49 @@ class ShowWeek {
 /// 两者维度不同：一部"纪录片"在日历里可能被归到"剧集"，
 /// 但在浏览面板里应该出现在"纪录片"分类下。
 enum BrowseCategory {
-  series('剧集', '18', 'tv', ['全部', '国产', '港台', '日韩', '欧美'], '📺'),
-  movie('电影', null, 'movie', ['全部', '国产', '港台', '日韩', '欧美'], '🎬'),
-  anime('动漫', '16', 'tv', ['全部', '国漫', '日番', '欧美'], '🎌'),
-  variety('综艺', '10764|10767', 'tv', ['全部', '国产', '日韩', '欧美'], '🎤'),
-  documentary('纪录片', '99', 'tv', ['全部', '国产', '欧美'], '🌍'),
-  kids('儿童', '10762', 'tv', ['全部', '国产', '欧美'], '🧸');
+  series('剧集', '18', 'tv', ['全部', '国产', '港台', '日韩', '欧美'], '📺',
+      'first_air_date.desc'),
+  // ⚠️ 电影的 `genreId` 是 `null` —— 这是**有意的**（2026-10-15 核实）：
+  //    「电影」与「剧集」并列，是**大类**而**不是** genre
+  //    ⇒ 硬塞一个 genre（如 `28` 动作）会把"电影"偷偷变成"动作片"。
+  //    但它因此**没有任何 genre 筛选** ⇒ `discover/movie` 会返回
+  //    **全站热门电影** ⇒ 这是用户报障"6 个类别点开就在一块"的原因之一。
+  //    修法：靠 `region`（国产/港台…，见 `BrowseRegion`）+
+  //    **独立的排序维度**（下面最后那个参数）来区分。
+  movie('电影', null, 'movie', ['全部', '国产', '港台', '日韩', '欧美'], '🎬',
+      'primary_release_date.desc'),
+  anime('动漫', '16', 'tv', ['全部', '国漫', '日番', '欧美'], '🎌',
+      'first_air_date.desc'),
+  variety('综艺', '10764|10767', 'tv', ['全部', '国产', '日韩', '欧美'], '🎤',
+      'first_air_date.desc'),
+  documentary('纪录片', '99', 'tv', ['全部', '国产', '欧美'], '🌍',
+      'vote_average.desc'),
+  kids('儿童', '10762', 'tv', ['全部', '国产', '欧美'], '🧸',
+      'first_air_date.desc');
 
-  const BrowseCategory(
-      this.label, this.genreId, this.kind, this.regions, this.emoji);
+  const BrowseCategory(this.label, this.genreId, this.kind, this.regions,
+      this.emoji, this.sortBy);
+
+  /// **本类别的默认排序维度**（2026-10-15 新增）。
+  ///
+  /// ## ★ 为什么必须按类别区分（用户报障"点开就在一块"的根因之二）
+  /// 原来 **6 个类别全是 `popularity.desc`** ⇒ TMDB 的 popularity 榜是
+  /// **全球通用**的 ⇒ 各类别前几条**必然高度重叠**
+  /// （尤其"电影"与"剧集"，都是那几部大热片）
+  /// ⇒ 用户感觉"点开其实就在一块"。
+  ///
+  /// ## 各维度的意图（不是随手选的）
+  /// | 类别 | 排序 | 为什么 |
+  /// |---|---|---|
+  /// | 剧集/动漫/综艺/儿童 | `first_air_date.desc` | 用户想看**最近在播的** |
+  /// | 纪录片 | `vote_average.desc` | 纪录片看**质量**（时政类时效性弱）|
+  /// | 电影 | `primary_release_date.desc` | 用户想看**新片** |
+  ///
+  /// ## ⚠️ 电影必须配套日期窗口
+  /// TMDB 对 `primary_release_date.desc` 有已知行为：
+  /// 不限制窗口时会优先返回**很久以前**的高热度片。
+  /// ⇒ `fetchBrowse` 会对电影自动补 `primary_release_date.gte`（近 3 年）。
+  final String sortBy;
 
   final String label;
 
@@ -832,6 +866,56 @@ class CalendarClient {
 
   /// 本周数据的短 TTL（见 [cacheTtl] 说明）。
   static const todayTtl = Duration(minutes: 30);
+
+  /// ══════════════════════════════════════════════════════════════
+  /// ★ 2026-10-15 新增：**列表数据的短 TTL**（E 项）
+  /// ══════════════════════════════════════════════════════════════
+  ///
+  /// ## 为什么"发现/浏览"类列表不能用 6h
+  /// `fetchBrowse` / `fetchHot` 用 `sort_by = first_air_date.desc` 或
+  /// `popularity.desc` —— 这些**每天甚至每小时都在变**。
+  /// 用 6h TTL 会出现"早上看到的榜单，晚上还是同一批"，
+  /// 而用户点进"最新"就是想看新的。
+  ///
+  /// ## 为什么不用 0（= 不缓存）
+  /// Overseerr 的做法是 discover **完全不缓存**（`server/routes/discover.ts`
+  /// 里 `cache` 出现 **0 次**）。但那是服务端（有 CDN + 多用户共享）。
+  /// 我们**在手机上**，移动网络慢且耗流量 ⇒ **短 TTL 比不缓存好**。
+  ///
+  /// ## 取值依据
+  /// · 30 分钟：与 `todayTtl` 同档 —— 够"刷一下看到新的"，又不至于每次都打网络
+  /// · 而**详情类**（按 id 取，几乎不变）继续用 6h 的 `cacheTtl`
+  static const listTtl = Duration(minutes: 30);
+
+  /// ══════════════════════════════════════════════════════════════
+  /// ★ 2026-10-15 新增：**海报尺寸常量**（B 项）
+  /// ══════════════════════════════════════════════════════════════
+  ///
+  /// ## 为什么要区分（原来 6 处硬编码，4 处是 `w300`）
+  /// 借鉴 Jellyfin `TmdbClientManager.ThumbnailSizes`：
+  /// ```csharp
+  /// { "Primary", "w500" }, { "Backdrop", "w780" },
+  /// { "Thumb",   "w780" }, { "Logo",     "w500" },
+  /// ```
+  /// —— **按用途区分**，而不是所有地方一个尺寸。
+  ///
+  /// ## 尺寸语义（TMDB 官方尺寸表）
+  /// | 常量 | TMDB 值 | 宽度 | 用途 |
+  /// |---|---|---|---|
+  /// | [posterSize] | `w342` | 342px | **列表/网格**海报（手机 2–3 列，够清晰又不费流量）|
+  /// | [posterLargeSize] | `w500` | 500px | **详情页**主海报（全屏宽，需要更清晰）|
+  /// | [backdropSize] | `w780` | 780px | 背景图/剧照 |
+  ///
+  /// ⚠️ 原来列表用 `w300`（300px）—— 在 1080p 手机上 2 列布局时
+  ///    **每张海报实际约 500px 宽** ⇒ `w300` 会被放大而**发虚**。
+  ///    改成 `w342` 是官方标准尺寸里最接近的（且比 `w500` 省流量）。
+  static const posterSize = 'w342';
+
+  /// 详情页大图尺寸（见 [posterSize] 说明）。
+  static const posterLargeSize = 'w500';
+
+  /// 背景/剧照尺寸（见 [posterSize] 说明）。
+  static const backdropSize = 'w780';
 
   /// **每个源的独立 deadline**（`fetchWeek` 用它包住每个源）。
   ///
@@ -1899,7 +1983,7 @@ class CalendarClient {
           weekday: null,
           posterUrl: it['poster_path'] == null
               ? null
-              : 'https://image.tmdb.org/t/p/w300${it['poster_path']}',
+              : 'https://image.tmdb.org/t/p/$posterSize${it['poster_path']}',
           rating: (it['vote_average'] as num?)?.toDouble(),
           summary: it['overview'] as String?,
           popularity: (it['popularity'] as num?)?.toDouble(),
@@ -2019,7 +2103,7 @@ class CalendarClient {
             weekday: null,
             posterUrl: it['poster_path'] == null
                 ? null
-                : 'https://image.tmdb.org/t/p/w500${it['poster_path']}',
+                : 'https://image.tmdb.org/t/p/$posterLargeSize${it['poster_path']}',
             // 首页 hero 用 backdrop（大图）
             rating: (it['vote_average'] as num?)?.toDouble(),
             summary: it['overview'] as String?,
@@ -2189,8 +2273,56 @@ class CalendarClient {
     required BrowseCategory category,
     required BrowseRegion region,
     int page = 1,
+    // ══════════════════════════════════════════════════════════════
+    // ★★ 2026-10-15 新增：失败时是**抛异常**还是返回空列表
+    // ══════════════════════════════════════════════════════════════
+    //
+    // ## 为什么必须区分（真机截图 + logcat 实证）
+    // 原实现把**任何**异常都 `return const []` ⇒ 调用方**分不清**
+    // "这个分类真的没内容"与"请求失败了"：
+    // ```
+    // 真机截图: 「这个分类下没有内容」 + [重新加载]
+    // 真机日志: [Calendar] 分类浏览异常: 超时     ← 明明是**失败**
+    // ```
+    // ⇒ 用户被**误导**（AGENTS §7.8：不许把失败伪装成空）。
+    //
+    // ## 为什么用**可选参数**而不是直接改行为
+    // 改默认行为会影响所有既有调用方；
+    // 加参数 = **零破坏**（默认 `false` 与原来完全一致）。
+    bool throwOnError = false,
   }) async {
-    final cacheKey = 'browse:${category.name}:${region.label}:$page';
+    // ══════════════════════════════════════════════════════════════
+    // ★★ 缓存键**必须含排序维度**（2026-10-15 修的第四个根因）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // ## 原来的键（**它让"改了排序"看不到效果**）
+    // ```dart
+    // 'browse:${category.name}:${region.label}:$page'
+    // //       ↑ 类别        ↑ 地区      ↑ 页码        ← ★ 没有 sortBy
+    // ```
+    // ## 为什么这是缺陷（真机实测暴露）
+    // 我把 6 个类别的 `sort_by` 从 `popularity.desc` 改成各自的维度后，
+    // 真机点「电影」**立即出数据、零请求、零 `[Browse]` 日志**
+    // ⇒ 命中的是**磁盘缓存里旧的（`popularity.desc`）响应**
+    // ⇒ **改了等于没改**，而且用户**永远看不到修复**（直到 TTL 过期）。
+    //
+    // ⚠️ 这与 `activity` 里"缓存键漏维度"是同一类错误：
+    //    **缓存键必须覆盖所有影响结果的输入**。
+    //    `sort_by` / `with_genres` / `with_origin_country` /
+    //    `primary_release_date.gte` **都影响结果** ⇒ 都要进键。
+    //    （`kind` 由 `category` 决定、`language` 固定 ⇒ 不必单列。）
+    //
+    // ## 为什么保留旧前缀格式
+    // 便于人工辨认（`grep browse:`）；新键在末尾多一段排序。
+    // ⚠️ 旧键会**自然过期**（TTL），不需要主动清理。
+    final cacheKey = 'browse:${category.name}:${region.label}:$page'
+        ':${category.sortBy}'
+        // 电影的日期窗口也影响结果（近 3 年）⇒ 进键
+        '${category == BrowseCategory.movie ? ':y${DateTime.now().year - 3}' : ''}'
+        // ⚠️ `vote_count.gte` 同样影响结果（F 项）⇒ 也进键
+        //    （教训：**缓存键必须覆盖所有影响结果的输入** —— Jellyfin 的
+        //      12 个缓存键全部带 `language` 是同一原则）
+        '${category.sortBy.startsWith('vote_average') ? ':vc50' : ''}';
     try {
       final cached = await cache?.get(cacheKey);
       String body;
@@ -2200,9 +2332,38 @@ class CalendarClient {
         final params = <String, dynamic>{
           'api_key': apiKey,
           'language': 'zh-CN',
-          'sort_by': 'popularity.desc',
+          // ★ 用**类别自己的**排序维度（2026-10-15 修）：
+          //   原来 6 个类别**全用** `popularity.desc` ⇒ TMDB 的热度榜是
+          //   **全球通用**的 ⇒ 各类别前几条必然高度重叠
+          //   ⇒ 用户报障"6 个类别点开其实就在一块"。
+          'sort_by': category.sortBy,
           'page': '$page',
         };
+        // ⚠️ 电影按上映日期排序时**必须**配套日期窗口：
+        //    TMDB 对 `primary_release_date.desc` 的已知行为是
+        //    "不限制窗口时优先返回**很久以前**的高热度片"
+        //    ⇒ 那就又变回"热门老片"了，等于没改。
+        if (category == BrowseCategory.movie) {
+          final y = DateTime.now().year;
+          params['primary_release_date.gte'] = '${y - 3}-01-01';
+        }
+        // ══════════════════════════════════════════════════════════════
+        // ★ F 项：`vote_average` 排序**必须**配 `vote_count.gte`
+        // ══════════════════════════════════════════════════════════════
+        //
+        // ## 为什么（TMDB 的知名坑）
+        // `sort_by=vote_average.desc` 会把"**1 票 10 分**"的新片排在最前 ——
+        // 那不是"评分最高"，那是"样本最少"。TMDB 官方文档与社区都建议
+        // 配 `vote_count.gte` 做**最小票数门槛**。
+        //
+        // ## 为什么是 50
+        // 太严（如 500）会把纪录片/小众片**整类滤空**（纪录片本来就冷门）；
+        // 太松（如 10）挡不住刷分。50 是社区常用值，且对"纪录片"这类
+        // 我们要用的类别**不至于全空**。
+        // ⇒ 只对**用评分排序**的类别加（其他类别加了会无谓缩量）。
+        if (category.sortBy.startsWith('vote_average')) {
+          params['vote_count.gte'] = '50';
+        }
         final g = category.genreId;
         if (g != null && g.isNotEmpty) params['with_genres'] = g;
         final c = region.countries;
@@ -2212,6 +2373,21 @@ class CalendarClient {
           params['with_origin_country'] = c.join('|');
         }
         if (region.forceChinese) params['with_original_language'] = 'zh';
+
+        // ★ 请求级日志（2026-10-15 新增）
+        //
+        // ## 为什么必须有（用户报障时**看不到任何线索**）
+        // 原来本方法只有**失败**日志（HTTP 非 200 / 异常）。
+        // 而用户报的是"6 个类别点开其实就在一块" —— 那是
+        // **请求成功但内容相似**，所有失败日志都是空的
+        // ⇒ 完全无法定位（我当时只能靠猜）。
+        // 有了这行，一次操作就能看出：类别 → 参数 → 条数。
+        debugPrint('[Browse] ${category.label}/${region.label} → '
+            'sort=${category.sortBy} '
+            'genres=${params['with_genres'] ?? "无"} '
+            'country=${params['with_origin_country'] ?? "无"} '
+            'dateGte=${params['primary_release_date.gte'] ?? "无"} '
+            'minVotes=${params['vote_count.gte'] ?? "无"}');
 
         final r = await _dio.get<String>(
           'https://api.themoviedb.org/3/discover/${category.kind}',
@@ -2232,7 +2408,11 @@ class CalendarClient {
           return const [];
         }
         body = r.data!;
-        await cache?.put(cacheKey, body, ttl: cacheTtl);
+        // ★ 用 **listTtl**（30min）而不是 6h（2026-10-15，E 项）：
+        //   discover 列表按 `first_air_date.desc` / `popularity.desc` 排序，
+        //   **每天甚至每小时都在变** ⇒ 6h 会出现"早上看到的榜单，晚上还是同一批"。
+        //   ⚠️ 详情类（按 id 取，几乎不变）继续用 `cacheTtl`（6h）。
+        await cache?.put(cacheKey, body, ttl: listTtl);
       }
       final j = jsonDecode(body);
       final out = <CalendarEntry>[];
@@ -2251,7 +2431,7 @@ class CalendarClient {
           weekday: null,
           posterUrl: poster == null
               ? null
-              : 'https://image.tmdb.org/t/p/w300$poster',
+              : 'https://image.tmdb.org/t/p/$posterSize$poster',
           rating: (it['vote_average'] as num?)?.toDouble(),
           summary: it['overview'] as String?,
           popularity: (it['popularity'] as num?)?.toDouble(),
@@ -2260,12 +2440,39 @@ class CalendarClient {
           sourceId: it['id']?.toString(),
         ));
       }
-      // 按热度降序（与日历一致）
-      out.sort((a, b) =>
-          (b.popularity ?? 0).compareTo(a.popularity ?? 0));
+      // ══════════════════════════════════════════════════════════════
+      // ★★ 2026-10-15：**删掉了**"按热度降序"的客户端重排
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 原来的代码（**它是"6 个类别点开在一块"的最终原因**）
+      // ```dart
+      // // 按热度降序（与日历一致）
+      // out.sort((a, b) => (b.popularity ?? 0).compareTo(a.popularity ?? 0));
+      // ```
+      //
+      // ## 为什么必须删
+      // 服务端已经按 `category.sortBy` 排好了（如 `first_air_date.desc`
+      // = 最近在播、`vote_average.desc` = 评分最高）。
+      // **客户端再按 popularity 重排一次 ⇒ 把服务端的排序完全抹掉**
+      // ⇒ 6 个类别无论怎么查，最终都变成"热度降序"
+      // ⇒ **看起来就是"点开都差不多 / 在一块"**。
+      //
+      // ⚠️ 这与"只改 `sort_by` 不改这里"是一对照实验：
+      //    只改 `sort_by` 而留着这行 ⇒ **改了等于没改**。
+      //    （本仓库 §6.10 规则②的同类：只改一处、另一处覆盖它。）
+      //
+      // ## 为什么其它方法（日历/热播）**保留** popularity 排序
+      // 那些接口服务端返回的顺序**不保证**（`/tv/on_the_air` 等），
+      // 且它们的语义就是"按热度看"—— 与 `discover` 的 `sort_by` 不同。
+      // ⇒ **只删本方法这一处**，不动其它 4 处（见 `grep 按热度降序`）。
       return out;
     } catch (e) {
       debugPrint('[Calendar] 分类浏览异常: ${_friendly(e)}');
+      // ★ `throwOnError` ⇒ 让调用方能区分"**失败**"与"**空**"
+      //   （默认 false = 保持旧契约，不破坏其它调用方）
+      //   真机教训：不区分时 UI 显示"这个分类下没有内容"，
+      //   而实际是 TMDB 超时 —— 那是**假话**（§7.8）。
+      if (throwOnError) throw CalendarException(_friendly(e));
       return const [];
     }
   }
@@ -2382,7 +2589,7 @@ class CalendarClient {
             weekday: weekday,
             posterUrl: poster == null
                 ? null
-                : 'https://image.tmdb.org/t/p/w300$poster',
+                : 'https://image.tmdb.org/t/p/$posterSize$poster',
             rating: (it['vote_average'] as num?)?.toDouble(),
             summary: it['overview'] as String?,
             // ★ 热度（用户要求"按热度显示"）
@@ -2607,10 +2814,10 @@ class CalendarClient {
       tagline: str(j['tagline']),
       posterUrl: poster == null
           ? null
-          : 'https://image.tmdb.org/t/p/w300$poster',
+          : 'https://image.tmdb.org/t/p/$posterSize$poster',
       backdropUrl: backdrop == null
           ? null
-          : 'https://image.tmdb.org/t/p/w780$backdrop',
+          : 'https://image.tmdb.org/t/p/$backdropSize$backdrop',
       rating: (j['vote_average'] as num?)?.toDouble(),
       voteCount: (j['vote_count'] as num?)?.toInt(),
       firstAirDate: str(j['first_air_date']),
@@ -3210,4 +3417,21 @@ final class DriftCalendarCache implements CalendarCache {
   Future<void> put(String key, String value, {required Duration ttl}) async {
     await _db.cachePut(key, value, ttl: ttl);
   }
+}
+
+/// **日历/浏览数据源异常**（供调用方区分"失败"与"空结果"）。
+///
+/// ## 为什么需要（2026-10-15 真机报障）
+/// `fetchBrowse` 原来把一切异常吞成 `return const []`
+/// ⇒ 调用方无法区分，只能显示"这个分类下没有内容"（**假话**，违反 §7.8）。
+/// 有了这个类型，调用方可将**真实原因**展示给用户
+///（如"超时" ⇒ 提示检查网络或代理）。
+class CalendarException implements Exception {
+  const CalendarException(this.message);
+
+  /// 已本地化（中文）的原因，可直接展示给用户。
+  final String message;
+
+  @override
+  String toString() => message;
 }

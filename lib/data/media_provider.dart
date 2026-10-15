@@ -380,6 +380,7 @@ abstract interface class MediaProvider {
     required int positionTicks,
     bool? played,
   });
+
 }
 
 /// `Sessions/Playing/Progress` 的 `EventName` 取值。

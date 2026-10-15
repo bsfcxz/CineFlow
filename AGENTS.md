@@ -532,7 +532,28 @@ if (gone.isNotEmpty) await db.deleteSubscriptions(gone); // 这里**没加** ⇒
 > **一句话**：凡是**删数据**的代码，先问 ——
 > **"如果上游查询全部失败，这行会删掉什么？"** 答不上来就不许写。
 
----
+### 6.10 第三方 API 接入作业规则
+
+> ★ **完整规则 + 实测矩阵见 [`docs/API-INTEGRATION.md`](docs/API-INTEGRATION.md)**
+> （外移原因：本节完整版使 AGENTS.md 超 65536 预算被**自动截断**，
+>  吃掉 §7/§8/§9/§10 ⇒ 与 §4、§8.4 同一处理）。
+>
+> 用户要求（2026-10-14）：**"你必须比我们更加的了解"** ——
+> 接入 API 前先取机器可读契约（**不要照网页文档**，可能是客户端渲染）、
+> 每个端点**实测**并附矩阵、**跑通所有可实现功能后再汇报**。
+>
+> 三条最致命的（其余见该文档）：
+> ① **契约 ≠ 现实** —— 实测有端点服务端已移除（`404 endpoint removed`）；
+> ② **接线完整性** —— 我实现 3 个 API 但**调用点全为 0**，
+>    用户开开关后什么也没发生，而 analyze 0/0、测试全绿；
+> ③ **响应形状全测** —— 同一组端点有 3 种形状，只处理一种会**静默返回空**。
+
+> ④ **不许把推断写成"用户原话"**（2026-10-14 用户当场指出）
+> —— 我在测试注释里写 `// 用户原话："去除右侧的已看按钮"`，
+> 而核查 `git log --grep` 与提交信息后**找不到任何依据** ⇒ 那句是我编的。
+> 更糟的是我为了自洽**顺手放松了测试断言**（§8.4 禁止的"让测试变绿"）。
+> **规矩**：引用用户的话必须能指出来源（当轮对话 / 提交 sha / docs 台账），
+> 否则只能写"我的判断：…"，且**不许加引号**。
 
 ## 7. 已知缺陷台账（⚠️ 未修复，勿当成已完成功能）
 
@@ -813,6 +834,7 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 | **UI 令牌 / 对比度 / 交互纪律 / UI 陷阱** | **`docs/UI-DESIGN.md`**（**改 UI 前必读**；§6.4.1 只有四条摘要） |
 | **目录结构与各层职责** | **`docs/DIRECTORY-MAP.md`**（从 §4 外移而来，含测试文件清单） |
 | 踩坑与经验（"这为什么这么写"） | `docs/lessons/`（索引在 `docs/lessons/README.md`） |
+| **TMDB 接入 / 能用 pub 现成包吗** | [`docs/lessons/tmdb-integration-research.md`](docs/lessons/tmdb-integration-research.md)（`tmdb_api` 是 **GPL-3.0** ⇒ 禁用；对标 Jellyfin/Overseerr）|
 | 架构与 `MediaProvider` 契约 | `docs/architecture.md`；决策背景见 `docs/decisions/` |
 | 为什么没有 Go 层 / 为什么用 Navigator | `docs/decisions/0002-pure-dart-mvp.md`（**已被 0004/0005 收窄**）；0001 是已废弃的原始设想 |
 | 为什么引入 Go 层 / Synurang 为何未落地 | `docs/decisions/0004-go-core-layer.md` |

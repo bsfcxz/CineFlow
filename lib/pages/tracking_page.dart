@@ -170,6 +170,30 @@ class _TrackingPageState extends ConsumerState<TrackingPage> {
 
   @override
   Widget build(BuildContext context) {
+    // ★ 预热 Trakt 的「seriesId → tmdbId」反向表（「实时追踪」需要）
+    //
+    // ## 为什么在这里（而不是播放器里）
+    // `mapSeriesTmdbToId()` 是**翻页拉全库**（实测 5713 条，数秒）。
+    // 播放器在**起播路径**上，绝不能等它 ⇒ 拆成"这里预热、那里只读"。
+    //
+    // ## 为什么用 `listen` 而不是 `watch`
+    // `watch` 会把本页绑到那个 FutureProvider 的加载态上（loading 时重建）；
+    // 而本页**不依赖**它的结果（追剧页有自己的数据源）
+    // ⇒ `listen` 只在完成时回调，**不参与 build**（不引起重建）。
+    //
+    // ## ⚠️ 不 watch 就永不预热
+    // 该 provider 的**副作用**（`seedReverseMap`）才是目的。
+    // 若没人监听 ⇒ provider 永不执行 ⇒ 缓存永远空
+    // ⇒ 播放器静默放弃上报 ⇒ **实时追踪永远不工作**（而 analyze / 测试全绿）。
+    ref.listen(seriesTmdbReverseProvider, (prev, next) {
+      next.whenData((m) {
+        if (m.isNotEmpty) {
+          debugPrint('[追剧] Trakt 反向映射已预热 ${m.length} 条');
+        }
+      });
+    });
+
+
     final subs = ref.watch(subscriptionsProvider);
     // ★ 库内集数（由子级 `_loadAll` 写入 → 这里读；
     //   见 `libraryEpisodeCountProvider` 的说明）。

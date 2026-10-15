@@ -42,6 +42,32 @@
    本仓库统一用 `readCode()`：去块注释（`/\*[\s\S]*?\*/`）+ 行注释（`//[^\n]*`）。
    见 `test/player_session_wiring_test.dart` 的实现。
 
+   > ### 🔴 但"剥注释"本身也有坑：**别把 `https://` 当注释**（2026-10-15 实测）
+   >
+   > 朴素写法 `s.replaceAll(RegExp(r'//[^\n]*'), '')` 会把 **URL 里的 `//`**
+   > 当成注释起点 ⇒ 整条 URL 从 `//` 处被删掉：
+   > ```dart
+   > 'https://image.tmdb.org/t/p/$posterSize'
+   >   ↓ 剥注释后
+   > 'https:
+   > ```
+   > **后果**（我实测到的）：
+   > ```dart
+   > // 断言：不许出现硬编码的 /t/p/w数字
+   > expect(RegExp(r'/t/p/w\d{2,4}').allMatches(src).length, 0);
+   > ```
+   > 剥注释把 URL 全吃掉 ⇒ 这个断言**恒为真**（`0 == 0`）
+   > ⇒ 把 `$posterSize` 换回硬编码 `w300`，**测试照样通过**（反向注入仍绿）。
+   >
+   > **正确做法**：逐字符扫描，跟踪**是否在字符串字面量里**：
+   > · 在 `'` / `"` 内 ⇒ 原样保留（`//` 不是注释）
+   > · 不在字符串里 ⇒ `//` 到行尾才是注释
+   >
+   > 参考实现：`test/tmdb_api_hygiene_test.dart` 的 `_stripComments`。
+   >
+   > **一句话**：一切"删掉一部分文本再断言"的工具，都要先问
+   > **"它会不会把我真正想检查的东西也删掉？"**
+
 2. **断言要落在"必然会变的那一行"，而不是关键词**。
    - ❌ `manifest.contains('POST_NOTIFICATIONS')`
      —— manifest 的注释里解释这条权限时也写了这个名字

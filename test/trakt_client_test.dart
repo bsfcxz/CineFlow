@@ -174,23 +174,57 @@ void main() {
       expect(
         s.plausiblyMatches(cnTitle: 'Fanren 修仙传', expectYear: 2026),
         isTrue,
-        reason: '有共同拉丁片段 ⇒ 宽松通过',
-      );
-      // 反向：真没有共同片段时**不该**通过
-      const s2 = TraktShow(title: 'A Record of a Mortal', year: 2020);
-      expect(
-        s2.plausiblyMatches(cnTitle: '凡人修仙传', expectYear: 2026),
-        isFalse,
-        reason: '⭐ 实测的真实情形：中文名与英文名常无共同拉丁片段 ⇒ '
-            '这种校验**只能靠年号**，靠不住时保守判否（宁可不用 Trakt）',
+        reason: '有共同拉丁片段 ⇒ 通过',
       );
     });
 
-    test('信息不足 ⇒ 不通过（保守）', () {
-      const s = TraktShow(title: 'X');
-      expect(s.plausiblyMatches(cnTitle: null, expectYear: null), isFalse);
-      expect(s.plausiblyMatches(cnTitle: '仙逆', expectYear: null), isFalse,
-          reason: '年号未知且无拉丁片段 ⇒ 保守判否');
+    test('★★★ 年份未知且中英文名无重叠 ⇒ **采信**（用户 2026-10-15 定策 B）', () {
+      // ══════════════════════════════════════════════════════════════
+      // ⚠️ 这是**行为变更**（旧断言是"保守判否"）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 为什么要改（用户报障的实际后果）
+      // ```
+      // [Trakt] ⚠️ 错配未采信：tmdb=223911 → "Renegade Immortal"
+      //         （期望「仙逆」/null）   ← 正确的剧被**误杀**
+      // ⇒ 用户看到「3 集未收录」，同步只成功 2 集
+      // ```
+      // 「仙逆」的 Trakt 官方英文名就是 `Renegade Immortal` ——
+      // **字符层面毫无重叠** ⇒ 旧的"保守判否"在这类情况下**必然误杀**。
+      // 而国产剧几乎都是"中文名 + Trakt 英文名"
+      // ⇒ 旧策略让这功能**大面积不可用**（不是偶发）。
+      //
+      // ## 用户的选择（2026-10-15，明确）
+      // > **B：不确定时采信 —— 修掉"未收录"**
+      //
+      // ## 为什么采信是**安全的**（不是无脑放宽）
+      // · `findByTmdb` 查的是 `/search/tmdb/{id}?type=show` —— 按 tmdb id
+      //   **精确查**，错配概率本来就低
+      // · 真正的错配案例（tmdb=229977 → 《陸小鳳之鳳舞九天》）
+      //   **年份就不同**（1979 vs 2023）⇒ 靠"年份都已知且不一致"足以拦住
+      //   —— 见下面第二条断言
+      // · "年份未知"多半是**上游漏传 `expectYear`**（已在 detail_page 补上）
+      const s2 = TraktShow(title: 'A Record of a Mortal', year: 2020);
+      expect(
+        s2.plausiblyMatches(cnTitle: '凡人修仙传', expectYear: null),
+        isTrue,
+        reason: '★ 年份未知 ⇒ **不确定**（不是"明确不符"）⇒ 采信。\n'
+            '    判据：只有"年份**都已知**且不一致"才算明确错配',
+      );
+      // ⚠️ 但"年份都已知且不一致"**仍然必须拦下**（防错配能力不能丢）
+      expect(
+        s2.plausiblyMatches(cnTitle: '凡人修仙传', expectYear: 2026),
+        isFalse,
+        reason: '★★ 年份都已知且不一致 ⇒ **明确错配** ⇒ 必须拦',
+      );
+    });
+
+    test('★★ 一方年份未知 ⇒ 采信（修正"信息不足就判否"的旧策略）', () {
+      const s = TraktShow(title: 'X');   // year = null
+      expect(s.plausiblyMatches(cnTitle: '仙逆', expectYear: 2026), isTrue,
+          reason: '★ show.year 未知 ⇒ 不确定 ⇒ 采信（策略 B）');
+      expect(s.plausiblyMatches(cnTitle: null, expectYear: null), isTrue,
+          reason: '★ 两边都没年份 ⇒ 更无依据判否 ⇒ 采信');
     });
   });
 }

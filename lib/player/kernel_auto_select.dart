@@ -300,37 +300,43 @@ abstract final class KernelAutoSelect {
   ///
   /// 5. **其余 → mpv**（保守：格式覆盖最全）
   static KernelDecision _selectAuto(MediaTraits t) {
-    // ---- ★★ 规则 -1：**PGS 图形字幕 → Media3**（**最高优先级**）----
+    // ══════════════════════════════════════════════════════════════════
+    // ★★ 2026-10-15：**删除**了原"规则 -1：PGS → Media3"
+    // ══════════════════════════════════════════════════════════════════
     //
-    // ## 为什么必须在规则 0 **之前**（真机实测抓到的顺序 bug）
-    // 我第一版把它放在规则 4 之后，结果《复仇者联盟》**根本没走到它**：
+    // ## 为什么删（它自己的注释就写了删除条件）
+    // `kernel_traits_adapter.dart` 的能力表原文：
+    // > | **mpv（自持 .so）** | ❌ 缺 | 真机：`Could not find subtitle decoder
+    // >   for format 'hdmv_pgs_subtitle'`；且符号表里没有 `ff_pgssub_decoder`
+    // >
+    // > ⚠️ **若将来换掉 `libmpv.so`（补上 pgssub），这条规则应删除或放宽**
+    // >   （见 `tool/check_mpv_decoders.py` 的自检输出）。
+    //
+    // **本轮做了那件事**：把 `.so` 换成 `full` 变体
+    // （`media-kit/libmpv-android-video-build` v1.1.11 `full-arm64-v8a.jar`）
+    // ⇒ 符号级实测：
     // ```
-    // [Kernel] MediaTraits(..., 3840x2160, ...) -> mpv（HDR（HDR 10）走 mpv）
-    //                                                  ↑ 规则 0 先命中
-    // ```
-    // ⇒ 落到**缺 PGS 解码器**的 mpv，而该片的 8 条字幕**全是 PGS**：
-    // ```
-    // [mpv/sub] Could not find subtitle decoder for format 'hdmv_pgs_subtitle'.
-    // [PlayerFlow] 字幕：自动选中«简英特字» id=1   ← 选中了但显示不出来
-    // 画面下方亮像素 = 41                          ← ❌ 确认无字幕
+    // 旧 default 变体：150 个解码器  ff_pgssub_decoder ❌ 0
+    // 新 full 变体   ：513 个解码器  ff_pgssub_decoder ✅ 1
+    // tool/check_mpv_decoders.py → 18/18 通过
     // ```
     //
-    // ## 为什么这条能升到最高优先级（取舍依据）
-    // 规则 0（HDR→mpv）的理由是"色调映射更好" —— 那是**画质偏好**。
-    // 本条解决的是"**字幕完全看不到**" —— 那是**功能缺失**。
-    // ⇒ 功能缺失优先于画质偏好。
+    // ## 不删的代价（比"规则多余"严重得多）
+    // 规则 -1 是**最高优先级** ⇒ 凡是 PGS 片源都被**强制降级到 Media3**
+    // ⇒ 白白丢掉 mpv 的：
+    // · HDR/杜比视界的**色调映射**（规则 0 本来会给它）
+    // · 6 项能力中的 4 项（画面滤镜 / 音视频延迟 / 运行中切硬解）
+    // ⇒ 那是**实打实的功能损失**，且用户完全看不出原因。
     //
-    // ## 反例（为什么只在 PGS 时才覆盖规则 0）
-    // HDR + **非 PGS** 字幕（如 SRT/ASS）仍走 mpv（规则 0 继续生效）——
-    // 那时 mpv 的字幕能力没问题，保留它的色调映射优势。
-    if (t.hasPgsSubtitle) {
-      return KernelDecision(
-        kernel: KernelType.media3,
-        reason: 'PGS 图形字幕：Media3 内置 PgsParser 能显示，'
-            '自持 mpv 缺该解码器（真机已证实）',
-        confidence: KernelConfidence.high,
-      );
-    }
+    // ## 删掉之后 PGS 片源走哪
+    // 落回正常规则链（HDR → mpv，其余按格式/编码判断）
+    // ⇒ PGS 片源现在**由 mpv 解码**（能显示），且拿到 mpv 的全部能力。
+    //
+    // ## ⚠️ 保留的"防回退"保障
+    // `hasPgsSubtitle` 字段**继续保留**（数据层仍要算它），因为：
+    // · 若将来 `.so` 又被换回裁剪版，`tool/check_mpv_decoders.py` 会**报红**
+    // · 那时应把这条规则**按原样恢复**（判据同上）
+    // ⇒ 字段保留 = 恢复规则的**信息前提**还在，不必重新做数据管道。
 
     // ---- 规则 0：杜比视界 / HDR → mpv（见方法注释）----
     if (t.isHdr) {
