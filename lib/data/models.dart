@@ -258,7 +258,45 @@ class MediaItem {
       played: ud?['Played'] == true,
       isFavorite: ud?['IsFavorite'] == true,
       playedPercentage: (ud?['PlayedPercentage'] as num?)?.toDouble(),
-      positionTicks: (ud?['PositionTicks'] as num?)?.toInt(),
+      // ══════════════════════════════════════════════════════════════
+      // ★★ 字段名是 `PlaybackPositionTicks`（**不是** `PositionTicks`）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 2026-10-15 修的真 bug（用户报障："光阴之外和仙逆未同步"）
+      // 原来读的是 `ud['PositionTicks']` —— **这个键在 Emby 里不存在**
+      // ⇒ `positionTicks` **恒为 null**。
+      //
+      // ## 权威依据（Emby 官方 C# SDK，从服务端 swagger 生成）
+      // `MediaBrowser/Emby.ApiClients` 的
+      // `Clients/Emby.ApiClient/Emby.ApiClient/Model/UserItemDataDto.cs`：
+      // ```csharp
+      // public double? PlayedPercentage      { get; set; }
+      // public long?   PlaybackPositionTicks { get; set; }   ← ★ 官方名
+      // public int?    UnplayedItemCount     { get; set; }
+      // public bool?   Played                { get; set; }
+      // ```
+      // **该 DTO 里没有 `PositionTicks` 这个属性。**
+      // 本文件 414 行的实测注释也早就记着真实响应形状：
+      // ```
+      // {"Played":false,"PlaybackPositionTicks":0,"UnplayedItemCount":16}
+      // ```
+      // ⇒ 代码与实测**自相矛盾**了，而我一直没发现。
+      //
+      // ## 后果链（为什么"同步没反应"）
+      // ```
+      // Emby 给了 PlaybackPositionTicks（你看了一半）
+      //   ↓ 代码读 'PositionTicks' ⇒ null
+      //   ↓ 分集常无 PlayedPercentage ⇒ progress = null ?? (null>0 ? -1 : 0) = 0
+      //   ↓ Trakt 推方向的 partial 判据 `progress > 1` ⇒ false
+      // ⇒ "看了一部分"的集被**静默丢弃** ⇒ Trakt「继续观看」永远推不出去
+      // ```
+      //
+      // ## 为什么两个键都读（**不删旧键**）
+      // 万一某些 Emby 版本/代理只给 `PositionTicks`，保留它做兜底
+      // ⇒ 零风险（`??` 短路，命中第一个非 null 即止）。
+      positionTicks: ((ud?['PlaybackPositionTicks'] ?? ud?['PositionTicks'])
+              as num?)
+          ?.toInt(),
       unplayedItemCount: (ud?['UnplayedItemCount'] as num?)?.toInt(),
       // 总集数：实测 Emby 的 ChildCount 就是「这部剧有多少集」
       childCount: (j['ChildCount'] as num?)?.toInt(),

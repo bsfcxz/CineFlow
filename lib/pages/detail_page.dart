@@ -1575,11 +1575,42 @@ class _DetailPageState extends ConsumerState<DetailPage> {
             season: snNum,
             number: n,
             played: e.played,
-            // Emby 的 playedPercentage 是 0–100（可空 ⇒ 用 positionTicks 兜底）
-            progress: e.playedPercentage ??
-                (e.positionTicks != null && e.positionTicks! > 0
-                    ? -1.0   // 有位置但无百分比 ⇒ 交给上层用 positionTicks 估
-                    : 0.0),
+            // ══════════════════════════════════════════════════════════
+            // ★★ 2026-10-15 修：**真的算出百分比**（原来塞了个 `-1.0` 占位符）
+            // ══════════════════════════════════════════════════════════
+            //
+            // ## 原来的错
+            // ```dart
+            // progress: e.playedPercentage ??
+            //     (e.positionTicks != null && e.positionTicks! > 0
+            //         ? -1.0    // ← 塞个标记"有位置但没百分比"
+            //         : 0.0),
+            // ```
+            // 注释说"交给上层用 positionTicks 估"—— 但**上层从没做这件事**：
+            // ```dart
+            // .where((e) => !e.played && e.progress > 1 && e.progress < 80)
+            // //                            ↑ -1.0 > 1 == false
+            // ```
+            // ⇒ **"看了一部分"的集被静默丢弃** ⇒ 「继续观看」推不出去。
+            //
+            // ## 修法：直接用 `MediaItem.progress`（它已经会算）
+            // `models.dart` 的 getter：
+            // ```dart
+            // double get progress {
+            //   final p = playedPercentage;
+            //   if (p != null && p > 0) return (p / 100).clamp(0, 1);   // 0–1
+            //   final pos = positionTicks;
+            //   if (pos != null && pos > 0 && runtimeTicks != null) {
+            //     return (pos / runtimeTicks!).clamp(0, 1);              // 兜底
+            //   }
+            //   return 0;
+            // }
+            // ```
+            // ⇒ 它**已经**处理了"有位置无百分比"的兜底，我们只要 ×100 转成百分比。
+            //
+            // ⚠️ **不要**再自己写三元表达式 —— 那就是刚才那个 bug 的来源
+            //    （`progress` getter 是唯一权威，重复实现必然分叉）。
+            progress: e.progress * 100,
           ));
           if (e.played) watched.add((snNum, n));
         }

@@ -1294,10 +1294,46 @@ class EmbyProvider implements MediaProvider {
     //     依赖它的 keep-alive 池复用）—— 但那依赖"URL 完全一致 +
     //    池未驱逐"，脆弱，收益不确定，暂不做。
 
-    // 转码兜底（硬解直连优先，转码是最后手段）：
-    // Emby 标准 HLS master 播放列表，libmpv 原生可播；限制到 h264/aac 1080p。
+    // ══════════════════════════════════════════════════════════════
+    // ★ 转码兜底（硬解直连优先，转码是最后手段）
+    // ══════════════════════════════════════════════════════════════
+    //
+    // ## 🔴 2026-10-15 修的真 bug：**`PlaySessionId` 缺失 ⇒ 分段全 400**
+    // 真机证据（用户报障"切换转码是播放器报错"）：
+    // ```
+    // [mpv/cplayer] Playing: .../Videos/3304770/hls1/main/265.mp4?PlaySessionId=
+    // [mpv/ffmpeg]  http: HTTP error 400 Bad Request
+    // [mpv/stream]  Failed to open ...
+    // end-file error: error=-13 loading failed      ← 265/266/267/268 逐个失败
+    // ```
+    // ⚠️ 注意 URL **以 `?PlaySessionId=` 结尾（值为空）** ——
+    //    Emby 把 master.m3u8 请求里的参数**透传到分段 URL**，
+    //    我们没有这个参数 ⇒ 分段拿到空值 ⇒ **400**。
+    //
+    // ## 权威依据（Jellyfin 服务端 = Emby 同源，代码级）
+    // `Jellyfin.Api/Helpers/StreamingHelpers.cs`：
+    // ```csharp
+    // var currentJob = !string.IsNullOrWhiteSpace(streamingRequest.PlaySessionId)
+    //     ? transcodeManager.GetTranscodingJob(streamingRequest.PlaySessionId)
+    //     : null;      // ← ★ 空 ⇒ 服务端**找不到转码任务**
+    // ```
+    // 且 `PlaySessionId` 是流式请求的**必填字段**（不是可选优化）。
+    //
+    // ## 修法的关键：**同一个 id 必须同时用于 URL 与上报**
+    // 原来 `playSessionId: uuidV4()` 只为**上报**生成（`POST /Sessions/Playing`），
+    // 转码 URL 里没有它 ⇒ 两条路对不上。
+    // ⇒ 现在**先生成一次**，URL 与 `PlaybackLaunch.playSessionId` 共用。
+    //
+    // ⚠️ 不要在这里再 `uuidV4()` —— 会生成第二个 id，
+    //    导致"转码任务"与"上报会话"又不是同一个（同一类 bug 复发）。
+    final sessionId = uuidV4();
+    // Emby 标准 HLS master 播放列表，libmpv 原生可播；限制到 h264/aac。
+    //
+    // ⚠️ 参数顺序无关，但 `PlaySessionId` **必须有值**。
+    // `api_key` 用 `session.accessToken`（本仓库既有的鉴权方式）。
     final transcode = '${session.serverUrl}/Videos/$itemId/master.m3u8'
         '?MediaSourceId=${ms.id}&api_key=${session.accessToken}'
+        '&PlaySessionId=$sessionId'
         '&VideoCodec=h264&AudioCodec=aac,mp3'
         '&TranscodingMaxAudioChannels=2&SegmentContainer=mp4'
         '&MinSegments=1&BreakOnNonKeyFrames=True'
@@ -1307,7 +1343,8 @@ class EmbyProvider implements MediaProvider {
       url: url,
       itemId: itemId,
       mediaSourceId: ms.id,
-      playSessionId: uuidV4(),
+      // ★ 与转码 URL 里的 `PlaySessionId` **同一个值**（见上面的说明）
+      playSessionId: sessionId,
       videoLabel: video.isNotEmpty ? video.first.label : null,
       audioLabel: audio.isNotEmpty ? audio.first.label : null,
       container: ms.container,
