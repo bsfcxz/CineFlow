@@ -18,6 +18,7 @@
 | **用户数据安全** | `2026-10-12-uninstall-wiped-user-data.md` | **已有** | 误用 `adb uninstall` / `pm clear` 清空用户订阅与凭据（真实事故，2026-10-12）|
 | **115 网盘** | `115-pan-webapi-pitfalls.md` | **已有** | UA 绑定致 403、m115 非对称加解密、限速防封号、凭据不入库 |
 | **TMDB 接入 / 第三方包选型** | `tmdb-integration-research.md` | **已有** | "能不能用 pub 上的 TMDB 包"、**缓存键漏维度**、discover 参数、开源项目对标（2026-10-15）|
+| **内置刮削 / 元数据匹配** | `builtin-scraping-research.md` | **已有** | Plex `Local Media Assets` 命名约定、Jellyfin **NFO 规范**与 **`{tmdb-12345}` ID 后缀**、**TMDB 在中国大陆不可达**（官方承认）（2026-10-15）|
 
 > 当前协议层与播放器的踩坑**已在 `AGENTS.md` §6 与 `docs/DEVELOPMENT.md` §2/§3 成文**，
 > 待补文件的作用是把它们按领域拆细，不是从零开始写。

@@ -834,7 +834,7 @@ curl -sL "https://api.github.com/repos/<owner>/<repo>/contents/<path>"
 | **UI 令牌 / 对比度 / 交互纪律 / UI 陷阱** | **`docs/UI-DESIGN.md`**（**改 UI 前必读**；§6.4.1 只有四条摘要） |
 | **目录结构与各层职责** | **`docs/DIRECTORY-MAP.md`**（从 §4 外移而来，含测试文件清单） |
 | 踩坑与经验（"这为什么这么写"） | `docs/lessons/`（索引在 `docs/lessons/README.md`） |
-| **TMDB 接入 / 能用 pub 现成包吗** | [`docs/lessons/tmdb-integration-research.md`](docs/lessons/tmdb-integration-research.md)（`tmdb_api` 是 **GPL-3.0** ⇒ 禁用；对标 Jellyfin/Overseerr）|
+| **TMDB 接入 / 能用 pub 现成包吗** | [`docs/lessons/tmdb-integration-research.md`](docs/lessons/tmdb-integration-research.md)（`tmdb_api` 是 **GPL-3.0** ⇒ 禁用）|
 | 架构与 `MediaProvider` 契约 | `docs/architecture.md`；决策背景见 `docs/decisions/` |
 | 为什么没有 Go 层 / 为什么用 Navigator | `docs/decisions/0002-pure-dart-mvp.md`（**已被 0004/0005 收窄**）；0001 是已废弃的原始设想 |
 | 为什么引入 Go 层 / Synurang 为何未落地 | `docs/decisions/0004-go-core-layer.md` |
