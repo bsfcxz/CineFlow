@@ -323,12 +323,73 @@ int? parseTraktSearchId(dynamic raw) {
 /// ## 生命周期
 /// 由 `traktClientProvider` 构造（Client ID 为空时返回 null ⇒ 调用方跳过）。
 /// 无状态、可安全复用。
+/// Trakt HTTP 的**统一超时**（2026-10-15 新增）。
+///
+/// ## 🔴 为什么必须有（用户报障："还是没同步"）
+/// 症状：点「同步」后 UI **永远转圈**，日志在 `partial=1` 之后**完全空白**
+/// —— 既没有后续日志，也没有 catch 里的失败日志，`_snack` 也不弹。
+///
+/// ## 根因：`Dio()` 默认**没有任何超时**
+/// ```dart
+/// _dio = dio ?? Dio()      // ← connectTimeout / receiveTimeout 都是 null
+/// ```
+/// dio 的默认值是 **`null` = 无限等待** ⇒ 网络不通时请求**永久挂起**
+/// ⇒ 调用方 `await` 永不返回 ⇒ 用户看到"没反应"（而不是错误提示）。
+///
+/// ⚠️ 这与本仓库 §5.5"失败要可降级"是**同一类**问题：
+/// **卡住**比**报错**更糟 —— 报错至少用户知道发生了什么。
+///
+/// ## 取值依据
+/// · `connectTimeout 10s`：Trakt 在部分网络环境不稳定（本机实测
+///   `api.trakt.tv` 偶发不通）；10 秒足够区分"慢"与"不通"。
+/// · `receiveTimeout 15s`：同步是**用户主动等**的操作，可以比
+///   播放路径宽松些；但不能无限。
+///
+/// ⚠️ **不要**把它设成很大（如 60s）—— 那样用户会以为 App 卡死。
+Dio _newTraktDio() {
+  final d = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 10),
+    receiveTimeout: const Duration(seconds: 15),
+    sendTimeout: const Duration(seconds: 10),
+  ));
+  // ══════════════════════════════════════════════════════════════════
+  // 🔴 为什么要在**拦截器**里再强制注入一次（不是多此一举）
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // ## 真机证据（用户报障："还是没同步"，2026-10-15）
+  // 构造时**已经**给了 `BaseOptions` 超时，但日志显示
+  // `await _dio.post(...)` **永不返回**（等 30 秒仍无任何日志，
+  // 连 `try/catch` 都没进）⇒ 说明请求级 `Options`（我们逐请求传的
+  // `_opts`，只有 headers + validateStatus）**覆盖了 BaseOptions**，
+  // 把这个请求的超时**清成了 null（无限等待）**。
+  //
+  // ## dio 的合并语义（关键）
+  // 请求级 `Options` 的字段是 `null` 时，**不保证**回落到 `BaseOptions`
+  // —— `Options.compose` 会以请求级为准。实测在这条路径上就是不回落。
+  // ⇒ **只靠构造时的 BaseOptions 不可靠**。
+  //
+  // ## 修法：拦截器里兜底填满
+  // 任何请求只要没显式设超时，就用默认值补上
+  // ⇒ **一处生效、覆盖全部**（含以后新增的请求，不会漏）。
+  //   ⚠️ 这比"逐个请求加超时"可靠 —— 后者已验证会漏
+  //   （本文件曾有 12 处没加）。
+  d.interceptors.add(InterceptorsWrapper(
+    onRequest: (options, handler) {
+      options.connectTimeout ??= const Duration(seconds: 10);
+      options.receiveTimeout ??= const Duration(seconds: 15);
+      options.sendTimeout ??= const Duration(seconds: 10);
+      handler.next(options);
+    },
+  ));
+  return d;
+}
+
 class TraktClient {
   TraktClient({
     required this.clientId,
     Dio? dio,
     this.cache,
-  })  : _dio = dio ?? Dio(),
+  })  : _dio = dio ?? _newTraktDio(),
         assert(clientId != '', 'Client ID 不得为空（provider 负责判空）');
 
   /// 用户的 Trakt Client ID（**凭据：只存 secure_storage，不入库**）。
@@ -748,7 +809,9 @@ class TraktEpisodeResolver {
     final show = await client.findByTmdb(tmdbShowId,
         expectCnTitle: expectCnTitle, expectYear: expectYear);
     final traktShowId = show?.traktId;
-    if (traktShowId == null || traktShowId <= 0) return null;
+    if (traktShowId == null || traktShowId <= 0) {
+      return null;
+    }
 
     // ② 该季的集列表（带缓存）
     final sKey = 'trakt:season:$traktShowId:$season';
@@ -984,11 +1047,11 @@ class TraktSync {
     /// ## 为什么生产代码不给它传值
     /// 刷新**必须**走一个不带拦截器的实例，否则
     /// `/oauth/token` 返回 401 时会再次触发拦截器 ⇒ **无限递归**。
-    /// 默认 `Dio()` 就是裸的 ⇒ 生产无需传。
+    /// 默认用 `_newTraktDio()`（裸的，但**带超时**）⇒ 生产无需传。
     /// ## 为什么测试要能注入
     /// 否则测试的假替身收不到刷新请求（它们注入的是 `dio`，那是业务请求用的）。
     Dio? bareDio,
-  }) : _dio = dio ?? Dio(),
+  }) : _dio = dio ?? _newTraktDio(),
        _bare = bareDio {
     // ══════════════════════════════════════════════════════════════
     // ★ 401 自动刷新 + 重试（用户 2026-10-14 规格第 4 步）
@@ -1252,7 +1315,11 @@ class TraktSync {
   Dio? _bare;
 
   /// 取裸 Dio（首次用时创建）。
-  Dio get _bareClient => _bare ??= Dio();
+  ///
+  /// ⚠️ 必须用 `_newTraktDio()`（**带超时**）而不是裸 `Dio()` ——
+  /// 否则 refresh 请求在网络不通时**永久挂起**，而它持有 `_refreshing` 锁
+  /// ⇒ **后续所有请求都被它挡住**（整个客户端死锁）。
+  Dio get _bareClient => _bare ??= _newTraktDio();
 
   Future<bool>? _refreshing;
 
@@ -1403,6 +1470,29 @@ class TraktSync {
         //（409 = 刚 scrobble 过；422 = progress < 1% 被忽略）
         // ⇒ 让调用方按状态码分支，而不是当异常。
         validateStatus: (s) => s != null && s < 500,
+        // ══════════════════════════════════════════════════════════════
+        // 🔴 2026-10-15 修：**请求级也必须显式给超时**
+        // ══════════════════════════════════════════════════════════════
+        //
+        // ## 真机证据（用户报障："还是没同步"）
+        // 日志在 `⑥ map[1]=12688410 ⇒ 命中`（`resolveEpisode` 成功返回）
+        // 之后**彻底静默** —— 等 30 秒也没有：
+        // · 没有 scrobble 成功日志
+        // · **没有** `catch (e)` 里那条 `[Trakt] 同步已看失败【...】`
+        // · 也没有 `_snack`
+        // ⇒ `await _dio.post(...)` **永不返回** —— `try/catch` 救不了它
+        //   （超时抛的是 `DioException`，但**根本没抛**）。
+        //
+        // ## 为什么构造时的 `BaseOptions` 不够
+        // `TraktSync` 的构造已改成 `_newTraktDio()`（带 `BaseOptions` 超时），
+        // **但请求级 `Options` 没有显式给** ⇒ 实测在这条路径上
+        // `sendTimeout`/`receiveTimeout` **未生效**（HTTP 请求无限等待）。
+        // ⇒ **不依赖继承，逐请求写明**（与本文件 `startDeviceAuth` 的既有做法一致）。
+        //
+        // ⚠️ 这与本仓库 §5.5 是同一类问题：**"卡住"比"报错"更糟** ——
+        //    报错至少用户知道发生了什么，"永远转圈"会让用户以为 App 死了。
+        sendTimeout: const Duration(seconds: 10),
+        receiveTimeout: const Duration(seconds: 15),
       );
 
   /// `POST /scrobble/{action}`

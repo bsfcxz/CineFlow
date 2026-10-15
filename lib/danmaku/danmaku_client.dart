@@ -69,7 +69,25 @@ class DanmakuClient {
     this.useAsync = true,
     this.chConvertCode = 1,
     Dio? dio,
-  }) : _dio = dio ?? Dio();
+  }) : _dio = dio ??
+            Dio(BaseOptions(
+              // ⚠️ 2026-10-15：**必须给超时**。
+              //
+              // ## 为什么（与 `trakt_client.dart` 同一类问题）
+              // dio 的 `connectTimeout` / `receiveTimeout` 默认是 `null`
+              // = **无限等待** ⇒ 网络不通时请求**永久挂起**。
+              // 弹幕的官方 API 在本机网络**实测不可达**
+              // （`api.dandanplay.net` 返回 000），正是这种场景：
+              // 没有超时 ⇒ 播放页的弹幕请求**永远不返回**，
+              // 用户看到的是"弹幕一直加载中"。
+              //
+              // ## 取值
+              // 比 Trakt 短（8s）——弹幕是**播放路径**上的附加功能，
+              // 宁可"这次没弹幕"也不能拖慢起播（§5.5 可降级）。
+              connectTimeout: const Duration(seconds: 8),
+              receiveTimeout: const Duration(seconds: 8),
+              sendTimeout: const Duration(seconds: 8),
+            ));
 
   /// 官方服务器地址（文档第 2 节）。自建服务用配置里的地址。
   static const kOfficialBase = 'https://api.dandanplay.net';
