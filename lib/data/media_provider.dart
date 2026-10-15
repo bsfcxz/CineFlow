@@ -566,7 +566,31 @@ class PlaybackLaunch {
     this.defaultSubtitleIndex,
     this.chapters = const [],
     this.headers = const {},
+    this.supportsTranscoding = false,
   });
+
+  /// ⚠️ **服务端自报**是否具备转码能力（`MediaSource.SupportsTranscoding`）。
+  ///
+  /// ## 为什么需要它（2026-10-15，用户实测驱动）
+  /// 用户结论（当轮原话）：> "不转码，我这个服务端好像不能转"
+  ///
+  /// `transcodingUrl` 是**我们自己拼的**（`emby_provider.dart` 无条件生成）
+  /// ⇒ **它非空 ≠ 服务端能转码**。
+  /// 在不支持转码的服务器上（Emby 免费版无 Premiere）：
+  /// ```
+  /// master.m3u8 → 200（"空转"的播放列表）
+  ///   → 分段 /hls1/main/NNN.mp4 → **HTTP 400**
+  ///     （服务端无转码任务 ⇒ 缺 runtimeTicks 等 [Required] 参数）
+  /// ```
+  /// ⇒ 盲目切转码会让用户看到"内核报错"，而真实原因是**服务器不支持**。
+  ///
+  /// ## ⚠️ 已知误报
+  /// 本仓库 2026-10 实测该字段**会误报 `true`**
+  /// （见 `emby_provider.dart:1241` 的实测注释）。
+  /// 但用于**能力探测**时这是**安全的失败方向**：
+  /// 只会让我们"多试一次转码"，不会把"确实不能转"误判成"能转"。
+  /// 真正的兜底在 `PlayerFlowPage._transcodeUsable`（还要求 URL 非空）。
+  final bool supportsTranscoding;
 
   /// 音轨（服务端口径，按服务端顺序）
   List<MediaStream> get audioStreams =>

@@ -1349,6 +1349,24 @@ class EmbyProvider implements MediaProvider {
       audioLabel: audio.isNotEmpty ? audio.first.label : null,
       container: ms.container,
       transcodingUrl: transcode,
+      // ★ 2026-10-15：把服务端自报的**转码能力**透传给播放器。
+      //
+      // ## 为什么必须透传（用户实测驱动）
+      // 用户结论（当轮原话）：> "不转码，我这个服务端好像不能转"
+      //
+      // `transcodingUrl` 是**我们无条件拼的** ⇒ 它非空**不代表**服务端能转码。
+      // 播放器若只看"URL 非空"就允许切转码：
+      // ```
+      // master.m3u8 → 200（"空转"列表）→ 分段 → **400** ⇒ "内核报错"
+      // ```
+      // ⇒ 用户看到的错误指向转码，真实原因是**服务器不支持**
+      //   （本仓库 §5.5 同类原则：不要把失败伪装成别的东西）。
+      //
+      // ⚠️ 该字段**已知会误报 true**（见本文件 1241 行的实测注释：
+      //    免费版无 Premiere 却报 `SupportsTranscoding=true`）。
+      //    但用于**能力探测**时误报 true 是**安全的失败方向**：
+      //    只是"多试一次"，不会把"不能转"误判成"能转"。
+      supportsTranscoding: ms.supportsTranscoding,
       bitrate: ms.bitrate,
       // ★ 把服务端的完整流列表交给播放器（用户指出的"致命问题"的正解）：
       //   播放器此前只问 mpv 要轨道，字段更少、名字更差。
@@ -1389,8 +1407,32 @@ class EmbyProvider implements MediaProvider {
         'VolumeLevel': 100,
       };
 
-  void _fire(Future<void> fut) {
-    unawaited(fut.catchError((_) {}));
+  /// 发一个"尽力而为"的上报（失败**不影响播放**，但**必须可见**）。
+  ///
+  /// ## 🔴 2026-10-15 修：原来把**一切错误静默吞掉**
+  /// ```dart
+  /// void _fire(Future<void> fut) {
+  ///   unawaited(fut.catchError((_) {}));   // ← 失败完全不可见
+  /// }
+  /// ```
+  /// 后果（用户报障："还是没同步"）：Emby 侧"已看 0 集"，
+  /// 但**日志里一条上报记录都没有** ⇒ 无法区分两种可能：
+  /// · 上报**发了但服务端拒绝**（如 400 参数错）
+  /// · 上报**压根没发**（调用方没调）
+  ///
+  /// ## 修法：吞掉异常（保持"不阻断播放"），但**打出结果**
+  /// · 成功 ⇒ `[EmbyReport] <标签> OK 200`
+  /// · 失败 ⇒ `[EmbyReport] <标签> **失败** <原因>`
+  ///
+  /// ⚠️ 与 §5.5"网络失败可降级"不冲突：这里**仍然吞异常**
+  ///    （不能因为上报失败就让播放崩），只是**不再静默**。
+  ///    这与本仓库对 Trakt 侧的做法一致（那边一直有日志）。
+  void _fire(Future<void> fut, String label) {
+    unawaited(fut.then(
+      (_) => debugPrint('[EmbyReport] $label OK'),
+      onError: (Object e) =>
+          debugPrint('[EmbyReport] $label **失败**: $e'),
+    ));
   }
 
   /// 持久化条目进度。实测：`POST …/UserData` → **204**（无响应体）；
@@ -1402,12 +1444,18 @@ class EmbyProvider implements MediaProvider {
     required int positionTicks,
     bool? played,
   }) {
-    _fire(_dio.post('/Users/${session.user.id}/Items/$itemId/UserData',
-        data: {
-          'PlaybackPositionTicks': positionTicks < 0 ? 0 : positionTicks,
-          'Played': ?played,
-        }));
+    _fire(
+        _dio.post('/Users/${session.user.id}/Items/$itemId/UserData',
+            data: {
+              'PlaybackPositionTicks': positionTicks < 0 ? 0 : positionTicks,
+              'Played': ?played,
+            }),
+        'UserData(${_short(itemId)}) '
+            'ticks=$positionTicks played=${played ?? "—"}');
   }
+
+  /// id 前 8 位（日志里够辨认，又不刷屏）
+  static String _short(String s) => s.length <= 8 ? s : s.substring(0, 8);
 
   @override
   void reportPlaybackStart(
@@ -1415,11 +1463,14 @@ class EmbyProvider implements MediaProvider {
           required String playSessionId,
           required String mediaSourceId,
           required int positionTicks}) =>
-      _fire(_dio.post('/Sessions/Playing', data: _reportBody(
-          itemId: itemId,
-          playSessionId: playSessionId,
-          mediaSourceId: mediaSourceId,
-          positionTicks: positionTicks)));
+      _fire(
+          _dio.post('/Sessions/Playing', data: _reportBody(
+              itemId: itemId,
+              playSessionId: playSessionId,
+              mediaSourceId: mediaSourceId,
+              positionTicks: positionTicks)),
+          'PlaybackStart(${_short(itemId)}) '
+              'pSess=${_short(playSessionId)}');
 
   @override
   void reportPlaybackProgress(
@@ -1430,14 +1481,17 @@ class EmbyProvider implements MediaProvider {
           required bool paused,
           double rate = 1,
           String? eventName}) =>
-      _fire(_dio.post('/Sessions/Playing/Progress', data: _reportBody(
-          itemId: itemId,
-          playSessionId: playSessionId,
-          mediaSourceId: mediaSourceId,
-          positionTicks: positionTicks,
-          paused: paused,
-          rate: rate,
-          eventName: eventName)));
+      _fire(
+          _dio.post('/Sessions/Playing/Progress', data: _reportBody(
+              itemId: itemId,
+              playSessionId: playSessionId,
+              mediaSourceId: mediaSourceId,
+              positionTicks: positionTicks,
+              paused: paused,
+              rate: rate,
+              eventName: eventName)),
+          'PlaybackProgress(${_short(itemId)}) '
+              'ticks=$positionTicks paused=$paused ev=${eventName ?? "—"}');
 
   @override
   void reportPlaybackStop(
@@ -1445,9 +1499,11 @@ class EmbyProvider implements MediaProvider {
           required String playSessionId,
           required String mediaSourceId,
           required int positionTicks}) =>
-      _fire(_dio.post('/Sessions/Playing/Stopped', data: _reportBody(
-          itemId: itemId,
-          playSessionId: playSessionId,
-          mediaSourceId: mediaSourceId,
-          positionTicks: positionTicks)));
+      _fire(
+          _dio.post('/Sessions/Playing/Stopped', data: _reportBody(
+              itemId: itemId,
+              playSessionId: playSessionId,
+              mediaSourceId: mediaSourceId,
+              positionTicks: positionTicks)),
+          'PlaybackStop(${_short(itemId)}) ticks=$positionTicks');
 }

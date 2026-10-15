@@ -165,11 +165,25 @@ class FakeKernel extends PlayerKernel {
 // ---------------- Fake Emby API ----------------
 
 class FakeMediaProvider implements MediaProvider {
-  FakeMediaProvider({this.transcodingUrl = ''});
+  FakeMediaProvider({
+    this.transcodingUrl = '',
+    this.supportsTranscoding = false,
+  });
 
   /// 非空时 resolvePlayback 返回的 launch 带转码兜底（模拟 Emby
   /// 给出了 TranscodingUrl 的场景）。
   final String transcodingUrl;
+
+  /// ⚠️ **服务端自报**是否具备转码能力（2026-10-15 新增）。
+  ///
+  /// ## 为什么测试必须显式给这个值
+  /// 播放器**不再只看 `transcodingUrl` 非空**就切转码 ——
+  /// 因为那个 URL 是**我们自己无条件拼的**，不代表服务端能转。
+  /// 真机结论（用户当轮原话）：
+  /// > "不转码，我这个服务端好像不能转"
+  ///
+  /// 默认 `false`（保守：不盲切）；要测"能转码"的路径需显式传 `true`。
+  final bool supportsTranscoding;
 
   final startCalls = <String>[];
   final progressEvents = <String>[];
@@ -185,6 +199,7 @@ class FakeMediaProvider implements MediaProvider {
       playSessionId: 'ps-1',
       headers: const {'X-Test': '1'},
       transcodingUrl: transcodingUrl,
+      supportsTranscoding: supportsTranscoding,
     );
   }
 
@@ -347,10 +362,13 @@ void main() {
   });
 
   group('播放韧性（直连死源 → 转码兜底）', () {
-    testWidgets('直连死源 + 有转码流：15s 超时自动切转码', (tester) async {
+    testWidgets('直连死源 + 服务端**支持**转码：15s 超时自动切转码', (tester) async {
       final kernel = FakeKernel(deadStart: true);
+      // ⚠️ 2026-10-15：必须**显式**声明服务端支持转码 ——
+      //    播放器不再只看 `transcodingUrl` 非空（见下面那条新用例）
       final api = FakeMediaProvider(
-          transcodingUrl: 'http://emby.test/transcode/m1/master.m3u8');
+          transcodingUrl: 'http://emby.test/transcode/m1/master.m3u8',
+          supportsTranscoding: true);
       final container = await _pumpFlow(tester, kernel, api);
       expect(kernel.calls.where((c) => c.startsWith('open:')), hasLength(1));
 
@@ -361,6 +379,48 @@ void main() {
           'open:http://emby.test/transcode/m1/master.m3u8');
       // 错误态不得出现（已成功兜底）
       expect(container.read(playbackStateProvider).errorMessage, isNull);
+      await _unmountAndDrain(tester, container);
+    });
+
+    testWidgets('★★★ 直连死源 + 服务端**不支持**转码：不切，直接报源不可用',
+        (tester) async {
+      // ══════════════════════════════════════════════════════════════
+      //  这条锁死的是 2026-10-15 用户报障的真行为
+      // ══════════════════════════════════════════════════════════════
+      //
+      // 用户报障（当轮原话）：
+      // > "切换转码后还是内核报错"
+      // > "不转码，我这个服务端好像不能转"
+      //
+      // 旧行为（**错的**）：只要 `transcodingUrl` 非空就自动切转码。
+      // 在**不支持转码**的服务器上（Emby 免费版无 Premiere）：
+      // ```
+      // master.m3u8 → 200（"空转"列表）
+      //   → 分段 /hls1/main/NNN.mp4 → **HTTP 400**
+      //     （服务端无转码任务 ⇒ 缺 runtimeTicks 等 [Required] 参数）
+      //   → mpv `end-file error` → 用户看到"播放失败（内核报错）"
+      // ```
+      // ⇒ 错误**指向转码**，而真实原因是**源本身不可用**
+      //   ⇒ 用户去折腾转码设置，问题却不在那儿。
+      final kernel = FakeKernel(deadStart: true);
+      final api = FakeMediaProvider(
+          transcodingUrl: 'http://emby.test/transcode/m1/master.m3u8',
+          // ★ 服务端自报：不支持（真机就是这台）
+          supportsTranscoding: false);
+      final container = await _pumpFlow(tester, kernel, api);
+
+      await tester.pump(const Duration(seconds: 16));
+
+      // ① **不得**发生第二次 open（即没有切到转码）
+      expect(kernel.calls.where((c) => c.startsWith('open:')), hasLength(1),
+          reason: '★★★ 服务端不支持转码时**不许**自动切：\n'
+              '    切过去必然 400（分段缺 [Required] 参数）\n'
+              '    ⇒ 用户看到"内核报错"，会误以为转码配置有问题');
+      // ② 必须给出**真实原因**的错误态
+      expect(container.read(playbackStateProvider).errorMessage,
+          '连接超时，该视频源可能不可用',
+          reason: '★ 错误文案必须指向**源不可用**（真实原因），'
+              '不能含糊成转码问题');
       await _unmountAndDrain(tester, container);
     });
 

@@ -1941,8 +1941,29 @@ _stage('open');
         positionAtArm: _positionAtArm,
       );
       if (!dead) return;
-      if (_playMethod == 'direct' &&
-          (_launch?.transcodingUrl ?? '').isNotEmpty) {
+      // ══════════════════════════════════════════════════════════════
+      // ⚠️ 2026-10-15：**不要盲目自动切转码**
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 用户的实测结论（当轮原话）
+      // > "不转码，我这个服务端好像不能转"
+      //
+      // ## 为什么原来这条是坑
+      // 旧逻辑：直连超时 ⇒ 只要 `transcodingUrl` 非空就切转码。
+      // 但在**不支持转码**的服务器上（Emby 免费版无 Premiere）：
+      // ```
+      // master.m3u8 请求返回 200（一个"空转"的播放列表）
+      //   → 里面的分段 URL 形如 /hls1/main/265.mp4?PlaySessionId=..
+      //   → 服务端**没有转码任务** ⇒ 缺 `runtimeTicks` 等 [Required] 参数
+      //   → 每个分段 **HTTP 400** ⇒ mpv `end-file error` ⇒ "播放失败（内核报错）"
+      // ```
+      // ⇒ 用户看到的错误**指向转码**，而真实原因是**源本身不可用**
+      //   （违背本仓库 §5.5"不要把失败伪装成别的东西"的同类问题）。
+      //
+      // ## 修法
+      // 只有**确认服务器能转码**时才自动切；否则直接走"源不可用"分支。
+      // 判据：`_transcodeUsable`（`transcodingUrl` 非空**且**服务端声明可转码）。
+      if (_playMethod == 'direct' && _transcodeUsable) {
         unawaited(_reopenAs('transcode', reason: '直连超时，已切换转码'));
       } else {
         // 直连与转码都失败 → 判定源已死，**主动停掉内核**。
@@ -1986,13 +2007,64 @@ _stage('open');
   ///
   /// 切到转码后同样重新布防超时（"直连超时→切转码→转码也超时"不能
   /// 变回灰屏死等，旧页踩过）。
+  /// ⚠️ **服务器是否具备转码能力**（2026-10-15，用户实测结论驱动）。
+  ///
+  /// ## 用户的结论（当轮原话）
+  /// > "不转码，我这个服务端好像不能转"
+  ///
+  /// ## 为什么不能只看 `transcodingUrl` 非空
+  /// 我们**自己拼**的 `master.m3u8` URL 永远非空（`emby_provider.dart` 里
+  /// 无条件生成），所以"非空"**不代表服务端能转码**：
+  /// ```
+  /// 不支持转码的服务器：
+  ///   master.m3u8 请求 → 200（一个"空转"的列表）
+  ///   → 分段 /hls1/main/NNN.mp4?PlaySessionId=.. → **HTTP 400**
+  ///     （服务端无转码任务 ⇒ 缺 runtimeTicks 等 [Required] 参数）
+  /// ```
+  ///
+  /// ## 判据
+  /// 以 **`MediaSource.supportsTranscoding`**（服务端自报）为准。
+  /// ⚠️ 本仓库 2026-10 实测：该字段**会误报 true**
+  ///    （`emby_provider.dart:1241` 的实测注释），
+  ///    但"误报 true"在**能力探测**场景下是**安全的失败方向**：
+  ///    它只会让我们"尝试一下转码"，而**不会**让我们在
+  ///    "确实不能转码"时误判为可以（那种才危险）。
+  ///    ⇒ 真正的兜底是 `transcodingUrl` 为空时直接拒绝（见 `_reopenAs`）。
+  bool get _transcodeUsable {
+    final l = _launch;
+    if (l == null) return false;
+    if ((l.transcodingUrl ?? '').isEmpty) return false;
+    if (l.supportsTranscoding == false) return false;
+    return true;
+  }
+
   Future<void> _reopenAs(String method, {String? reason}) async {
     final launch = _launch;
     final k = _kernel;
     if (launch == null || k == null || _switching) return;
-    if (method == 'transcode' && (launch.transcodingUrl ?? '').isEmpty) {
-      _snack('该媒体源没有可用的转码流');
-      return;
+    if (method == 'transcode') {
+      // ══════════════════════════════════════════════════════════════
+      // ⚠️ 2026-10-15：**不支持转码的服务器就明确拒绝**（别让用户撞 400）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 用户报障（原话）
+      // > "切换转码后还是内核报错"
+      // > "不转码，我这个服务端好像不能转"
+      //
+      // ## 为什么原来只是"无可用转码流"就放过了
+      // 旧判断 `(launch.transcodingUrl ?? '').isEmpty` **永远为假**
+      // —— 因为那个 URL 是**我们无条件拼的**（`emby_provider.dart`），
+      // 不代表服务端真能转码 ⇒ 用户切过去 ⇒ 分段全 400 ⇒ "内核报错"。
+      //
+      // ## 修法：明确告知 + 不切
+      // ⚠️ 文案要说**真实原因**（服务器不具备转码能力），
+      //    而不是含糊的"该媒体源没有可用的转码流"
+      //    —— 后者会让用户以为是**片源**问题（违背 §5.5 的同类原则）。
+      if (!_transcodeUsable) {
+        _snack('该服务器未启用转码（Emby 需要 Premiere）；'
+            '本片请用直连播放');
+        return;
+      }
     }
     if (method == _playMethod) return;
     final keepPos = k.state.position;
@@ -2001,9 +2073,80 @@ _stage('open');
       _switching = true;
     });
     try {
+      //
+      // ## 为什么要它（不能再靠推断）
+      // 已代码级确认（Jellyfin `DynamicHlsController.cs`）：
+      // **分段端点**有两个 `[Required]` 查询参数：
+      // ```
+      // [FromQuery, Required] long runtimeTicks,
+      // [FromQuery, Required] long actualSegmentLengthTicks,
+      // ```
+      // 缺任一个 ⇒ 模型验证失败 ⇒ **400** ← 与真机现象吻合。
+      //
+      // 但"为什么缺"有两种可能，**修法完全相反**：
+      // | 假设 | 修法 |
+      // |---|---|
+      // | **A：服务端不转码**（免费版无 Premiere）⇒ 播放列表是"假的" | **隐藏转码入口** |
+      // | **B：我们请求参数不全** ⇒ 服务端生成的列表不完整 | 补齐请求参数 |
+      //
+      // ⇒ 判据：**把 `master.m3u8` 的响应体打出来看**。
+      //    · 若 `CODECS` 仍是源编码（`hvc1`/`hevc`）⇒ 服务端**没转码** ⇒ 假设 A
+      //    · 若分段 URL 里**没有** `runtimeTicks` ⇒ 服务端确实没写 ⇒ 假设 A/B
+      //
+      // ## 为什么只读、不改行为
+      // 只发一次 GET + 打日志；**无论结果如何都继续原来的播放流程**
+      // ⇒ 不会让"本来能播的"变得播不了。
+      //
+      // ## 顺手验证"X-Emby-Token 头"这个假设
+      // 同时用**带头**的方式请求一次，对比状态码
+      // ⇒ 若"带头仍 400"就证明**不是鉴权问题**（省得我继续在 headers 上白费功夫）。
+      // ══════════════════════════════════════════════════════════════
+      // ★★ 2026-10-15 修：**转码切换必须带鉴权头**（分段 400 的真根因）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 真机证据（用户："切换转码后还是内核报错"）
+      // ```
+      // Playing: .../hls1/main/265.mp4?PlaySessionId=3b46bdde-...
+      //                                ↑ 有 PlaySessionId（上一轮的修复生效了）
+      // http: HTTP error 400 Bad Request         ← ★ 仍然 400
+      // ```
+      // ⇒ `PlaySessionId` 不是唯一原因。
+      //
+      // ## 真根因：**`_reopenAs` 是唯一没传 `headers` 的 `open()` 调用**
+      // ```
+      // 1656|  直连起播   → headers: launch.headers   ✅
+      // 2099|  另一处     → headers: launch.headers   ✅
+      // 2004|  _reopenAs  → **没有**                  ❌  ← 切转码走的就是这条
+      // ```
+      // **Emby 生成 HLS 播放列表时不把 `api_key` 透传到分段 URL**
+      // （服务端只透传了 `PlaySessionId`）⇒ 分段请求**无鉴权** ⇒ 400。
+      // ⇒ **唯一可靠的补法是在请求头里带 token**
+      //   （mpv 的 `http-header-fields` 对**所有**后续请求生效，
+      //    包括服务端自己生成的分段 URL —— 这正是我们要的）。
+      //
+      // ## 能力早就有，只是没接上
+      // · `PlayerChannel.kt:475` 已实现 `http-header-fields` 的设置
+      // · `kernel.dart:349` 的 `open()` 已有 `headers` 参数
+      // ⇒ 只需在此处**传进去**。
+      //
+      // ## token 从哪来（**不新增依赖**）
+      // `launch.url` 的注释明确写着"**含 api_key**" ⇒ 直接从直连 URL 里解析，
+      // 不必去碰 `EmbyProvider`（符合 §5.1"UI 只依赖 MediaProvider 抽象"）。
+      // ⚠️ 不要为此给 `MediaProvider` 加 getter —— 那是无谓的接口扩张。
+      final hdrs = <String, String>{...launch.headers};
+      if (method == 'transcode' &&
+          !hdrs.containsKey('X-Emby-Token') &&
+          !hdrs.containsKey('X-Emby-Authorization')) {
+        final tok = _tokenFromUrl(launch.url);
+        if (tok.isNotEmpty) hdrs['X-Emby-Token'] = tok;
+      }
+      hdrs.removeWhere((_, v) => v.isEmpty);
+      debugPrint('[PlayerFlow] 切 $method：'
+          '${hdrs.isEmpty ? "无鉴权头" : "带头 ${hdrs.keys.join(",")}"}');
       await k.open(
           method == 'transcode' ? launch.transcodingUrl! : launch.url,
-          play: true);
+          play: true,
+          headers: hdrs.isEmpty ? null : hdrs);
       _armStartTimeout();
       if (keepPos.inSeconds > 3) {
         await k.seek(keepPos);
@@ -2013,6 +2156,32 @@ _stage('open');
       _snack('切换失败');
     } finally {
       if (mounted) setState(() => _switching = false);
+    }
+  }
+
+  /// 从**直连 URL** 里取 Emby 的 `api_key`（= 访问令牌）。
+  ///
+  /// ## 为什么从 URL 取，而不是问 provider 要
+  /// `PlaybackLaunch.url` 的注释明确写着"直连流地址（**含 api_key**）"
+  /// ⇒ 数据**已经在手上**，不必：
+  /// · 给 `MediaProvider` 加 getter（无谓的接口扩张，违反 §5.1 的收敛方向）
+  /// · 依赖 `EmbyProvider` 具体类型（UI 层不该 import 实现文件，见 §7.13）
+  ///
+  /// ## 用途
+  /// Emby 的 **HLS 转码分段**由服务端生成，**不会**带上 `api_key`
+  /// ⇒ 分段请求无鉴权 ⇒ **400**（真机实测）。
+  /// 唯一可靠的补法是把 token 放进**请求头**（mpv `http-header-fields`）。
+  ///
+  /// ## 容错
+  /// 解析失败返回 `''`（调用方会跳过加头）——**绝不抛**
+  /// （播放路径上的辅助函数不该因解析问题中断起播）。
+  static String _tokenFromUrl(String url) {
+    try {
+      final q = Uri.parse(url).queryParameters;
+      // Emby 两种命名都可能出现（`api_key` 是 URL 里的，`X-Emby-Token` 是头里的）
+      return (q['api_key'] ?? q['X-Emby-Token'] ?? '').trim();
+    } catch (_) {
+      return '';
     }
   }
 
