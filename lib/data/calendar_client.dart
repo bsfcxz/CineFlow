@@ -226,6 +226,209 @@ class BrowseRegion {
       };
 }
 
+/// **类型（genre）筛选** —— 2026-10-15 新增（A 项：把 genre 做成一等入口）。
+///
+/// ## 为什么加它（借鉴 Overseerr）
+/// Overseerr 的 `DiscoverSliderType` 把 **`MOVIE_GENRES` / `TV_GENRES`
+/// 直接做成列表入口**（而不是藏在"分类"里的一个参数）：
+/// ```typescript
+/// enum DiscoverSliderType {
+///   TRENDING, POPULAR_MOVIES, MOVIE_GENRES, UPCOMING_MOVIES, STUDIOS,
+///   POPULAR_TV, TV_GENRES, UPCOMING_TV, NETWORKS, ...
+/// }
+/// ```
+/// ⇒ 它把 genre 视为**与"流行/即将上映"并列的探索维度**。
+///
+/// ## 与 `BrowseCategory.genreId` 的关系（**别混用**）
+/// · `BrowseCategory.genreId` = **大类自带**的 genre
+///   （如「动漫」= `16`、「综艺」= `10764|10767`）—— 用于**定义那个类别**
+/// · `BrowseGenre` = **用户在本类别内再选**的类型
+///   （如「电影 → 动作」= `28`）—— 用于**细分**
+/// ⇒ 两者**同时存在时都要发**（TMDB 会取 AND）。
+///   ⚠️ 但「动漫 + 动作」是有意义的（`with_genres=16,28` 是 **AND**）；
+///     而逗号在 TMDB 里就是 AND —— 见下面 `toParam` 的说明。
+///
+/// ## ⚠️ 实测坑：多值 OR 必须用 `|`，逗号是 **AND**
+/// 本仓库已有记录（`BrowseCategory.genreId` 注释）：
+/// `10764` → 8 条、`10764,10767` → **1 条**、`10764|10767` → 8 条。
+/// ⇒ `toParam` 对"类别 genre + 用户 genre"用 **`|`（OR）** 拼接。
+class BrowseGenre {
+  const BrowseGenre(this.label, this.id);
+
+  /// 中文标签（界面显示）。
+  final String label;
+
+  /// TMDB genre id（**不是** slug）。
+  final int id;
+
+  /// 全部（= 不加筛选）。
+  static const all = BrowseGenre('全部', -1);
+
+  /// 通用的电影/剧集类型（TMDB 两套命名空间**id 不同**，这里取
+  /// **电影**的 id；剧集侧见 [tvSeries] / [tvAnime] 等专用列表）。
+  ///
+  /// ⚠️ TMDB 的 movie genre 与 tv genre 是**两套独立 id**：
+  /// ```
+  /// 电影: 28 动作  35 喜剧  18 剧情  878 科幻  27 恐怖  16 动画 …
+  /// 剧集: 10759 动作冒险  35 喜剧  18 剧情  10765 科幻奇幻  9648 悬疑 …
+  /// ```
+  /// ⇒ `_genresFor(category)` 按 `kind` 返回**正确的那一套**。
+  static const action = BrowseGenre('动作', 28);
+  static const comedy = BrowseGenre('喜剧', 35);
+  static const drama = BrowseGenre('剧情', 18);
+  static const scifi = BrowseGenre('科幻', 878);
+  static const horror = BrowseGenre('恐怖', 27);
+  static const romance = BrowseGenre('爱情', 10749);
+  static const animation = BrowseGenre('动画', 16);
+  static const crime = BrowseGenre('犯罪', 80);
+  static const thriller = BrowseGenre('惊悚', 53);
+  static const mystery = BrowseGenre('悬疑', 9648);
+  static const family = BrowseGenre('家庭', 10751);
+  static const adventure = BrowseGenre('冒险', 12);
+
+  /// 剧集侧的同类（id 与电影**不同**）。
+  static const tvActionAdventure = BrowseGenre('动作冒险', 10759);
+  static const tvScifiFantasy = BrowseGenre('科幻奇幻', 10765);
+  static const tvWarPolitics = BrowseGenre('战争政治', 10768);
+  static const tvKids = BrowseGenre('儿童', 10762);
+  static const tvReality = BrowseGenre('真人秀', 10764);
+  static const tvTalk = BrowseGenre('脱口秀', 10767);
+
+  /// 拼成 `with_genres` 的值。
+  ///
+  /// [categoryGenre] 是**类别自带**的 genre（如「动漫」的 `16`，可空）。
+  /// 两者都有时用 `|`（OR）—— **不能用逗号**（那是 AND，
+  /// 本仓库实测过：`10764,10767` → 1 条 vs `10764|10767` → 8 条）。
+  ///
+  /// 返回 `null` = 不加筛选。
+  String? toParam({String? categoryGenre}) {
+    final parts = <String>[
+      if (categoryGenre != null && categoryGenre.isNotEmpty) categoryGenre,
+      if (id >= 0) '$id',
+    ];
+    // ⚠️ 去重：用户选的可能与类别自带的重合（如「动画」类别 + 「动画」类型）
+    final uniq = <String>[];
+    for (final p in parts) {
+      // categoryGenre 可能是 `a|b` 形式 ⇒ 拆开再去重
+      for (final seg in p.split('|')) {
+        if (seg.isNotEmpty && !uniq.contains(seg)) uniq.add(seg);
+      }
+    }
+    return uniq.isEmpty ? null : uniq.join('|');
+  }
+}
+
+/// **用户可选的排序维度**（D 项，2026-10-15）。
+///
+/// ## 为什么加它（借鉴 Overseerr）
+/// 它的 `sortBy` 是**查询参数**（`z.coerce.string().optional()`），
+/// 由用户选，而不是硬编码：
+/// ```typescript
+/// sortBy: query.sortBy as SortOptions,
+/// ```
+/// 我们原来每个类别**写死**一个 `sortBy`（如电影恒为"新片"）
+/// ⇒ 用户想"按评分最高的电影看"做不到。
+///
+/// ## ⚠️ 合法值集合是**实测**来的，不是我编的
+/// Overseerr `server/api/themoviedb/index.ts` 的 `SortOptions` 全集：
+/// ```
+/// popularity / release_date / revenue / primary_release_date /
+/// original_title / vote_average / vote_count / first_air_date   （各 asc/desc）
+/// ```
+/// ⚠️ **movie 与 tv 的可用值不同**：
+/// · 电影有 `primary_release_date` / `release_date` / `revenue`
+/// · 剧集有 `first_air_date`（**没有** `primary_release_date`）
+/// ⇒ [paramFor] 按 `kind` 返回正确值（发错会被 TMDB 忽略或报 400）。
+///
+/// ## 为什么保留"默认"
+/// 各类型用户的意图不同（剧集看"最近在播"、纪录片看"评分"）
+/// ⇒ [BrowseCategory.sortBy] 已经是**按类别调过的**默认值。
+/// 用户不选时用它，选了才覆盖 —— **零行为变化**。
+enum BrowseSort {
+  /// 用类别的默认排序（不覆盖）。
+  categoryDefault('默认'),
+
+  /// 最热（TMDB 全球热度榜）。
+  ///
+  /// ⚠️ 这正是**根因①**的来源：6 个类别曾**全用它** ⇒ 各类别前几条高度重叠。
+  /// 保留它作为**用户显式选择**是对的（"我就是要看最热的"），
+  /// 但**不该是默认值**。
+  popular('最热'),
+
+  /// 最新（按首播/上映日期）。
+  newest('最新'),
+
+  /// 评分最高（`vote_average`）。
+  ///
+  /// ⚠️ 必须配 `vote_count.gte`（见 `fetchBrowse` 的 F 项说明），
+  /// 否则"1 票 10 分"的新片会排最前。
+  rating('最高分'),
+
+  /// 票数最多（`vote_count`）—— 冷门片的天然过滤器。
+  votes('最多人看');
+
+  const BrowseSort(this.label);
+
+  /// 中文标签（界面显示）。
+  final String label;
+
+  /// 拼成 TMDB `sort_by` 的值。
+  ///
+  /// [categoryDefault] 是本类别的默认维度（`BrowseCategory.sortBy`）。
+  ///
+  /// ⚠️ `movie` 用 `primary_release_date`、`tv` 用 `first_air_date`
+  /// —— **发错 namespace 会被 TMDB 400 或忽略**（实测集合见类注释）。
+  String paramFor(String categoryDefault, {required String kind}) {
+    final isMovie = kind == 'movie';
+    return switch (this) {
+      BrowseSort.categoryDefault => categoryDefault,
+      BrowseSort.popular => 'popularity.desc',
+      BrowseSort.newest =>
+        isMovie ? 'primary_release_date.desc' : 'first_air_date.desc',
+      BrowseSort.rating => 'vote_average.desc',
+      BrowseSort.votes => 'vote_count.desc',
+    };
+  }
+
+  /// 该排序是否**需要** `vote_count.gte` 门槛。
+  ///
+  /// 只有 `vote_average` 需要（防"1 票 10 分"）；
+  /// 而 `vote_count.desc`（最多人看）**本身就是票数排序** ⇒ 不需要。
+  bool get needsVoteFloor => this == BrowseSort.rating;
+}
+
+/// **本类别可选的类型列表**（A 项，2026-10-15）。
+/// ## 为什么按类别给不同列表（不是一套通用）
+/// TMDB 的 movie / tv 是**两套独立 genre id**：
+/// ```
+/// 电影「动作」= 28        剧集「动作冒险」= 10759
+/// 电影「科幻」= 878       剧集「科幻奇幻」= 10765
+/// ```
+/// ⇒ 给电影发 `28` 是对的，给剧集发 `28` 会**筛出 0 条**（剧集没有 id 28）。
+/// 这是 TMDB 最容易被忽略的坑之一。
+///
+/// ## 为什么每个列表都带「全部」
+/// 用户需要能**取消**类型筛选（否则选了就回不去）。
+List<BrowseGenre> genresFor(BrowseCategory c) {
+  switch (c.kind) {
+    case 'movie':
+      return const [
+        BrowseGenre.all, BrowseGenre.action, BrowseGenre.comedy,
+        BrowseGenre.scifi, BrowseGenre.horror, BrowseGenre.romance,
+        BrowseGenre.crime, BrowseGenre.thriller, BrowseGenre.family,
+        BrowseGenre.adventure,
+      ];
+    default:
+      // tv：用剧集侧的 id（10759/10765…），**不是**电影的 28/878
+      return const [
+        BrowseGenre.all, BrowseGenre.tvActionAdventure,
+        BrowseGenre.tvScifiFantasy, BrowseGenre.comedy, BrowseGenre.drama,
+        BrowseGenre.mystery, BrowseGenre.crime, BrowseGenre.tvReality,
+        BrowseGenre.tvKids, BrowseGenre.tvTalk, BrowseGenre.tvWarPolitics,
+      ];
+  }
+}
+
 /// 日历条目的**完整详情**（供"点击查看简介"弹层用）。
 ///
 /// ## 字段来源与实测（TMDB `/tv/{id}?append_to_response=credits`）
@@ -2272,6 +2475,43 @@ class CalendarClient {
     required String apiKey,
     required BrowseCategory category,
     required BrowseRegion region,
+    // ══════════════════════════════════════════════════════════════
+    // ★★ 2026-10-15 新增（A 项）：**类型（genre）细分**
+    // ══════════════════════════════════════════════════════════════
+    //
+    // ## 为什么加（借鉴 Overseerr 的 `DiscoverSliderType.MOVIE_GENRES`）
+    // 它把 genre 当作**与"流行/即将上映"并列的探索入口**，
+    // 而不是藏在"分类"里的一个内部参数。
+    //
+    // ## 与 `category.genreId` 的关系
+    // 两者**都会发**（TMDB 对 `with_genres` 的多值是 **OR**）：
+    // · `category.genreId` = 定义类别的（「动漫」= `16`）
+    // · `genre.id` = 用户在本类别内选的（「动作」= `28`）
+    // ⚠️ 所以「动漫 + 动作」= `16|28`（OR）—— 会返回"动画**或**动作"，
+    //    严格说不是"动画且动作"。
+    //    若要 AND，TMDB 语法是**逗号**（`16,28`）。
+    //    ⇒ 这里选 OR 的理由：用户在大类下再选类型时，绝大多数场景是
+    //      "我想在这个大类里看这类" ⇒ **AND 更符合直觉**。
+    //      ⚠️ 但那会与"类别自带 genre"叠加成很窄的集合（可能 0 条）。
+    //    **折中（本实现的取舍）**：
+    //      · 用户在**电影**（无自带 genre）下选 ⇒ 只发用户 genre ⇒ 无歧义
+    //      · 在**有自带 genre 的类别**（动漫/综艺/纪录片/儿童）下选
+    //        ⇒ 发 `类别|用户`（OR）⇒ 至少不为空
+    //    ⇒ 详见 `BrowseGenre.toParam` 的注释。
+    BrowseGenre genre = BrowseGenre.all,
+    // ══════════════════════════════════════════════════════════════
+    // ★★ 2026-10-15 新增（D 项）：**用户可选排序**
+    // ══════════════════════════════════════════════════════════════
+    //
+    // ## 为什么加（借鉴 Overseerr 的 `sortBy` 查询参数）
+    // 原来每个类别**写死**一个排序（电影恒为"新片"）
+    // ⇒ 用户想"按评分最高的电影看"做不到。
+    //
+    // ## 为什么默认是 `categoryDefault` 而不是 `popular`
+    // 后者是**根因①**的来源（6 类别曾全用它 ⇒ 内容高度重叠）。
+    // `categoryDefault` = 各类型调过的默认（剧集看"最近在播"、
+    // 纪录片看"评分"）⇒ **不选时行为与修复后完全一致**（零回归）。
+    BrowseSort sort = BrowseSort.categoryDefault,
     int page = 1,
     // ══════════════════════════════════════════════════════════════
     // ★★ 2026-10-15 新增：失败时是**抛异常**还是返回空列表
@@ -2316,13 +2556,21 @@ class CalendarClient {
     // 便于人工辨认（`grep browse:`）；新键在末尾多一段排序。
     // ⚠️ 旧键会**自然过期**（TTL），不需要主动清理。
     final cacheKey = 'browse:${category.name}:${region.label}:$page'
-        ':${category.sortBy}'
+        // ★ D 项：用户选的排序也进键（`categoryDefault` 时用类别默认值）
+        //   ⚠️ 若只写 `sort.name`，那"默认"与"显式选同一个值"会共用缓存
+        //      —— 那其实**没错**（结果相同）。但为了让旧键自然过期、
+        //      避免与修复前的键冲突，统一写成**解析后的实际 sort_by**。
+        ':${sort.paramFor(category.sortBy, kind: category.kind)}'
         // 电影的日期窗口也影响结果（近 3 年）⇒ 进键
         '${category == BrowseCategory.movie ? ':y${DateTime.now().year - 3}' : ''}'
         // ⚠️ `vote_count.gte` 同样影响结果（F 项）⇒ 也进键
         //    （教训：**缓存键必须覆盖所有影响结果的输入** —— Jellyfin 的
         //      12 个缓存键全部带 `language` 是同一原则）
-        '${category.sortBy.startsWith('vote_average') ? ':vc50' : ''}';
+        '${sort.paramFor(category.sortBy, kind: category.kind).startsWith('vote_average') ? ':vc50' : ''}'
+        // ★ 类型筛选（A 项）也影响结果 ⇒ 进键
+        //   ⚠️ **漏了它会复现根因④**：切了类型却命中旧缓存
+        //      ⇒ 用户看到"点了没反应"（而请求根本没发）
+        '${genre.id >= 0 ? ':g${genre.id}' : ''}';
     try {
       final cached = await cache?.get(cacheKey);
       String body;
@@ -2336,7 +2584,8 @@ class CalendarClient {
           //   原来 6 个类别**全用** `popularity.desc` ⇒ TMDB 的热度榜是
           //   **全球通用**的 ⇒ 各类别前几条必然高度重叠
           //   ⇒ 用户报障"6 个类别点开其实就在一块"。
-          'sort_by': category.sortBy,
+          // ★ 2026-10-15（D 项）：用户显式选了排序时**覆盖**默认。
+          'sort_by': sort.paramFor(category.sortBy, kind: category.kind),
           'page': '$page',
         };
         // ⚠️ 电影按上映日期排序时**必须**配套日期窗口：
@@ -2361,10 +2610,18 @@ class CalendarClient {
         // 太松（如 10）挡不住刷分。50 是社区常用值，且对"纪录片"这类
         // 我们要用的类别**不至于全空**。
         // ⇒ 只对**用评分排序**的类别加（其他类别加了会无谓缩量）。
-        if (category.sortBy.startsWith('vote_average')) {
+        // ⚠️ 2026-10-15（D 项）：判据改成"**实际用的**排序是否需要门槛"
+        //    —— 用户选了「最高分」时也要加（否则"1 票 10 分"排最前）。
+        final effSort = sort.paramFor(category.sortBy, kind: category.kind);
+        if (effSort.startsWith('vote_average')) {
           params['vote_count.gte'] = '50';
         }
-        final g = category.genreId;
+        // ★ 类型筛选（2026-10-15，A 项）：
+        //   合并"**类别自带** genre"（如动漫 `16`）与"**用户选的** genre"
+        //   ⇒ `toParam` 用 `|`（OR）拼接并去重。
+        //   ⚠️ 原来这里只发 `category.genreId`；直接改成 `toParam` 后
+        //      **行为向后兼容**（用户没选时 `genre.id == -1` ⇒ 只发类别的）。
+        final g = genre.toParam(categoryGenre: category.genreId);
         if (g != null && g.isNotEmpty) params['with_genres'] = g;
         final c = region.countries;
         if (c != null && c.isNotEmpty) {
@@ -2382,8 +2639,10 @@ class CalendarClient {
         // **请求成功但内容相似**，所有失败日志都是空的
         // ⇒ 完全无法定位（我当时只能靠猜）。
         // 有了这行，一次操作就能看出：类别 → 参数 → 条数。
-        debugPrint('[Browse] ${category.label}/${region.label} → '
-            'sort=${category.sortBy} '
+        debugPrint('[Browse] ${category.label}/${region.label}'
+            '${genre.id >= 0 ? '/${genre.label}' : ''} → '
+            'sort=${effSort}'
+            '${sort == BrowseSort.categoryDefault ? '(类别默认)' : '(用户选:${sort.label})'} '
             'genres=${params['with_genres'] ?? "无"} '
             'country=${params['with_origin_country'] ?? "无"} '
             'dateGte=${params['primary_release_date.gte'] ?? "无"} '

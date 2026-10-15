@@ -1726,12 +1726,43 @@ class _DetailPageState extends ConsumerState<DetailPage> {
       // · 且逐集 scrobble 会**打限流**（用户有 162 集！）
       // ⇒ 只推**进度最靠后且未看完**的那一集。
       var pushedProgress = 0;
+      //
+      // ══════════════════════════════════════════════════════════════
+      // ★ 2026-10-15 修：目标集的**选取规则**（原来是"季号最大"）
+      // ══════════════════════════════════════════════════════════════
+      //
+      // ## 原来的错误
+      // ```dart
+      // ..sort((a, b) => b.season != a.season
+      //     ? b.season.compareTo(a.season)      // ← 只看**季号**
+      //     : b.number.compareTo(a.number));
+      // ```
+      // 跨季时会挑**季号最大**的那集，而不管它看了多少：
+      // ```
+      // S1E5  看了 40%   ← 用户真正在看的
+      // S2E1  看了 2%    ← 只是点开过（或误触）
+      // ⇒ 旧逻辑挑 S2E1（季号大）⇒ Trakt「继续观看」指向**第 2 季第 1 集**
+      //    而用户实际在看第 1 季
+      // ```
+      // ## 修法：优先"**看得最多**"，同进度再看季/集号靠后的
+      //
+      // ## 为什么"看得最多"是对的
+      // Trakt 的「继续观看」语义 = "**你最近在看的那个**"。
+      // 手机上分不出"最近"（Emby 的 `UserData` 没有 lastPlayedDate 字段
+      // 给我们用），而**进度**是最接近的代理：
+      // 用户看得多的那一集，几乎一定是他正在追的那一集。
       final partial = allEps
           .where((e) => !e.played && e.progress > 1 && e.progress < 80)
           .toList()
-        ..sort((a, b) => b.season != a.season
-            ? b.season.compareTo(a.season)
-            : b.number.compareTo(a.number));
+        ..sort((a, b) {
+          // ① 先按**进度**降序（看得最多的优先）
+          final byP = b.progress.compareTo(a.progress);
+          if (byP != 0) return byP;
+          // ② 进度相同时，季号大的优先（更靠后的剧情 = 更近）
+          if (a.season != b.season) return b.season.compareTo(a.season);
+          // ③ 最后按集号
+          return b.number.compareTo(a.number);
+        });
       if (partial.isNotEmpty) {
         final target = partial.first;
         step = '推续播进度 scrobble/pause(S${target.season}E${target.number})';
@@ -1742,6 +1773,24 @@ class _DetailPageState extends ConsumerState<DetailPage> {
           season: target.season,
           number: target.number,
           expectCnTitle: item.name,
+          // ══════════════════════════════════════════════════════════
+          // ⚠️ **必须传年份**（2026-10-15 第二次修 —— 同一个坑踩了两次）
+          // ══════════════════════════════════════════════════════════
+          //
+          // ## 漏传的后果（用户报障："trakt 同步剧集还是有问题"）
+          // `plausiblyMatches` 的第一道判据是"年份比对"；
+          // 缺 `expectYear` 时它进不去，落到"标题拉丁片段比对"——
+          // 而「仙逆」vs `Renegade Immortal` **字符层面毫无重叠**
+          // ⇒ 被判"错配" ⇒ `id2 == null` ⇒ `skipCount++`
+          // ⇒ **「继续观看」永远推不出去**（而推"已看"却正常，
+          //   因为上面 1690 行那处**传了**）。
+          //
+          // ## 为什么这个 bug 特别难发现
+          // 它**不是崩溃、不是报错** —— 只是 `skipCount` 多 1，
+          // 用户提示里显示"1 集未收录（跳过）"，看起来像"Trakt 没收录"。
+          // ⇒ 只有对比**同一方法内两处调用**才能看出不一致。
+          //    （这正是"接线完整性"检查该覆盖的：**同类调用点必须成对**）
+          expectYear: item.productionYear,
         );
         if (id2 != null && id2.usableForEpisode) {
           final sr = await sync.scrobble(

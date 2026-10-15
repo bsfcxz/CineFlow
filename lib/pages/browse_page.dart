@@ -47,6 +47,26 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
   late BrowseCategory _cat = widget.initial ?? BrowseCategory.series;
   BrowseRegion _region = BrowseRegion.all;
 
+  /// ★ 用户选的**类型**（A 项，2026-10-15 新增）。
+  ///
+  /// ## 为什么要它（借鉴 Overseerr 的 `DiscoverSliderType.MOVIE_GENRES`）
+  /// 它把 genre 做成**与"流行/即将上映"并列的探索入口**。
+  /// 我们原来只有"类别 + 地区"两维，用户想看"电影 → 科幻"就得先选类别
+  /// 再看全部 —— 缺少"在这个类别里按类型看"的能力。
+  ///
+  /// ## 为什么换类别时要**重置**
+  /// movie 与 tv 是**两套独立 genre id**
+  /// （电影「动作」=28，剧集「动作冒险」=10759）
+  /// ⇒ 保留旧选择会发出**无效 id**（如给剧集发 28 ⇒ **0 条**）。
+  /// ⚠️ 这与 `_region` 的重置是**同一个理由**（见 `_pick`）。
+  BrowseGenre _genre = BrowseGenre.all;
+
+  /// ★ 用户选的**排序**（D 项，2026-10-15 新增）。
+  ///
+  /// 默认 `categoryDefault` = 用各类型调过的默认排序
+  /// ⇒ **不选时行为与修复后完全一致**（零回归）。
+  BrowseSort _sort = BrowseSort.categoryDefault;
+
   /// 缓存已拉到的结果（`类别:地区` → 条目），避免重复请求。
   ///
   /// ## 为什么在 State 里缓存
@@ -72,7 +92,17 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
   /// 不许把失败伪装成空）。
   String? _error;
 
-  String get _key => '${_cat.name}:${_region.label}';
+  /// 页面内缓存的键 —— ⚠️ **必须覆盖全部影响结果的输入**。
+  ///
+  /// ## 为什么把 `_genre` 也放进来（2026-10-15）
+  /// 原来只有 `类别:地区` ⇒ 用户切"类型"时会**命中旧缓存**
+  /// ⇒ 看到"点了没反应"（而请求根本没发）。
+  ///
+  /// ⚠️ 这正是本仓库刚修过的**根因④**（`fetchBrowse` 的磁盘缓存键
+  /// 漏了 `sort_by`，真机表现为"点电影零请求立刻出数据"）。
+  /// **两层缓存（页面内 + 磁盘）的键都必须写全**。
+  String get _key =>
+      '${_cat.name}:${_region.label}:${_genre.id}:${_sort.name}';
 
   @override
   void initState() {
@@ -86,6 +116,8 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
     final tag = _key;
     final cat = _cat;
     final region = _region;
+    final genre = _genre;
+    final sort = _sort;
     if (_cache.containsKey(tag)) return;
 
     // ★ ② 领请求号：只有最新那次的结果才被采纳
@@ -136,6 +168,25 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
             apiKey: tmdbKey,
             category: cat,
             region: region,
+            // ★ A 项：类型细分（`genre.id == -1` = 全部 ⇒ 行为同以前）
+            genre: genre,
+            // ★ D 项：用户可选排序（`categoryDefault` = 用类别默认 ⇒ 零回归）
+            sort: sort,
+            // ══════════════════════════════════════════════════════════
+            // ★ 让失败**显式抛出**（否则会被吞成空列表）
+            // ══════════════════════════════════════════════════════════
+            //
+            // ## ⚠️ 这行曾经"以为加了、其实没加"（2026-10-15 自查发现）
+            // 我之前用脚本改"失败 vs 空"时，`calendar_client.dart` 的
+            // `throwOnError` 参数**加成功**了，但**本文件的调用点没改到**
+            // （脚本在写本文件前失败退出，我没核实就报了"已修"）。
+            // 后果：`fetchBrowse` 内部 `if (throwOnError) throw ...` 恒为假
+            // ⇒ 仍然 `return const []` ⇒ 用户看到"这个分类下没有内容"
+            // **而真实原因是网络失败**（违反 AGENTS §7.8）。
+            //
+            // ⇒ 教训：**改"参数 + 调用点"两处时，必须分别核实两处都落盘**
+            //    （只跑 `analyze` 发现不了 —— 可选参数不传也能编译）。
+            throwOnError: true,
           );
 
       // ★ ④ 过期响应直接丢弃（不写缓存、不动 _loading）——
@@ -172,6 +223,10 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
       // ⚠️ 换类别时**必须重置地区** —— 否则会出现"动漫 + 港台"
       //    这种该类别不支持的区域（`regions` 里没有它）⇒ 请求参数错
       _region = BrowseRegion.all;
+      // ★ 类型同理（A 项）：movie 与 tv 是**两套独立 genre id**
+      //   （电影「动作」=28，剧集「动作冒险」=10759）
+      //   ⇒ 保留旧选择会发出**无效 id**（给剧集发 28 ⇒ **筛出 0 条**）。
+      _genre = BrowseGenre.all;
       _error = null;
     });
     _load();
@@ -223,6 +278,95 @@ class _BrowsePageState extends ConsumerState<BrowsePage> {
                 onTap: () {
                   setState(() {
                     _region = r;
+                    _error = null;
+                  });
+                  _load();
+                },
+              );
+            },
+          ),
+        ),
+        // ══════════════════════════════════════════════════════════════
+        // ── 类型 chips（A 项，2026-10-15 新增）──
+        // ══════════════════════════════════════════════════════════════
+        //
+        // ## 为什么加第三行（借鉴 Overseerr）
+        // 它的 `DiscoverSliderType` 把 **`MOVIE_GENRES` / `TV_GENRES`
+        // 直接做成列表入口**（与"流行/即将上映"并列）。
+        // 我们原来只有"类别 + 地区"两维 ⇒ 用户想看"电影 → 科幻"
+        // 只能看全部 —— 缺"在大类里按类型看"的能力。
+        //
+        // ## ⚠️ 为什么列表**随类别变**（不是一套通用）
+        // TMDB 的 movie / tv 是**两套独立 genre id**：
+        // ```
+        // 电影「动作」= 28        剧集「动作冒险」= 10759
+        // 电影「科幻」= 878       剧集「科幻奇幻」= 10765
+        // ```
+        // 给剧集发 `28` 会**筛出 0 条**（剧集没有这个 id）。
+        // ⇒ `genresFor(category)` 按 `kind` 返回正确的那一套。
+        //
+        // ⚠️ 类型数量最多 11 个 ⇒ 与地区行一样**横滑**（不换行）
+        const SizedBox(height: 2),
+        SizedBox(
+          height: 38,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: Cf.gap4),
+            itemCount: genresFor(_cat).length,
+            separatorBuilder: (_, _) => const SizedBox(width: Cf.gap2),
+            itemBuilder: (_, i) {
+              final g = genresFor(_cat)[i];
+              return _Chip(
+                label: g.label,
+                active: g.id == _genre.id,
+                small: true,
+                onTap: () {
+                  setState(() {
+                    _genre = g;
+                    _error = null;
+                  });
+                  _load();
+                },
+              );
+            },
+          ),
+        ),
+        // ══════════════════════════════════════════════════════════════
+        // ── 排序 chips（D 项，2026-10-15 新增）──
+        // ══════════════════════════════════════════════════════════════
+        //
+        // ## 为什么加第四行（借鉴 Overseerr）
+        // 它的 `sortBy` 是**查询参数**（用户可选），不是硬编码：
+        // ```typescript
+        // sortBy: z.coerce.string().optional(),
+        // sortBy: query.sortBy as SortOptions,
+        // ```
+        // 我们原来每个类别**写死**一个排序（电影恒为"新片"）
+        // ⇒ 用户想"按评分最高的电影看"做不到。
+        //
+        // ## 「默认」这一项**必须留**
+        // 各类型的合理默认不同（剧集看"最近在播"、纪录片看"评分"）
+        // ⇒ `categoryDefault` = 用类别的默认值。
+        // 用户不选时走它 ⇒ **零行为变化**（不会破坏刚修好的根因①）。
+        //
+        // ## 只有 5 项 ⇒ 一行放得下，但与其他行统一**横滑**（样式一致）
+        const SizedBox(height: 2),
+        SizedBox(
+          height: 38,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: Cf.gap4),
+            itemCount: BrowseSort.values.length,
+            separatorBuilder: (_, _) => const SizedBox(width: Cf.gap2),
+            itemBuilder: (_, i) {
+              final s = BrowseSort.values[i];
+              return _Chip(
+                label: s.label,
+                active: s == _sort,
+                small: true,
+                onTap: () {
+                  setState(() {
+                    _sort = s;
                     _error = null;
                   });
                   _load();

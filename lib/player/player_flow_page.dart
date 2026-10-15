@@ -1058,6 +1058,38 @@ class _PlayerFlowPageState extends ConsumerState<PlayerFlowPage> {
         season: season,
         number: number,
         expectCnTitle: item.seriesName,
+        // ══════════════════════════════════════════════════════════════
+        // ⚠️ 这里**故意不传** `expectYear`（2026-10-15 核实后决定）
+        // ══════════════════════════════════════════════════════════════
+        //
+        // ## 为什么（与 `detail_page` 的两处**相反**）
+        // `detail_page` 那两处的 `item` 是**剧（Series）**
+        // ⇒ `item.productionYear` 就是**剧的首播年** ⇒ 传它是对的。
+        //
+        // 但**本方法的 `item` 是分集（Episode）**
+        // （见上面 `widget.item` 的用法：`seriesId`/`parentIndexNumber`/
+        //   `indexNumber` 都是从它取的）。
+        // 而 `Episode.ProductionYear` 是**该集**的年份 ——
+        // 长剧的后期分集与首播年**可以差好几年**：
+        // ```
+        // 剧首播 2023（Trakt `show.year` = 2023）
+        // 第 100 集 ProductionYear = 2025（Emby 给的是本集年份）
+        // ⇒ expectYear=2025 vs Trakt year=2023
+        // ⇒ 命中 `plausiblyMatches` 判据②（年份都已知且不一致）
+        // ⇒ **被判"错配"拒绝** —— 比不传更糟！
+        // ```
+        //
+        // ## 不传的后果（**是安全的**）
+        // `plausiblyMatches` 的判据③：**一方年份未知 ⇒ 不确定 ⇒ 采信**
+        // （策略 B，用户 2026-10-15 定）。
+        // 「仙逆」vs `Renegade Immortal` 这种"中文名 vs 英文名"
+        // 本来就无法做标题比对 ⇒ 该采信。
+        //
+        // ## ⚠️ 给后人（含 AI）
+        // **不要"顺手补上" `expectYear: item.productionYear`** ——
+        // 那看起来是在"保持一致"，实际会**静默拒掉**长剧的后半季。
+        // 若真要在这条路径上做年份校验，必须先**拿到剧的年份**
+        // （`seriesId` → 查详情，但那要多一次请求，不适合播放启动路径）。
       );
       if (ids == null || !ids.usableForEpisode) {
         debugPrint('[TraktTrack] episode id 解析失败（Trakt 可能未收录）');

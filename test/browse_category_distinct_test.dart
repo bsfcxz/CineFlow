@@ -154,10 +154,29 @@ void main() {
   });
 
   group('★ 请求参数必须带上类别的 sortBy', () {
-    test('★ `fetchBrowse` 用的是 `category.sortBy` 而不是字面量', () {
+    test('★★★ `fetchBrowse` 的 `sort_by` 必须**由 sort 参数解析**且默认回落到类别值',
+        () {
       final body = _methodBody(src, 'fetchBrowse')!;
-      expect(body.contains("'sort_by': category.sortBy"), isTrue,
-          reason: '★ 硬编码字面量会再次让所有类别同序');
+      // ⚠️ 2026-10-15（D 项）后实现从 `'sort_by': category.sortBy` 变成
+      //    `'sort_by': sort.paramFor(category.sortBy, kind: category.kind)`
+      //    （支持用户显式选排序，默认仍用类别值）。
+      // ⇒ 断言**升级**为两条：
+      //    ① 必须经过 `paramFor`（否则用户选了排序也不生效）
+      //    ② 必须把 `category.sortBy` 传进去（否则默认值丢了 ⇒ 回到根因①）
+      expect(body.contains("'sort_by': sort.paramFor(category.sortBy"),
+          isTrue,
+          reason: '★★★ `sort_by` 必须是 `sort.paramFor(category.sortBy, …)`：\n'
+              '    · 硬编码字面量 ⇒ 所有类别同序（根因①复发）\n'
+              '    · 只用 `sort.paramFor(x)` 而没传 `category.sortBy`\n'
+              '      ⇒ 用户不选时**默认值丢失** ⇒ 同样复发根因①');
+    });
+
+    test('★★★ `BrowseSort.categoryDefault` 必须回落到类别的 sortBy', () {
+      // 这是"零回归"的关键：不选排序时行为必须与修复后完全一致
+      expect(
+          src.contains('BrowseSort.categoryDefault => categoryDefault'), isTrue,
+          reason: '★★★ `categoryDefault` 若不回落 ⇒ 不选排序的用户会\n'
+              '    拿到错误的默认（如所有类别都变 popularity）');
     });
   });
 
